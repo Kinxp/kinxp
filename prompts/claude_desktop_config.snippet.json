@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+      "blockscout": {
+        "command": "docker",
+        "args": [
+          "run", "--rm", "-i",
+          "sparfenyuk/mcp-proxy:latest",
+          "--transport", "streamablehttp",
+          "https://mcp.blockscout.com/mcp"
+        ]
+      }
+    }
+  }
