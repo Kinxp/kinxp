@@ -26,6 +26,6 @@ pnpm --filter @kinxp/contracts build
   * calls either **Anthropic + MCP** or local **Ollama** (Blockscout REST feed) based on `LLM_PROVIDER`
   * exposes **Hedera Agent Kit** actions (escrow + HCS)
   * (optional) checks **Pyth** price/entropy on release
-* **packages/contracts** - Hardhat 3 escrow (`MilestoneEscrow.sol`) + deploy/verify script
+* **packages/contracts** - Hardhat 3 workspace with `MilestoneEscrow.sol` plus ETH↔USD cross-ledger locker (LayerZero + Hedera HTS/Pyth) contracts & scripts
 * **prompts/** - MCP Prompt Pack for the *Prompt* prize track
 # kinxp
