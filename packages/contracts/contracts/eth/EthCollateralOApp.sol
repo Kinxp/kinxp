@@ -13,15 +13,15 @@ import {
     Origin
 } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
 import {
-    OAppOptionsType3
-} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OAppOptionsType3.sol";
+    OptionsBuilder
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
 
 /**
  * @title EthCollateralOApp
  * @notice Locks ETH against an order id and optionally coordinates with Hedera via LayerZero.
  */
-contract EthCollateralOApp is OApp, Ownable, ReentrancyGuard {
-    using OAppOptionsType3 for bytes;
+contract EthCollateralOApp is OApp, ReentrancyGuard {
+    using OptionsBuilder for bytes;
 
     event OrderCreated(bytes32 indexed orderId, address indexed user);
     event OrderFunded(
@@ -52,10 +52,7 @@ contract EthCollateralOApp is OApp, Ownable, ReentrancyGuard {
     // local endpoint address is injected via constructor; remote Hedera eid is set post-deploy
     uint32 public hederaEid;
 
-    constructor(address lzEndpoint)
-        OApp(lzEndpoint, msg.sender)
-        Ownable(msg.sender)
-    {}
+    constructor(address lzEndpoint) OApp(lzEndpoint, msg.sender) {}
 
     /// @notice Deterministic per-user order id. User funds later with fundOrder().
     function createOrderId() external returns (bytes32 orderId) {
@@ -91,7 +88,7 @@ contract EthCollateralOApp is OApp, Ownable, ReentrancyGuard {
                 msg.value
             );
             // executor gas limit ~200k for bookkeeping on Hedera side; tune if needed
-            bytes memory opts = OAppOptionsType3
+            bytes memory opts = OptionsBuilder
                 .newOptions()
                 .addExecutorLzReceiveOption(200_000, 0);
             _lzSend(

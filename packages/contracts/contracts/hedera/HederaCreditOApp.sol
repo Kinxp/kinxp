@@ -14,15 +14,15 @@ import {
     Origin
 } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
 import {
-    OAppOptionsType3
-} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OAppOptionsType3.sol";
+    OptionsBuilder
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
 
 /**
  * @title HederaCreditOApp
  * @notice Issues USD HTS credit against mirrored ETH collateral and handles repayments.
  */
-contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
-    using OAppOptionsType3 for bytes;
+contract HederaCreditOApp is OApp, ReentrancyGuard {
+    using OptionsBuilder for bytes;
 
     event HederaOrderOpened(
         bytes32 indexed orderId,
@@ -62,10 +62,11 @@ contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
         address controller_,
         address pythContract,
         bytes32 ethUsdPriceId_
-    ) OApp(lzEndpoint, owner_) Ownable(owner_) {
+    ) OApp(lzEndpoint, owner_) {
         controller = UsdHtsController(controller_);
         pyth = IPyth(pythContract);
         ethUsdPriceId = ethUsdPriceId_;
+        _transferOwnership(owner_);
     }
 
     function _lzReceive(
@@ -114,10 +115,7 @@ contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
             }
         }
 
-        PythStructs.Price memory price = pyth.getPriceNoOlderThan(
-            ethUsdPriceId,
-            maxAgeSecs
-        );
+        PythStructs.Price memory price = _fetchPrice(maxAgeSecs);
         require(price.price > 0, "bad price");
 
         uint256 priceScaled = _scalePriceTo1e18(
@@ -144,6 +142,15 @@ contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
         emit Borrowed(id, msg.sender, usdAmount);
     }
 
+    function _fetchPrice(uint32 maxAgeSecs)
+        internal
+        view
+        virtual
+        returns (PythStructs.Price memory)
+    {
+        return pyth.getPriceNoOlderThan(ethUsdPriceId, maxAgeSecs);
+    }
+
     /**
      * @notice Repay borrowed USD. Tokens must have been transferred to the controller beforehand.
      * @param id Order identifier.
@@ -167,7 +174,7 @@ contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
 
         if (full && notifyEthereum && ethEid != 0) {
             bytes memory payload = abi.encode(uint8(2), id);
-            bytes memory opts = OAppOptionsType3
+            bytes memory opts = OptionsBuilder
                 .newOptions()
                 .addExecutorLzReceiveOption(120_000, 0);
             _lzSend(
@@ -221,4 +228,3 @@ contract HederaCreditOApp is OApp, Ownable, ReentrancyGuard {
 
     receive() external payable {}
 }
-

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.22;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import "./hedera-hts/IHederaTokenService.sol";
 
 address constant HTS = address(uint160(0x167));
@@ -22,7 +23,11 @@ contract UsdHtsController is Ownable {
     event Burned(uint64 amount);
     event TreasuryPaid(address indexed to, uint64 amount);
 
-    constructor(address owner_) Ownable(owner_) {}
+    constructor(address owner_) {
+        if (owner_ != address(0)) {
+            _transferOwnership(owner_);
+        }
+    }
 
     /**
      * @notice Creates an HTS fungible token with this contract as treasury and supply key.
@@ -98,14 +103,15 @@ contract UsdHtsController is Ownable {
 
         IHederaTokenService.AccountAmount[]
             memory adjustments = new IHederaTokenService.AccountAmount[](2);
+        int64 signedAmount = _toInt64(amount);
         adjustments[0] = IHederaTokenService.AccountAmount({
             accountID: address(this),
-            amount: -int64(int256(amount)),
+            amount: -signedAmount,
             isApproval: false
         });
         adjustments[1] = IHederaTokenService.AccountAmount({
             accountID: to,
-            amount: int64(int256(amount)),
+            amount: signedAmount,
             isApproval: false
         });
 
@@ -157,14 +163,15 @@ contract UsdHtsController is Ownable {
 
         IHederaTokenService.AccountAmount[]
             memory adjustments = new IHederaTokenService.AccountAmount[](2);
+        int64 signedAmount = _toInt64(amount);
         adjustments[0] = IHederaTokenService.AccountAmount({
             accountID: address(this),
-            amount: -int64(int256(amount)),
+            amount: -signedAmount,
             isApproval: false
         });
         adjustments[1] = IHederaTokenService.AccountAmount({
             accountID: to,
-            amount: int64(int256(amount)),
+            amount: signedAmount,
             isApproval: false
         });
 
@@ -190,5 +197,8 @@ contract UsdHtsController is Ownable {
 
         emit TreasuryPaid(to, amount);
     }
-}
 
+    function _toInt64(uint64 amount) private pure returns (int64) {
+        return SafeCast.toInt64(SafeCast.toInt256(uint256(amount)));
+    }
+}
