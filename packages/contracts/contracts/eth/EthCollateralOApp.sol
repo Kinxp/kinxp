@@ -101,6 +101,26 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         }
     }
 
+    /// @notice Quote the LayerZero native fee the sender must include to notify Hedera of an OPEN.
+    function quoteOpenNativeFee(address borrower, uint256 depositAmountWei)
+        external
+        view
+        returns (uint256 nativeFee)
+    {
+        require(hederaEid != 0, "eid unset");
+        bytes memory payload = abi.encode(
+            uint8(1),
+            bytes32(0),
+            borrower,
+            depositAmountWei
+        );
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(200_000, 0);
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        return q.nativeFee;
+    }
+
     /// @notice Admins should rely on LayerZero message for marking orders repaid.
     function markRepaid(bytes32) external pure {
         revert("use LayerZero message");
@@ -139,6 +159,55 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         require(ok, "eth send fail");
 
         emit Withdrawn(orderId, msg.sender, amt);
+    }
+
+    /**
+     * @notice Fund and notify Hedera in one tx. Send msg.value = deposit + LZ fee (excess refunded).
+     * @param orderId previously created with createOrderId()
+     * @param depositAmountWei how much ETH you want locked as collateral
+     */
+    function fundOrderWithNotify(bytes32 orderId, uint256 depositAmountWei)
+        external
+        payable
+        nonReentrant
+    {
+        require(hederaEid != 0, "eid unset");
+        Order storage o = orders[orderId];
+        require(o.owner == msg.sender, "not owner");
+        require(!o.funded, "already funded");
+        require(depositAmountWei > 0, "no ETH");
+
+        bytes memory payload = abi.encode(
+            uint8(1),
+            orderId,
+            msg.sender,
+            depositAmountWei
+        );
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(200_000, 0);
+
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        uint256 requiredValue = depositAmountWei + q.nativeFee;
+        require(msg.value >= requiredValue, "insufficient msg.value");
+
+        o.amountWei = depositAmountWei;
+        o.funded = true;
+        emit OrderFunded(orderId, msg.sender, depositAmountWei);
+
+        _lzSend(
+            hederaEid,
+            payload,
+            opts,
+            MessagingFee(q.nativeFee, 0),
+            payable(msg.sender)
+        );
+
+        uint256 refund = msg.value - requiredValue;
+        if (refund > 0) {
+            (bool ok, ) = payable(msg.sender).call{value: refund}("");
+            require(ok, "refund fail");
+        }
     }
 
     /// @notice Owner safety valve: liquidate funds if repayment fails.

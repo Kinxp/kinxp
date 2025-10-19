@@ -6,8 +6,17 @@
     "build": "hardhat compile",
     "test": "hardhat test",
     "deploy": "hardhat run scripts/deploy.ts --network hedera",
+    "hedera-set-existing-usd.ts": "hardhat run scripts/hedera-set-existing-usd.ts --network hedera",
     "deploy:eth": "hardhat run scripts/deploy-eth.ts --network sepolia",
-    "deploy:hedera": "hardhat run scripts/deploy-hedera.ts --network hedera"
+    "deploy:hedera": "hardhat run scripts/deploy-hedera.ts --network hedera",
+    "e2e:fund": "hardhat run scripts/10-open-and-fund-eth.ts --network sepolia",
+    "e2e:lz:eth": "hardhat run scripts/20a-wire-lz-eth-peer.ts --network sepolia",
+    "e2e:lz:hedera": "hardhat run scripts/20b-wire-lz-hedera-peer.ts --network hedera",
+    "e2e:borrow": "hardhat run scripts/30-borrow-hedera.ts --network hedera",
+    "e2e:repay": "hardhat run scripts/40-repay-hedera.ts --network hedera",
+    "e2e:withdraw": "hardhat run scripts/50-withdraw-eth.ts --network sepolia",
+    "e2e:fund:notify": "hardhat run scripts/15-fund-eth-with-notify.ts --network sepolia",
+    "inspect-lz": "hardhat run scripts/05-inspect-lz.ts --network sepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",

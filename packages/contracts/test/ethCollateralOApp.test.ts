@@ -134,4 +134,64 @@ describe("EthCollateralOApp", function () {
       "not repaid"
     );
   });
+
+  it("quotes LayerZero native fee when Hedera EID is set", async function () {
+    const { oapp, user } = await loadFixture(deployCollateralFixture);
+    await expect(
+      oapp.quoteOpenNativeFee(user.address, 1)
+    ).to.be.revertedWith("eid unset");
+
+    await oapp.forceSetHederaEid(101);
+    await oapp.setStubFee(12345n);
+
+    const quoted = await oapp.quoteOpenNativeFee(
+      user.address,
+      ethers.parseEther("0.1")
+    );
+    expect(quoted).to.equal(12345n);
+  });
+
+  it("funds and notifies Hedera in a single transaction", async function () {
+    const { oapp, user } = await loadFixture(deployCollateralFixture);
+    const orderId = await createOrder(oapp, user);
+    const etherDeposit = ethers.parseEther("1");
+    const fee = 54321n;
+    const extra = 1000n;
+
+    await oapp.forceSetHederaEid(202);
+    await oapp.setStubFee(fee);
+
+    const balanceBefore = await ethers.provider.getBalance(user.address);
+    const tx = await oapp
+      .connect(user)
+      .fundOrderWithNotify(orderId, etherDeposit, {
+        value: etherDeposit + fee + extra
+      });
+    const receipt = await tx.wait();
+    const gasCost = receipt.fee;
+    const balanceAfter = await ethers.provider.getBalance(user.address);
+
+    expect(balanceBefore - balanceAfter - gasCost).to.equal(
+      etherDeposit + fee
+    );
+
+    const order = await oapp.orders(orderId);
+    expect(order.funded).to.equal(true);
+    expect(order.amountWei).to.equal(etherDeposit);
+
+    expect(await oapp.lastLzSendCalled()).to.equal(true);
+    expect(await oapp.lastLzDstEid()).to.equal(202);
+    expect(await oapp.lastLzRefundAddress()).to.equal(user.address);
+
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const expectedPayload = abi.encode(
+      ["uint8", "bytes32", "address", "uint256"],
+      [1, orderId, user.address, etherDeposit]
+    );
+    expect(await oapp.lastLzPayload()).to.equal(expectedPayload);
+
+    const lastFee = await oapp.lastLzFee();
+    expect(lastFee.nativeFee).to.equal(fee);
+    expect(lastFee.lzTokenFee).to.equal(0);
+  });
 });

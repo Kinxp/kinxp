@@ -2,13 +2,21 @@
 pragma solidity >=0.8.9;
 
 /**
- * @dev Minimal subset of the Hedera Token Service interface used by this project.
- * Docs: https://docs.hedera.com/hedera/Tokens/hts-system-contracts
+ * Minimal, correct HTS precompile interface for fungible tokens.
+ * Matches Hedera on-chain ABI (int256 response codes, int64 amounts).
  */
 interface IHederaTokenService {
+    struct KeyValue {
+        bytes ed25519;
+        bytes ecdsaSecp256k1;
+        address contractId;
+        address delegatableContractId;
+        bool inheritAccountKey;
+    }
+
     struct TokenKey {
-        uint256 keyType; // bitmask per HIP-514
-        address key;
+        uint256 keyType; // HIP-540 bitmask (16 = SUPPLY)
+        KeyValue key;
     }
 
     struct Expiry {
@@ -22,37 +30,34 @@ interface IHederaTokenService {
         string symbol;
         address treasury;
         string memo;
-        bool supplyType;
-        uint256 maxSupply;
+        bool supplyType;   // false => INFINITE
+        uint256 maxSupply; // used when supplyType=true
         bool freezeDefault;
         TokenKey[] tokenKeys;
         Expiry expiry;
     }
 
+    // Create fungible - returns int256 for response code
     function createFungibleToken(
         HederaToken memory token,
         uint256 initialTotalSupply,
         uint32 decimals
     ) external returns (int256 responseCode, address tokenAddress);
 
+    // Mint / Burn (int64 amounts, int256 response codes)
     function mintToken(
         address token,
-        uint64 amount,
+        int64 amount,
         bytes[] calldata metadata
-    )
-        external
-        returns (
-            int256 responseCode,
-            uint64 newTotalSupply,
-            uint64[] memory serialNumbers
-        );
+    ) external returns (int256 responseCode, int64 newTotalSupply, int64[] memory serialNumbers);
 
     function burnToken(
         address token,
-        uint64 amount,
-        uint64[] calldata serials
-    ) external returns (int256 responseCode, uint64 newTotalSupply);
+        int64 amount,
+        int64[] calldata serials
+    ) external returns (int256 responseCode, int64 newTotalSupply);
 
+    // Transfers
     struct AccountAmount {
         address accountID;
         int64 amount;
@@ -73,4 +78,3 @@ interface IHederaTokenService {
         TokenTransferList[] memory tokenTransfers
     ) external returns (int256 responseCode);
 }
-
