@@ -25,7 +25,7 @@ describe("UsdHtsController", function () {
     const controllerFactory = await ethers.getContractFactory(
       "UsdHtsController"
     );
-    const controller = await controllerFactory.deploy(owner.address);
+    const controller = await controllerFactory.deploy(HTS_ADDRESS);
     await controller.waitForDeployment();
 
     return { owner, borrower, payout, controller, htsMock };
@@ -39,7 +39,7 @@ describe("UsdHtsController", function () {
     );
 
     await expect(
-      controller.createUsdToken("USD Stable", "USDS", 6, 0, 0)
+      controller.createToken("USD Stable", "USDS", 6)
     )
       .to.emit(controller, "TokenCreated")
       .withArgs(
@@ -53,8 +53,8 @@ describe("UsdHtsController", function () {
     expect(await controller.usdDecimals()).to.equal(6);
 
     await expect(
-      controller.createUsdToken("USD Stable", "USDS", 6, 0, 0)
-    ).to.be.revertedWith("already created");
+      controller.createToken("USD Stable", "USDS", 6)
+    ).to.be.revertedWith("token exists");
   });
 
   it("allows registering an existing token exactly once", async function () {

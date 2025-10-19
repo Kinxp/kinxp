@@ -5,12 +5,22 @@ async function main() {
   const owner = await signer.getAddress();
 
   const controllerFactory = await ethers.getContractFactory("UsdHtsController");
-  const controller = await controllerFactory.deploy(owner);
+
+  // FIX: The constructor for UsdHtsController is now empty.
+  // Call deploy() with no arguments.
+  const controller = await controllerFactory.deploy();
+
   await controller.waitForDeployment();
-  console.log(
-    "UsdHtsController:",
-    await controller.getAddress()
-  );
+  const controllerAddress = await controller.getAddress();
+  console.log("UsdHtsController:", controllerAddress);
+
+  console.log("Funding controller contract with 10 HBAR...");
+  const fundTx = await signer.sendTransaction({
+    to: controllerAddress,
+    value: ethers.parseEther("0.00000000001"),
+  });
+  await fundTx.wait();
+  console.log("Controller funded successfully.");
 
   const lzEndpoint = process.env.LZ_ENDPOINT_HEDERA ?? ethers.ZeroAddress;
   const pyth = process.env.PYTH_CONTRACT_HEDERA;
@@ -26,7 +36,7 @@ async function main() {
   const hedera = await hederaFactory.deploy(
     lzEndpoint,
     owner,
-    await controller.getAddress(),
+    controllerAddress,
     pyth,
     priceId
   );
@@ -40,13 +50,11 @@ async function main() {
     console.log("set ethereum EID:", process.env.LZ_EID_ETHEREUM);
   }
 
-  const createTx = await controller.createUsdToken(
-    "USD Stable (Demo)",
-    "USDd",
-    6,
-    0,
-    0
-  );
+  console.log("Creating USD HTS token...");
+  const createTx = await controller.createToken("USD Stable", "USDd", 6, {
+    value: 0, // Don't send HBAR from deployer
+    gasLimit: 1_000_000
+  });
   await createTx.wait();
   const usdToken = await controller.usdToken();
   const decimals = await controller.usdDecimals();

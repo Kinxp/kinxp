@@ -15,7 +15,8 @@ contract TestHederaCreditOApp is HederaCreditOApp {
     constructor(
         address endpoint,
         address owner_,
-        address controller_,
+        // FIX: Match the parent constructor's payable address type
+        address payable controller_,
         address pythContract,
         bytes32 priceId
     ) HederaCreditOApp(endpoint, owner_, controller_, pythContract, priceId) {}

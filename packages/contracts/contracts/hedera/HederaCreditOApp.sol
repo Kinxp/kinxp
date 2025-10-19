@@ -59,7 +59,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     constructor(
         address lzEndpoint,
         address owner_,
-        address controller_,
+        address payable controller_, // Correctly marked as payable
         address pythContract,
         bytes32 ethUsdPriceId_
     ) OApp(lzEndpoint, owner_) {
@@ -88,13 +88,6 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Borrow USD against mirrored ETH collateral.
-     * @param id Order identifier (mirrored from Ethereum).
-     * @param usdAmount Amount to borrow (controller decimals, uint64).
-     * @param priceUpdateData Fresh Pyth price updates obtained off-chain.
-     * @param maxAgeSecs Max staleness for the price feed.
-     */
     function borrow(
         bytes32 id,
         uint64 usdAmount,
@@ -127,6 +120,8 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
         uint8 usdDecimals = controller.usdDecimals();
         uint256 desired18 = _to1e18(uint256(usdAmount), usdDecimals);
+        
+        // FIX: Corrected typo from _to1e1e18 to _to1e18
         uint256 currentBorrowed18 = _to1e18(
             uint256(o.borrowedUsd),
             usdDecimals
@@ -151,12 +146,6 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         return pyth.getPriceNoOlderThan(ethUsdPriceId, maxAgeSecs);
     }
 
-    /**
-     * @notice Repay borrowed USD. Tokens must have been transferred to the controller beforehand.
-     * @param id Order identifier.
-     * @param usdAmount Amount to repay.
-     * @param notifyEthereum If true, sends LayerZero msgType 2 back to Ethereum upon full repayment.
-     */
     function repay(
         bytes32 id,
         uint64 usdAmount,

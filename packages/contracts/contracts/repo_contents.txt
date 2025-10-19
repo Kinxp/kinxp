@@ -1,0 +1,1068 @@
+===== hedera/hedera-hts/HederaTokenService.sol =====
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.5.0 <0.9.0;
+pragma experimental ABIEncoderV2;
+
+import "./IHederaTokenService.sol";
+
+abstract contract HederaTokenService {
+    int32 constant UNKNOWN_CODE = 21;
+    int32 constant SUCCESS_CODE = 22;
+    address constant precompileAddress = address(0x167);
+    int32 constant defaultAutoRenewPeriod = 7776000;
+
+    modifier nonEmptyExpiry(IHederaTokenService.HederaToken memory token) {
+        if (token.expiry.second == 0 && token.expiry.autoRenewPeriod == 0) {
+            token.expiry.autoRenewPeriod = defaultAutoRenewPeriod;
+        }
+        _;
+    }
+
+    function mintToken(address token, int64 amount, bytes[] memory metadata) internal returns (int32 responseCode, int64 newTotalSupply, int64[] memory serialNumbers) {
+        (bool success, bytes memory result) = precompileAddress.call(abi.encodeWithSelector(IHederaTokenService.mintToken.selector, token, amount, metadata));
+        (responseCode, newTotalSupply, serialNumbers) = success ? abi.decode(result, (int32, int64, int64[])) : (UNKNOWN_CODE, int64(0), new int64[](0));
+    }
+
+    function burnToken(address token, int64 amount, int64[] memory serialNumbers) internal returns (int32 responseCode, int64 newTotalSupply) {
+        (bool success, bytes memory result) = precompileAddress.call(abi.encodeWithSelector(IHederaTokenService.burnToken.selector, token, amount, serialNumbers));
+        (responseCode, newTotalSupply) = success ? abi.decode(result, (int32, int64)) : (UNKNOWN_CODE, int64(0));
+    }
+
+    function createFungibleToken(IHederaTokenService.HederaToken memory token, int64 initialTotalSupply, uint8 decimals) internal nonEmptyExpiry(token) returns (int32 responseCode, address tokenAddress) {
+        (bool success, bytes memory result) = precompileAddress.call{value: msg.value}(abi.encodeWithSelector(IHederaTokenService.createFungibleToken.selector, token, initialTotalSupply, decimals));
+        (responseCode, tokenAddress) = success ? abi.decode(result, (int32, address)) : (UNKNOWN_CODE, address(0));
+    }
+}===== repo_contents.txt =====
+===== hedera/hedera-hts/HederaTokenService.sol =====
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.5.0 <0.9.0;
+pragma experimental ABIEncoderV2;
+
+import "./IHederaTokenService.sol";
+
+abstract contract HederaTokenService {
+    int32 constant UNKNOWN_CODE = 21;
+    int32 constant SUCCESS_CODE = 22;
+    address constant precompileAddress = address(0x167);
+    int32 constant defaultAutoRenewPeriod = 7776000;
+
+    modifier nonEmptyExpiry(IHederaTokenService.HederaToken memory token) {
+        if (token.expiry.second == 0 && token.expiry.autoRenewPeriod == 0) {
+            token.expiry.autoRenewPeriod = defaultAutoRenewPeriod;
+        }
+        _;
+    }
+
+    function mintToken(address token, int64 amount, bytes[] memory metadata) internal returns (int32 responseCode, int64 newTotalSupply, int64[] memory serialNumbers) {
+        (bool success, bytes memory result) = precompileAddress.call(abi.encodeWithSelector(IHederaTokenService.mintToken.selector, token, amount, metadata));
+        (responseCode, newTotalSupply, serialNumbers) = success ? abi.decode(result, (int32, int64, int64[])) : (UNKNOWN_CODE, int64(0), new int64[](0));
+    }
+
+    function burnToken(address token, int64 amount, int64[] memory serialNumbers) internal returns (int32 responseCode, int64 newTotalSupply) {
+        (bool success, bytes memory result) = precompileAddress.call(abi.encodeWithSelector(IHederaTokenService.burnToken.selector, token, amount, serialNumbers));
+        (responseCode, newTotalSupply) = success ? abi.decode(result, (int32, int64)) : (UNKNOWN_CODE, int64(0));
+    }
+
+    function createFungibleToken(IHederaTokenService.HederaToken memory token, int64 initialTotalSupply, uint8 decimals) internal nonEmptyExpiry(token) returns (int32 responseCode, address tokenAddress) {
+        (bool success, bytes memory result) = precompileAddress.call{value: msg.value}(abi.encodeWithSelector(IHederaTokenService.createFungibleToken.selector, token, initialTotalSupply, decimals));
+        (responseCode, tokenAddress) = success ? abi.decode(result, (int32, address)) : (UNKNOWN_CODE, address(0));
+    }
+}===== repo_contents.txt =====
+===== MilestoneEscrow.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+contract MilestoneEscrow {
+    address public buyer;
+    address public seller;
+    address public arbiter;
+
+    struct Milestone { uint256 amount; bool released; }
+    Milestone[] public milestones;
+
+    event EscrowCreated(address buyer, address seller, address arbiter);
+    event Released(uint256 indexed id, uint256 amount);
+    event Refunded(uint256 indexed id, uint256 amount);
+
+    constructor(address _buyer, address _seller, address _arbiter, uint256[] memory amounts) payable {
+        buyer = _buyer; seller = _seller; arbiter = _arbiter;
+        for (uint i=0;i<amounts.length;i++){ milestones.push(Milestone(amounts[i], false)); }
+        emit EscrowCreated(buyer, seller, arbiter);
+    }
+
+    function release(uint256 id) external {
+        require(msg.sender == buyer || msg.sender == arbiter, "auth");
+        require(!milestones[id].released, "released");
+        milestones[id].released = true;
+        (bool ok,) = payable(seller).call{value: milestones[id].amount}("");
+        require(ok, "xfer");
+        emit Released(id, milestones[id].amount);
+    }
+
+    function refund(uint256 id) external {
+        require(msg.sender == arbiter, "arb only");
+        require(!milestones[id].released, "released");
+        milestones[id].released = true;
+        (bool ok,) = payable(buyer).call{value: milestones[id].amount}("");
+        require(ok, "xfer");
+        emit Refunded(id, milestones[id].amount);
+    }
+}
+===== eth/EthCollateralOApp.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+// === LayerZero v2 (optional, pure messaging — no bridging) ===
+// If you do not want cross-chain messages yet, set OAPP_DISABLED = true.
+bool constant OAPP_DISABLED = false;
+import {
+    OApp,
+    MessagingFee,
+    Origin
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import {
+    OptionsBuilder
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+
+/**
+ * @title EthCollateralOApp
+ * @notice Locks ETH against an order id and optionally coordinates with Hedera via LayerZero.
+ */
+contract EthCollateralOApp is OApp, ReentrancyGuard {
+    using OptionsBuilder for bytes;
+
+    event OrderCreated(bytes32 indexed orderId, address indexed user);
+    event OrderFunded(
+        bytes32 indexed orderId,
+        address indexed user,
+        uint256 amountWei
+    );
+    event MarkRepaid(bytes32 indexed orderId);
+    event Withdrawn(
+        bytes32 indexed orderId,
+        address indexed user,
+        uint256 amountWei
+    );
+    event Liquidated(bytes32 indexed orderId, uint256 amountWei);
+
+    struct Order {
+        address owner;
+        uint256 amountWei;
+        bool funded;
+        bool repaid;
+        bool liquidated;
+    }
+
+    mapping(bytes32 => Order) public orders;
+    mapping(address => uint96) public nonces; // user-scoped nonce for deterministic IDs
+
+    // ===== LayerZero config (optional) =====
+    // local endpoint address is injected via constructor; remote Hedera eid is set post-deploy
+    uint32 public hederaEid;
+
+    constructor(address lzEndpoint) OApp(lzEndpoint, msg.sender) {}
+
+    /// @notice Deterministic per-user order id. User funds later with fundOrder().
+    function createOrderId() external returns (bytes32 orderId) {
+        uint96 n = ++nonces[msg.sender];
+        orderId = keccak256(abi.encode(msg.sender, n, block.chainid));
+        orders[orderId] = Order({
+            owner: msg.sender,
+            amountWei: 0,
+            funded: false,
+            repaid: false,
+            liquidated: false
+        });
+        emit OrderCreated(orderId, msg.sender);
+    }
+
+    /// @notice Fund ETH for an existing id. Emits events the UI can check on Blockscout.
+    function fundOrder(bytes32 orderId) external payable nonReentrant {
+        Order storage o = orders[orderId];
+        require(o.owner == msg.sender, "not owner");
+        require(!o.funded, "already funded");
+        require(msg.value > 0, "no ETH");
+
+        o.amountWei = msg.value;
+        o.funded = true;
+        emit OrderFunded(orderId, msg.sender, msg.value);
+
+        // Optional: notify Hedera over LayerZero (message-only)
+        if (!OAPP_DISABLED && hederaEid != 0) {
+            bytes memory payload = abi.encode(
+                uint8(1), // msgType 1 = OPEN
+                orderId,
+                msg.sender,
+                msg.value
+            );
+            // executor gas limit ~200k for bookkeeping on Hedera side; tune if needed
+            bytes memory opts = OptionsBuilder
+                .newOptions()
+                .addExecutorLzReceiveOption(200_000, 0);
+            _lzSend(
+                hederaEid,
+                payload,
+                opts,
+                MessagingFee(0, 0),
+                payable(msg.sender)
+            );
+        }
+    }
+
+    /// @notice Quote the LayerZero native fee the sender must include to notify Hedera of an OPEN.
+    function quoteOpenNativeFee(address borrower, uint256 depositAmountWei)
+        external
+        view
+        returns (uint256 nativeFee)
+    {
+        require(hederaEid != 0, "eid unset");
+        bytes memory payload = abi.encode(
+            uint8(1),
+            bytes32(0),
+            borrower,
+            depositAmountWei
+        );
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(200_000, 0);
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        return q.nativeFee;
+    }
+
+    /// @notice Admins should rely on LayerZero message for marking orders repaid.
+    function markRepaid(bytes32) external pure {
+        revert("use LayerZero message");
+    }
+
+    /// @dev LayerZero receive hook: Hedera sends msgType 2=REPAID once USD is fully repaid.
+    function _lzReceive(
+        Origin calldata,
+        bytes32,
+        bytes calldata message,
+        address,
+        bytes calldata
+    ) internal override {
+        (uint8 msgType, bytes32 orderId) = abi.decode(
+            message,
+            (uint8, bytes32)
+        );
+        if (msgType == 2) {
+            orders[orderId].repaid = true;
+            emit MarkRepaid(orderId);
+        }
+    }
+
+    /// @notice Withdraw ETH after Hedera confirms full repayment.
+    function withdraw(bytes32 orderId) external nonReentrant {
+        Order storage o = orders[orderId];
+        require(o.owner == msg.sender, "not owner");
+        require(o.funded && o.repaid, "not repaid");
+        require(!o.liquidated, "liquidated");
+
+        uint256 amt = o.amountWei;
+        o.amountWei = 0;
+        o.funded = false;
+
+        (bool ok, ) = msg.sender.call{value: amt}("");
+        require(ok, "eth send fail");
+
+        emit Withdrawn(orderId, msg.sender, amt);
+    }
+
+    /**
+     * @notice Fund and notify Hedera in one tx. Send msg.value = deposit + LZ fee (excess refunded).
+     * @param orderId previously created with createOrderId()
+     * @param depositAmountWei how much ETH you want locked as collateral
+     */
+    function fundOrderWithNotify(bytes32 orderId, uint256 depositAmountWei)
+        external
+        payable
+        nonReentrant
+    {
+        require(hederaEid != 0, "eid unset");
+        Order storage o = orders[orderId];
+        require(o.owner == msg.sender, "not owner");
+        require(!o.funded, "already funded");
+        require(depositAmountWei > 0, "no ETH");
+
+        bytes memory payload = abi.encode(
+            uint8(1),
+            orderId,
+            msg.sender,
+            depositAmountWei
+        );
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(200_000, 0);
+
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        uint256 requiredValue = depositAmountWei + q.nativeFee;
+        require(msg.value >= requiredValue, "insufficient msg.value");
+
+        o.amountWei = depositAmountWei;
+        o.funded = true;
+        emit OrderFunded(orderId, msg.sender, depositAmountWei);
+
+        _lzSend(
+            hederaEid,
+            payload,
+            opts,
+            MessagingFee(q.nativeFee, 0),
+            payable(msg.sender)
+        );
+
+        uint256 refund = msg.value - requiredValue;
+        if (refund > 0) {
+            (bool ok, ) = payable(msg.sender).call{value: refund}("");
+            require(ok, "refund fail");
+        }
+    }
+
+    /// @notice Owner safety valve: liquidate funds if repayment fails.
+    function adminLiquidate(bytes32 orderId, address payout) external onlyOwner {
+        Order storage o = orders[orderId];
+        require(o.funded && !o.repaid, "nothing to liquidate");
+        o.liquidated = true;
+
+        uint256 amt = o.amountWei;
+        o.amountWei = 0;
+
+        (bool ok, ) = payout.call{value: amt}("");
+        require(ok, "send fail");
+
+        emit Liquidated(orderId, amt);
+    }
+
+    function setHederaEid(uint32 _eid) external onlyOwner {
+        hederaEid = _eid;
+    }
+}
+===== hedera/HederaCreditOApp.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+import {UsdHtsController} from "./UsdHtsController.sol";
+import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
+import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
+
+import {
+    OApp,
+    MessagingFee,
+    Origin
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import {
+    OptionsBuilder
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+
+/**
+ * @title HederaCreditOApp
+ * @notice Issues USD HTS credit against mirrored ETH collateral and handles repayments.
+ */
+contract HederaCreditOApp is OApp, ReentrancyGuard {
+    using OptionsBuilder for bytes;
+
+    event HederaOrderOpened(
+        bytes32 indexed orderId,
+        address indexed borrower,
+        uint256 ethAmountWei
+    );
+    event Borrowed(
+        bytes32 indexed orderId,
+        address indexed to,
+        uint64 usdAmount
+    );
+    event Repaid(
+        bytes32 indexed orderId,
+        uint64 repaidAmount,
+        bool fullyRepaid
+    );
+
+    struct HOrder {
+        address borrower;
+        uint256 ethAmountWei;
+        uint64 borrowedUsd;
+        bool open;
+    }
+
+    mapping(bytes32 => HOrder) public horders;
+
+    UsdHtsController public controller;
+    IPyth public pyth;
+    bytes32 public ethUsdPriceId;
+    uint32 public ethEid;
+
+    uint16 public ltvBps = 7000; // 70% LTV
+
+    constructor(
+        address lzEndpoint,
+        address owner_,
+        address payable controller_, // Correctly marked as payable
+        address pythContract,
+        bytes32 ethUsdPriceId_
+    ) OApp(lzEndpoint, owner_) {
+        controller = UsdHtsController(controller_);
+        pyth = IPyth(pythContract);
+        ethUsdPriceId = ethUsdPriceId_;
+        _transferOwnership(owner_);
+    }
+
+    function _lzReceive(
+        Origin calldata,
+        bytes32,
+        bytes calldata message,
+        address,
+        bytes calldata
+    ) internal override {
+        (uint8 msgType, bytes32 id, address borrower, uint256 ethAmountWei) = abi
+            .decode(message, (uint8, bytes32, address, uint256));
+        if (msgType == 1) {
+            HOrder storage o = horders[id];
+            require(!o.open, "exists");
+            o.borrower = borrower;
+            o.ethAmountWei = ethAmountWei;
+            o.open = true;
+            emit HederaOrderOpened(id, borrower, ethAmountWei);
+        }
+    }
+
+    function borrow(
+        bytes32 id,
+        uint64 usdAmount,
+        bytes[] calldata priceUpdateData,
+        uint32 maxAgeSecs
+    ) external payable nonReentrant {
+        HOrder storage o = horders[id];
+        require(o.open && o.borrower == msg.sender, "bad order");
+        require(usdAmount > 0, "bad amount");
+
+        if (priceUpdateData.length > 0) {
+            uint256 fee = pyth.getUpdateFee(priceUpdateData);
+            require(msg.value >= fee, "fee");
+            pyth.updatePriceFeeds{value: fee}(priceUpdateData);
+            if (msg.value > fee) {
+                (bool refundOk, ) = msg.sender.call{value: msg.value - fee}("");
+                require(refundOk, "refund fail");
+            }
+        }
+
+        PythStructs.Price memory price = _fetchPrice(maxAgeSecs);
+        require(price.price > 0, "bad price");
+
+        uint256 priceScaled = _scalePriceTo1e18(
+            uint256(uint64(price.price)),
+            price.expo
+        );
+        uint256 collateralUsd18 = (o.ethAmountWei * priceScaled) / 1e18;
+        uint256 maxBorrow18 = (collateralUsd18 * ltvBps) / 10_000;
+
+        uint8 usdDecimals = controller.usdDecimals();
+        uint256 desired18 = _to1e18(uint256(usdAmount), usdDecimals);
+        
+        // FIX: Corrected typo from _to1e1e18 to _to1e18
+        uint256 currentBorrowed18 = _to1e18(
+            uint256(o.borrowedUsd),
+            usdDecimals
+        );
+        require(
+            currentBorrowed18 + desired18 <= maxBorrow18,
+            "exceeds LTV"
+        );
+
+        controller.mintTo(msg.sender, usdAmount);
+        o.borrowedUsd += usdAmount;
+
+        emit Borrowed(id, msg.sender, usdAmount);
+    }
+
+    function _fetchPrice(uint32 maxAgeSecs)
+        internal
+        view
+        virtual
+        returns (PythStructs.Price memory)
+    {
+        return pyth.getPriceNoOlderThan(ethUsdPriceId, maxAgeSecs);
+    }
+
+    function repay(
+        bytes32 id,
+        uint64 usdAmount,
+        bool notifyEthereum
+    ) external nonReentrant {
+        HOrder storage o = horders[id];
+        require(o.open && o.borrower == msg.sender, "bad order");
+        require(usdAmount > 0 && usdAmount <= o.borrowedUsd, "bad amount");
+
+        controller.burnFromTreasury(usdAmount);
+        o.borrowedUsd -= usdAmount;
+
+        bool full = (o.borrowedUsd == 0);
+        emit Repaid(id, usdAmount, full);
+
+        if (full && notifyEthereum && ethEid != 0) {
+            bytes memory payload = abi.encode(uint8(2), id);
+            bytes memory opts = OptionsBuilder
+                .newOptions()
+                .addExecutorLzReceiveOption(120_000, 0);
+            _lzSend(
+                ethEid,
+                payload,
+                opts,
+                MessagingFee(0, 0),
+                payable(msg.sender)
+            );
+        }
+    }
+
+    function setEthEid(uint32 _eid) external onlyOwner {
+        ethEid = _eid;
+    }
+
+    function setLtvBps(uint16 _bps) external onlyOwner {
+        require(_bps <= 9000, "too high");
+        ltvBps = _bps;
+    }
+
+    function _scalePriceTo1e18(uint256 rawPrice, int32 expo)
+        internal
+        pure
+        returns (uint256)
+    {
+        int32 power = expo + 18;
+        if (power == 0) {
+            return rawPrice;
+        }
+        if (power > 0) {
+            return rawPrice * (10 ** uint32(uint32(power)));
+        }
+        uint32 absPower = uint32(uint32(-power));
+        return rawPrice / (10 ** absPower);
+    }
+
+    function _to1e18(uint256 amount, uint8 decimals_)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (decimals_ == 18) {
+            return amount;
+        }
+        if (decimals_ < 18) {
+            return amount * (10 ** (18 - decimals_));
+        }
+        return amount / (10 ** (decimals_ - 18));
+    }
+
+    receive() external payable {}
+}===== hedera/UsdHtsController.sol =====
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.8.9;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import "./hedera-hts/HederaTokenService.sol";
+
+contract UsdHtsController is Ownable, HederaTokenService {
+    address public usdToken;
+    uint8 public usdDecimals;
+
+    event TokenCreated(address indexed token, uint8 decimals);
+    event Minted(address indexed to, uint64 amount);
+    event Burned(uint64 amount);
+
+    receive() external payable {}
+
+    constructor() {
+        // Ownable constructor is called automatically
+        // In older versions, ownership is set to msg.sender by default
+    }
+
+    // CRITICAL FIX: Add payable modifier
+    function createToken(
+        string calldata name, 
+        string calldata symbol, 
+        uint8 decimals
+    ) external payable onlyOwner {
+        require(usdToken == address(0), "token exists");
+        require(msg.value > 0, "HBAR required for token creation");
+        
+        // Set up supply key
+        IHederaTokenService.KeyValue memory supplyKey;
+        supplyKey.contractId = address(this);
+        
+        // Create token keys array
+        IHederaTokenService.TokenKey[] memory keys = new IHederaTokenService.TokenKey[](1);
+        keys[0] = IHederaTokenService.TokenKey({ 
+            keyType: 16, // SUPPLY_KEY_TYPE
+            key: supplyKey 
+        });
+        
+        // Configure token
+        IHederaTokenService.HederaToken memory token;
+        token.name = name;
+        token.symbol = symbol;
+        token.treasury = address(this);
+        token.memo = "Hedera Credit USD";
+        token.tokenKeys = keys;
+        token.supplyType = false; // INFINITE supply type
+        token.maxSupply = 0;
+        token.freezeDefault = false;
+        
+        // Set expiry with auto-renew
+        token.expiry.autoRenewAccount = owner();
+        token.expiry.autoRenewPeriod = 7890000; // ~3 months
+        token.expiry.second = 0;
+        
+        // Create the token (msg.value is automatically forwarded)
+        (int32 responseCode, address tokenAddress) = createFungibleToken(
+            token, 
+            0, // initial supply
+            decimals
+        );
+        
+        require(responseCode == SUCCESS_CODE, "Token creation failed");
+        
+        usdToken = tokenAddress;
+        usdDecimals = decimals;
+        
+        emit TokenCreated(tokenAddress, decimals);
+    }
+    
+    function setExistingUsdToken(address tokenAddr, uint8 decimals_) external onlyOwner {
+        require(usdToken == address(0), "already set");
+        usdToken = tokenAddr;
+        usdDecimals = decimals_;
+        emit TokenCreated(tokenAddr, decimals_);
+    }
+
+    function burnFromTreasury(uint64 amount) external onlyOwner {
+        require(usdToken != address(0), "no token");
+        
+        (int32 responseCode, ) = burnToken(
+            usdToken, 
+            int64(uint64(amount)), 
+            new int64[](0)
+        );
+        
+        require(responseCode == SUCCESS_CODE, "burn failed");
+        emit Burned(amount);
+    }
+
+    function mintTo(address to, uint64 amount) external onlyOwner {
+        require(usdToken != address(0), "no token");
+        
+        // Mint tokens to treasury (this contract)
+        (int32 responseCode, , ) = mintToken(
+            usdToken, 
+            int64(uint64(amount)), 
+            new bytes[](0)
+        );
+        require(responseCode == SUCCESS_CODE, "mint failed");
+
+        // Transfer from treasury to recipient
+        IHederaTokenService.AccountAmount[] memory accountAmounts = 
+            new IHederaTokenService.AccountAmount[](2);
+        
+        accountAmounts[0] = IHederaTokenService.AccountAmount({ 
+            accountID: address(this), 
+            amount: -int64(uint64(amount)), 
+            isApproval: false 
+        });
+        
+        accountAmounts[1] = IHederaTokenService.AccountAmount({ 
+            accountID: to, 
+            amount: int64(uint64(amount)), 
+            isApproval: false 
+        });
+        
+        IHederaTokenService.TokenTransferList[] memory tokenTransferLists = 
+            new IHederaTokenService.TokenTransferList[](1);
+        
+        tokenTransferLists[0] = IHederaTokenService.TokenTransferList({ 
+            token: usdToken, 
+            transfers: accountAmounts, 
+            nftTransfers: new int64[](0) 
+        });
+        
+        // Execute crypto transfer
+        (bool success, bytes memory result) = precompileAddress.call(
+            abi.encodeWithSelector(
+                IHederaTokenService.cryptoTransfer.selector, 
+                IHederaTokenService.TransferList(
+                    new IHederaTokenService.AccountAmount[](0)
+                ), 
+                tokenTransferLists
+            )
+        );
+        
+        int32 rcXfer = success ? abi.decode(result, (int32)) : UNKNOWN_CODE;
+        require(rcXfer == SUCCESS_CODE, "cryptoTransfer failed");
+
+        emit Minted(to, amount);
+    }
+}===== hedera/hedera-hts/IHederaTokenService.sol =====
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.8.9;
+pragma experimental ABIEncoderV2;
+
+interface IHederaTokenService {
+    /**********************
+    *      STRUCTS        *
+    **********************/
+
+    struct Expiry { int64 second; address autoRenewAccount; int64 autoRenewPeriod; }
+    struct KeyValue { bool inheritAccountKey; address contractId; bytes ed25519; bytes ecdsaSecp256k1; address delegatableContractId; }
+    struct TokenKey { uint256 keyType; KeyValue key; }
+    struct HederaToken { string name; string symbol; address treasury; string memo; bool supplyType; int64 maxSupply; bool freezeDefault; TokenKey[] tokenKeys; Expiry expiry; }
+    struct AccountAmount { address accountID; int64 amount; bool isApproval; }
+    struct TransferList { AccountAmount[] transfers; }
+    struct TokenTransferList { address token; AccountAmount[] transfers; int64[] nftTransfers; }
+
+    /**********************
+    *      FUNCTIONS      *
+    **********************/
+
+    function createFungibleToken(HederaToken memory token, int64 initialTotalSupply, uint8 decimals) external payable returns (int32 responseCode, address tokenAddress);
+    function mintToken(address token, int64 amount, bytes[] memory metadata) external returns (int32 responseCode, int64 newTotalSupply, int64[] memory serialNumbers);
+    function burnToken(address token, int64 amount, int64[] memory serialNumbers) external returns (int32 responseCode, int64 newTotalSupply);
+    function cryptoTransfer(TransferList memory transferList, TokenTransferList[] memory tokenTransfers) external returns (int32 responseCode);
+    function updateTokenKeys(address token, TokenKey[] memory keys) external returns (int32 responseCode);
+}===== mocks/MockHtsPrecompile.sol =====
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.8.9;
+
+import "../hedera/hedera-hts/IHederaTokenService.sol";
+
+contract MockHtsPrecompile is IHederaTokenService {
+    int32 private _createResp = 22;
+    address private _createTokenAddr;
+    int32 private _mintResp = 22;
+    int32 private _burnResp = 22;
+    int32 private _xferResp = 22;
+    address public lastMintToken;
+    int64 public lastMintAmount;
+    address public lastBurnToken;
+    int64 public lastBurnAmount;
+    address public lastTransferToken;
+    AccountAmount[] private _lastTransferAdjustments;
+    uint256 private _tokenCounter;
+    
+    function setCreateResponse(int32 code, address tokenAddr) external { _createResp = code; _createTokenAddr = tokenAddr; }
+    function setMintResponse(int32 code) external { _mintResp = code; }
+    function setBurnResponse(int32 code) external { _burnResp = code; }
+    function setTransferResponse(int32 code) external { _xferResp = code; }
+    function clearLastTransfers() external { delete _lastTransferAdjustments; lastTransferToken = address(0); }
+    function lastTransferAdjustments() external view returns (AccountAmount[] memory) { return _lastTransferAdjustments; }
+
+    function createFungibleToken(HederaToken memory, int64, uint8) external payable override returns (int32 responseCode, address tokenAddress) {
+        responseCode = _createResp;
+        if (_createTokenAddr != address(0)) { tokenAddress = _createTokenAddr; } else { _tokenCounter++; tokenAddress = address(uint160(uint256(keccak256(abi.encodePacked(_tokenCounter, block.timestamp))))); }
+    }
+
+    function mintToken(address token, int64 amount, bytes[] memory) external override returns (int32 responseCode, int64 newTotalSupply, int64[] memory serialNumbers) {
+        lastMintToken = token; lastMintAmount = amount; responseCode = _mintResp; newTotalSupply = 0; serialNumbers = new int64[](0);
+    }
+
+    function burnToken(address token, int64 amount, int64[] memory) external override returns (int32 responseCode, int64 newTotalSupply) {
+        lastBurnToken = token; lastBurnAmount = amount; responseCode = _burnResp; newTotalSupply = 0;
+    }
+
+    function cryptoTransfer(TransferList memory, TokenTransferList[] memory tokenTransfers) external override returns (int32 responseCode) {
+        if (tokenTransfers.length > 0) {
+            lastTransferToken = tokenTransfers[0].token;
+            delete _lastTransferAdjustments;
+            for (uint i = 0; i < tokenTransfers[0].transfers.length; i++) {
+                _lastTransferAdjustments.push(tokenTransfers[0].transfers[i]);
+            }
+        }
+        responseCode = _xferResp;
+    }
+    
+    function updateTokenKeys(address, TokenKey[] memory) external override returns (int32 responseCode) {
+        responseCode = 22; // SUCCESS
+    }
+}===== mocks/MockLzEndpoint.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/**
+ * @dev Minimal LayerZero endpoint mock that records the configured delegate.
+ */
+contract MockLzEndpoint {
+    address public delegate;
+
+    function setDelegate(address _delegate) external {
+        delegate = _delegate;
+    }
+}
+===== mocks/MockPyth.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
+
+/**
+ * @dev Lightweight mock of the Pyth price feed contract used in unit tests.
+ * Only the functions exercised by HederaCreditOApp are implemented.
+ */
+contract MockPyth {
+    uint256 public updateFee;
+    bytes[] private _lastUpdateData;
+    uint256 public totalMsgValue;
+
+    bytes32 public storedPriceId;
+    PythStructs.Price private _storedPrice;
+
+    function setUpdateFee(uint256 feeWei) external {
+        updateFee = feeWei;
+    }
+
+    function setPrice(
+        bytes32 priceId,
+        int64 price,
+        uint64 conf,
+        int32 expo,
+        uint64 publishTime
+    ) external {
+        storedPriceId = priceId;
+        _storedPrice = PythStructs.Price({
+            price: price,
+            conf: conf,
+            expo: expo,
+            publishTime: publishTime
+        });
+    }
+
+    function getLastUpdateData()
+        external
+        view
+        returns (bytes[] memory storedData)
+    {
+        storedData = _lastUpdateData;
+    }
+
+    function getUpdateFee(bytes[] calldata)
+        external
+        view
+        returns (uint256)
+    {
+        return updateFee;
+    }
+
+    function updatePriceFeeds(bytes[] calldata data) external payable {
+        _lastUpdateData = data;
+        totalMsgValue += msg.value;
+    }
+
+    function getPriceNoOlderThan(bytes32 priceId, uint32)
+        external
+        view
+        returns (PythStructs.Price memory)
+    {
+        require(priceId == storedPriceId, "priceId mismatch");
+        return _storedPrice;
+    }
+}
+===== mocks/MockUsdController.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/**
+ * @dev Simplified stand-in for the UsdHtsController contract, used in unit tests.
+ */
+contract MockUsdController {
+    address public owner;
+    uint8 public usdDecimals;
+
+    address public lastMintTo;
+    uint64 public lastMintAmount;
+    uint64 public lastBurnAmount;
+
+    event TokenCreated(address indexed token, uint8 decimals);
+    event Minted(address indexed to, uint64 amount);
+    event Burned(uint64 amount);
+
+    constructor(uint8 decimals_) {
+        owner = msg.sender;
+        usdDecimals = decimals_;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        owner = newOwner;
+    }
+
+    function mintTo(address to, uint64 amount) external onlyOwner {
+        lastMintTo = to;
+        lastMintAmount = amount;
+        emit Minted(to, amount);
+    }
+
+    function burnFromTreasury(uint64 amount) external onlyOwner {
+        lastBurnAmount = amount;
+        emit Burned(amount);
+    }
+}
+===== mocks/TestEthCollateralOApp.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {EthCollateralOApp} from "../eth/EthCollateralOApp.sol";
+import {
+    MessagingFee,
+    MessagingReceipt
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+
+/**
+ * @dev Exposes limited test-only helpers for EthCollateralOApp in unit tests.
+ */
+contract TestEthCollateralOApp is EthCollateralOApp {
+    MessagingFee private stubQuoteFee;
+    bool private hasStubQuote;
+
+    bytes public lastLzPayload;
+    bytes public lastLzOptions;
+    MessagingFee public lastLzFee;
+    uint32 public lastLzDstEid;
+    address public lastLzRefundAddress;
+    bool public lastLzSendCalled;
+
+    constructor(address endpoint) EthCollateralOApp(endpoint) {}
+
+    function setStubFee(uint256 nativeFee) external {
+        stubQuoteFee = MessagingFee(nativeFee, 0);
+        hasStubQuote = true;
+    }
+
+    function clearStubFee() external {
+        hasStubQuote = false;
+    }
+
+    function forceSetHederaEid(uint32 eid) external {
+        hederaEid = eid;
+    }
+
+    function forceMarkRepaid(bytes32 orderId) external {
+        orders[orderId].repaid = true;
+    }
+
+    function forceSeedOrder(
+        bytes32 orderId,
+        address owner_,
+        uint256 amountWei,
+        bool funded
+    ) external {
+        orders[orderId] = Order({
+            owner: owner_,
+            amountWei: amountWei,
+            funded: funded,
+            repaid: false,
+            liquidated: false
+        });
+    }
+
+    function _quote(
+        uint32,
+        bytes memory,
+        bytes memory,
+        bool
+    ) internal view override returns (MessagingFee memory) {
+        require(hasStubQuote, "stub fee unset");
+        return stubQuoteFee;
+    }
+
+    function _lzSend(
+        uint32 _dstEid,
+        bytes memory _message,
+        bytes memory _options,
+        MessagingFee memory _fee,
+        address _refundAddress
+    ) internal override returns (MessagingReceipt memory) {
+        lastLzSendCalled = true;
+        lastLzDstEid = _dstEid;
+        lastLzPayload = _message;
+        lastLzOptions = _options;
+        lastLzFee = _fee;
+        lastLzRefundAddress = _refundAddress;
+        return MessagingReceipt(bytes32(0), 0, _fee);
+    }
+}
+===== mocks/TestHederaCreditOApp.sol =====
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {HederaCreditOApp} from "../hedera/HederaCreditOApp.sol";
+import {PythStructs} from "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
+
+/**
+ * @dev Adds test helpers around HederaCreditOApp's internal state for unit tests.
+ */
+contract TestHederaCreditOApp is HederaCreditOApp {
+    PythStructs.Price private stubPrice;
+    bool private stubActive;
+    bool private stubMismatch;
+
+    constructor(
+        address endpoint,
+        address owner_,
+        // FIX: Match the parent constructor's payable address type
+        address payable controller_,
+        address pythContract,
+        bytes32 priceId
+    ) HederaCreditOApp(endpoint, owner_, controller_, pythContract, priceId) {}
+
+    function setStubPrice(int64 price, int32 expo) external {
+        stubPrice = PythStructs.Price({
+            price: price,
+            conf: 0,
+            expo: expo,
+            publishTime: uint64(block.timestamp)
+        });
+        stubActive = true;
+        stubMismatch = false;
+    }
+
+    function clearStubPrice() external {
+        stubActive = false;
+    }
+
+    function forcePriceMismatch() external {
+        stubMismatch = true;
+    }
+
+    function forceOpenOrder(
+        bytes32 id,
+        address borrower,
+        uint256 ethAmountWei
+    ) external {
+        HOrder storage o = horders[id];
+        o.borrower = borrower;
+        o.ethAmountWei = ethAmountWei;
+        o.open = true;
+    }
+
+    function forceSetBorrowed(bytes32 id, uint64 borrowedUsd) external {
+        horders[id].borrowedUsd = borrowedUsd;
+    }
+
+    function _fetchPrice(uint32)
+        internal
+        view
+        override
+        returns (PythStructs.Price memory)
+    {
+        if (stubMismatch) {
+            revert("priceId mismatch");
+        }
+        require(stubActive, "stub price unset");
+        return stubPrice;
+    }
+}
