@@ -2,11 +2,12 @@
 pragma solidity >=0.8.9;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import "./hedera-hts/HederaTokenService.sol";
+import "./hedera-hts/IHederaTokenService.sol";
 
-contract UsdHtsController is Ownable, HederaTokenService {
+contract UsdHtsController is Ownable {
     address public usdToken;
     uint8 public usdDecimals;
+    IHederaTokenService constant HTS_PRECOMPILE = IHederaTokenService(address(0x167));
 
     event TokenCreated(address indexed token, uint8 decimals);
     event Minted(address indexed to, uint64 amount);
@@ -15,63 +16,12 @@ contract UsdHtsController is Ownable, HederaTokenService {
     receive() external payable {}
 
     constructor() {
-        // Ownable constructor is called automatically
-        // In older versions, ownership is set to msg.sender by default
-    }
-
-    // CRITICAL FIX: Add payable modifier
-    function createToken(
-        string calldata name, 
-        string calldata symbol, 
-        uint8 decimals
-    ) external payable onlyOwner {
-        require(usdToken == address(0), "token exists");
-        require(msg.value > 0, "HBAR required for token creation");
-        
-        // Set up supply key
-        IHederaTokenService.KeyValue memory supplyKey;
-        supplyKey.contractId = address(this);
-        
-        // Create token keys array
-        IHederaTokenService.TokenKey[] memory keys = new IHederaTokenService.TokenKey[](1);
-        keys[0] = IHederaTokenService.TokenKey({ 
-            keyType: 16, // SUPPLY_KEY_TYPE
-            key: supplyKey 
-        });
-        
-        // Configure token
-        IHederaTokenService.HederaToken memory token;
-        token.name = name;
-        token.symbol = symbol;
-        token.treasury = address(this);
-        token.memo = "Hedera Credit USD";
-        token.tokenKeys = keys;
-        token.supplyType = false; // INFINITE supply type
-        token.maxSupply = 0;
-        token.freezeDefault = false;
-        
-        // Set expiry with auto-renew
-        token.expiry.autoRenewAccount = owner();
-        token.expiry.autoRenewPeriod = 7890000; // ~3 months
-        token.expiry.second = 0;
-        
-        // Create the token (msg.value is automatically forwarded)
-        (int32 responseCode, address tokenAddress) = createFungibleToken(
-            token, 
-            0, // initial supply
-            decimals
-        );
-        
-        require(responseCode == SUCCESS_CODE, "Token creation failed");
-        
-        usdToken = tokenAddress;
-        usdDecimals = decimals;
-        
-        emit TokenCreated(tokenAddress, decimals);
+        // Owner is set to deployer by Ownable's constructor
     }
     
+    // Links the token created off-chain via the SDK to this controller
     function setExistingUsdToken(address tokenAddr, uint8 decimals_) external onlyOwner {
-        require(usdToken == address(0), "already set");
+        require(usdToken == address(0), "Token already set");
         usdToken = tokenAddr;
         usdDecimals = decimals_;
         emit TokenCreated(tokenAddr, decimals_);
@@ -79,66 +29,34 @@ contract UsdHtsController is Ownable, HederaTokenService {
 
     function burnFromTreasury(uint64 amount) external onlyOwner {
         require(usdToken != address(0), "no token");
-        
-        (int32 responseCode, ) = burnToken(
-            usdToken, 
-            int64(uint64(amount)), 
-            new int64[](0)
-        );
-        
-        require(responseCode == SUCCESS_CODE, "burn failed");
+        (int32 rc, ) = HTS_PRECOMPILE.burnToken(usdToken, int64(amount), new int64[](0));
+        require(rc == 22, "burn failed");
         emit Burned(amount);
     }
 
     function mintTo(address to, uint64 amount) external onlyOwner {
         require(usdToken != address(0), "no token");
         
-        // Mint tokens to treasury (this contract)
-        (int32 responseCode, , ) = mintToken(
-            usdToken, 
-            int64(uint64(amount)), 
-            new bytes[](0)
-        );
-        require(responseCode == SUCCESS_CODE, "mint failed");
+        // Step 1: Mint new tokens to the treasury (this contract)
+        (int32 rc, , ) = HTS_PRECOMPILE.mintToken(usdToken, int64(amount), new bytes[](0));
+        require(rc == 22, "mint failed");
 
-        // Transfer from treasury to recipient
-        IHederaTokenService.AccountAmount[] memory accountAmounts = 
-            new IHederaTokenService.AccountAmount[](2);
+        // Step 2: Transfer the new tokens from the treasury to the recipient
+        IHederaTokenService.AccountAmount[] memory amts = new IHederaTokenService.AccountAmount[](2);
+        amts[0] = IHederaTokenService.AccountAmount({ accountID: address(this), amount: -int64(amount), isApproval: false });
+        amts[1] = IHederaTokenService.AccountAmount({ accountID: to, amount: int64(amount), isApproval: false });
         
-        accountAmounts[0] = IHederaTokenService.AccountAmount({ 
-            accountID: address(this), 
-            amount: -int64(uint64(amount)), 
-            isApproval: false 
+        IHederaTokenService.TokenTransferList[] memory lists = new IHederaTokenService.TokenTransferList[](1);
+        
+        // FIX: Initialize the struct with all three required fields
+        lists[0] = IHederaTokenService.TokenTransferList({
+            token: usdToken,
+            transfers: amts,
+            nftTransfers: new int64[](0) // Must include the empty nftTransfers array
         });
-        
-        accountAmounts[1] = IHederaTokenService.AccountAmount({ 
-            accountID: to, 
-            amount: int64(uint64(amount)), 
-            isApproval: false 
-        });
-        
-        IHederaTokenService.TokenTransferList[] memory tokenTransferLists = 
-            new IHederaTokenService.TokenTransferList[](1);
-        
-        tokenTransferLists[0] = IHederaTokenService.TokenTransferList({ 
-            token: usdToken, 
-            transfers: accountAmounts, 
-            nftTransfers: new int64[](0) 
-        });
-        
-        // Execute crypto transfer
-        (bool success, bytes memory result) = precompileAddress.call(
-            abi.encodeWithSelector(
-                IHederaTokenService.cryptoTransfer.selector, 
-                IHederaTokenService.TransferList(
-                    new IHederaTokenService.AccountAmount[](0)
-                ), 
-                tokenTransferLists
-            )
-        );
-        
-        int32 rcXfer = success ? abi.decode(result, (int32)) : UNKNOWN_CODE;
-        require(rcXfer == SUCCESS_CODE, "cryptoTransfer failed");
+
+        int32 rcXfer = HTS_PRECOMPILE.cryptoTransfer(IHederaTokenService.TransferList(new IHederaTokenService.AccountAmount[](0)), lists);
+        require(rcXfer == 22, "xfer failed");
 
         emit Minted(to, amount);
     }

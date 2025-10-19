@@ -1,71 +1,68 @@
 import { ethers } from "hardhat";
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+// Load environment variables to give better feedback
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 async function main() {
   const [signer] = await ethers.getSigners();
   const owner = await signer.getAddress();
+  
+  console.log(`Deploying contracts with account: ${owner}`);
+  const balance = await ethers.provider.getBalance(owner);
+  console.log(`Account balance: ${ethers.formatEther(balance)} HBAR`);
 
+  if (balance < ethers.parseEther("10")) {
+      console.warn("\nWARNING: Your HBAR balance is low. If deployment fails, please use the Hedera Testnet Faucet: https://portal.hedera.com/faucet\n");
+  }
+
+  // 1. Deploy the UsdHtsController contract.
   const controllerFactory = await ethers.getContractFactory("UsdHtsController");
-
-  // FIX: The constructor for UsdHtsController is now empty.
-  // Call deploy() with no arguments.
   const controller = await controllerFactory.deploy();
-
   await controller.waitForDeployment();
   const controllerAddress = await controller.getAddress();
-  console.log("UsdHtsController:", controllerAddress);
-
-  console.log("Funding controller contract with 10 HBAR...");
-  const fundTx = await signer.sendTransaction({
-    to: controllerAddress,
-    value: ethers.parseEther("0.00000000001"),
-  });
-  await fundTx.wait();
-  console.log("Controller funded successfully.");
-
+  console.log("\n✅ UsdHtsController deployed to:", controllerAddress);
+  console.log("   -> Add this address to your .env file as USD_CONTROLLER_ADDR");
+  
+  // 2. Deploy the HederaCreditOApp.
   const lzEndpoint = process.env.LZ_ENDPOINT_HEDERA ?? ethers.ZeroAddress;
   const pyth = process.env.PYTH_CONTRACT_HEDERA;
   const priceId = process.env.PYTH_ETHUSD_PRICE_ID;
 
   if (!pyth || !priceId) {
-    throw new Error(
-      "PYTH_CONTRACT_HEDERA and PYTH_ETHUSD_PRICE_ID must be set"
-    );
+    throw new Error("PYTH_CONTRACT_HEDERA and PYTH_ETHUSD_PRICE_ID must be set in your .env file");
   }
 
   const hederaFactory = await ethers.getContractFactory("HederaCreditOApp");
   const hedera = await hederaFactory.deploy(
     lzEndpoint,
     owner,
-    controllerAddress,
+    ethers.ZeroAddress, // The token address will be set later by another script
     pyth,
     priceId
   );
   await hedera.waitForDeployment();
   const hederaAddress = await hedera.getAddress();
-  console.log("HederaCreditOApp:", hederaAddress);
+  console.log("\n✅ HederaCreditOApp deployed to:", hederaAddress);
+  console.log("   -> Add this address to your .env file as HEDERA_CREDIT_ADDR");
 
   if (process.env.LZ_EID_ETHEREUM) {
     const eidTx = await hedera.setEthEid(Number(process.env.LZ_EID_ETHEREUM));
     await eidTx.wait();
-    console.log("set ethereum EID:", process.env.LZ_EID_ETHEREUM);
+    console.log("\n✅ Set Ethereum EID:", process.env.LZ_EID_ETHEREUM);
   }
 
-  console.log("Creating USD HTS token...");
-  const createTx = await controller.createToken("USD Stable", "USDd", 6, {
-    value: 0, // Don't send HBAR from deployer
-    gasLimit: 1_000_000
-  });
-  await createTx.wait();
-  const usdToken = await controller.usdToken();
-  const decimals = await controller.usdDecimals();
-  console.log("USD HTS token:", usdToken, "decimals:", decimals);
-
-  const transferTx = await controller.transferOwnership(hederaAddress);
-  await transferTx.wait();
-  console.log("controller ownership transferred to HederaCreditOApp");
+  console.log("\n🎉 Deployment complete! Please run the `create-hts-token` script next.");
 }
 
 main().catch((error) => {
-  console.error(error);
+  if (error.message.includes("Insufficient funds")) {
+    console.error("\n❌ DEPLOYMENT FAILED: INSUFFICIENT HBAR.");
+    console.error("Please fund your account using the Hedera Testnet Faucet:");
+    console.error("https://portal.hedera.com/faucet");
+  } else {
+    console.error(error);
+  }
   process.exitCode = 1;
 });
