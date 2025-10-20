@@ -1,97 +1,94 @@
-import { useState } from "react";
-const API = import.meta.env.VITE_API_BASE || "http://localhost:8787";
-const EXPLORER = (import.meta.env.VITE_AUTOSCOUT_EXPLORER_URL || "").replace(/\/$/, "");
+import React, { useState } from 'react';
+import Header from './components/Header';
+import CreateOrder from './components/CreateOrder';
+import FundOrder from './components/FundOrder';
+import WithdrawUsd from './components/WithdrawUsd';
+import PositionDashboard from './components/PositionDashboard';
+import PositionLiquidated from './components/PositionLiquidated';
 
-export default function App() {
+// Use an enum for clearer, type-safe state management
+enum AppState {
+  IDLE = 'IDLE',
+  ORDER_CREATED = 'ORDER_CREATED',
+  PAYMENT_CONFIRMED = 'PAYMENT_CONFIRMED',
+  LOAN_ACTIVE = 'LOAN_ACTIVE',
+  LIQUIDATED = 'LIQUIDATED',
+}
+
+// Define the shape of our order data to be used across components
+export interface OrderData {
+  ethAmount: number;
+  ethOrderId: string;
+  usdValue: string;
+  hederaOrderId: string;
+  liquidationPrice: string;
+}
+
+function App() {
+  const [appState, setAppState] = useState<AppState>(AppState.IDLE);
+  const [orderData, setOrderData] = useState<OrderData | null>(null);
+
+  const handleCreateOrder = (ethAmount: number) => {
+    setOrderData({
+      ethAmount,
+      ethOrderId: '0x8a3f...b4e1',
+      usdValue: (ethAmount * 3267.17).toFixed(2),
+      liquidationPrice: (ethAmount * 3267.17 * 0.6).toFixed(2), // Example liquidation logic
+      hederaOrderId: 'HED-ORD-f791...a55c',
+    });
+    setAppState(AppState.ORDER_CREATED);
+  };
+
+  const handlePaymentVerified = () => {
+    setAppState(AppState.PAYMENT_CONFIRMED);
+  };
+  
+  const handleWithdraw = () => {
+    setAppState(AppState.LOAN_ACTIVE);
+  };
+
+  const handleRepay = () => {
+    alert("Repayment successful! Your ETH has been released.");
+    handleReset();
+  };
+
+  const handleLiquidation = () => {
+    setAppState(AppState.LIQUIDATED);
+  };
+
+  const handleReset = () => {
+    setOrderData(null);
+    setAppState(AppState.IDLE);
+  };
+
+  const renderCurrentStep = () => {
+    switch (appState) {
+      case AppState.IDLE:
+        return <CreateOrder onCreateOrder={handleCreateOrder} />;
+      case AppState.ORDER_CREATED:
+        // Type assertion tells TypeScript we know orderData is not null here
+        return <FundOrder orderData={orderData!} onPaymentVerified={handlePaymentVerified} />;
+      case AppState.PAYMENT_CONFIRMED:
+        return <WithdrawUsd orderData={orderData!} onWithdraw={handleWithdraw} />;
+      case AppState.LOAN_ACTIVE:
+        return <PositionDashboard orderData={orderData!} onRepay={handleRepay} onLiquidate={handleLiquidation} />;
+      case AppState.LIQUIDATED:
+        return <PositionLiquidated orderData={orderData!} onReset={handleReset} />;
+      default:
+        return <CreateOrder onCreateOrder={handleCreateOrder} />;
+    }
+  };
+
   return (
-    <div style={{ maxWidth: 980, margin: "20px auto", padding: 16 }}>
-      <h1>KINXP - Explain-to-Pay</h1>
-      <p>Escrow releases only after explainable, link-backed proof (Blockscout MCP). Settlement on Hedera.</p>
-      <Panels />
+    <div className="bg-gray-900 min-h-screen text-white font-sans">
+      <Header />
+      <main className="container mx-auto p-4 sm:p-8">
+        <div className="max-w-md mx-auto">
+          {renderCurrentStep()}
+        </div>
+      </main>
     </div>
   );
 }
 
-function Panels() {
-  return (
-    <div style={{ display: "grid", gap: 16 }}>
-      <ExplainTx />
-      <RiskScan />
-      <VerifyRelease />
-    </div>
-  );
-}
-
-function ExplainTx() {
-  const [chainId, setChain] = useState(8453);
-  const [hash, setHash] = useState("");
-  const [out, setOut] = useState<any>(null);
-
-  const run = async () => {
-    const r = await fetch(`${API}/ai/explain-tx`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chainId, txHash: hash }) });
-    setOut(await r.json());
-  };
-
-  return (
-    <section style={card}>
-      <h3>Explain a Transaction</h3>
-      <Row>
-        <label>Chain ID <input value={chainId} onChange={e => setChain(parseInt(e.target.value))} /></label>
-        <label>Tx Hash <input style={{ width: 460 }} value={hash} onChange={e => setHash(e.target.value)} /></label>
-        <button onClick={run}>Explain</button>
-      </Row>
-      {out && <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>}
-      {hash && EXPLORER && <a href={`${EXPLORER}/tx/${hash}`} target="_blank">View in Explorer</a>}
-    </section>
-  );
-}
-
-function RiskScan() {
-  const [chainId, setChain] = useState(42161);
-  const [addr, setAddr] = useState("");
-  const [out, setOut] = useState<any>(null);
-
-  const run = async () => {
-    const r = await fetch(`${API}/ai/risk-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chainId, address: addr }) });
-    setOut(await r.json());
-  };
-
-  return (
-    <section style={card}>
-      <h3>Wallet Risk Scan (7d)</h3>
-      <Row>
-        <label>Chain ID <input value={chainId} onChange={e => setChain(parseInt(e.target.value))} /></label>
-        <label>Address <input style={{ width: 560 }} value={addr} onChange={e => setAddr(e.target.value)} /></label>
-        <button onClick={run}>Scan</button>
-      </Row>
-      {out && <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>}
-      {addr && EXPLORER && <a href={`${EXPLORER}/address/${addr}`} target="_blank">View in Explorer</a>}
-    </section>
-  );
-}
-
-function VerifyRelease() {
-  const [xcond, setX] = useState(`{\n  "chainId": 8453,\n  "contract": "0x...",\n  "event": "FeatureDeployed(address indexed who, bytes32 featureId)",\n  "filters": {"who": "0x..."},\n  "minConfirmations": 5,\n  "usdFloor": 1000\n}`);
-  const [out, setOut] = useState<any>(null);
-
-  const run = async (path: string) => {
-    const r = await fetch(`${API}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ xCondition: JSON.parse(xcond) }) });
-    setOut(await r.json());
-  };
-
-  return (
-    <section style={card}>
-      <h3>Verify &rarr; Release</h3>
-      <textarea style={{ width: "100%", height: 160, fontFamily: "monospace" }} value={xcond} onChange={e => setX(e.target.value)} />
-      <Row>
-        <button onClick={() => run("/ai/verify-milestone")}>Verify (AI Proof Card)</button>
-        <button onClick={() => run("/escrow/release")}>Release Funds</button>
-      </Row>
-      {out && <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>}
-    </section>
-  );
-}
-
-const card: React.CSSProperties = { padding: 16, border: "1px solid #e5e7eb", borderRadius: 12 };
-function Row(props: any){ return <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>{props.children}</div>; }
-const pre: React.CSSProperties = { background: "#0b1020", color: "#e6e6e6", padding: 12, borderRadius: 8, overflow: "auto" };
+export default App;
