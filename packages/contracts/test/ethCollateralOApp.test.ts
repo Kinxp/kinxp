@@ -190,8 +190,6 @@ describe("EthCollateralOApp", function () {
     );
     expect(await oapp.lastLzPayload()).to.equal(expectedPayload);
 
-    const lastFee = await oapp.lastLzFee();
-    expect(lastFee.nativeFee).to.equal(fee);
-    expect(lastFee.lzTokenFee).to.equal(0);
+    expect(await oapp.lastLzNativeFee()).to.equal(fee);
   });
 });

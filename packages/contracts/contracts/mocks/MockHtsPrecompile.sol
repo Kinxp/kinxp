@@ -9,11 +9,14 @@ contract MockHtsPrecompile is IHederaTokenService {
     int32 private _mintResp = 22;
     int32 private _burnResp = 22;
     int32 private _xferResp = 22;
+    int32 private _associateResp = 22;
     address public lastMintToken;
     int64 public lastMintAmount;
     address public lastBurnToken;
     int64 public lastBurnAmount;
     address public lastTransferToken;
+    address public lastAssociateAccount;
+    address public lastAssociateToken;
     AccountAmount[] private _lastTransferAdjustments;
     uint256 private _tokenCounter;
     
@@ -21,6 +24,7 @@ contract MockHtsPrecompile is IHederaTokenService {
     function setMintResponse(int32 code) external { _mintResp = code; }
     function setBurnResponse(int32 code) external { _burnResp = code; }
     function setTransferResponse(int32 code) external { _xferResp = code; }
+    function setAssociateResponse(int32 code) external { _associateResp = code; }
     function clearLastTransfers() external { delete _lastTransferAdjustments; lastTransferToken = address(0); }
     function lastTransferAdjustments() external view returns (AccountAmount[] memory) { return _lastTransferAdjustments; }
 
@@ -35,6 +39,12 @@ contract MockHtsPrecompile is IHederaTokenService {
 
     function burnToken(address token, int64 amount, int64[] memory) external override returns (int32 responseCode, int64 newTotalSupply) {
         lastBurnToken = token; lastBurnAmount = amount; responseCode = _burnResp; newTotalSupply = 0;
+    }
+
+    function associateToken(address account, address token) external override returns (int32 responseCode) {
+        lastAssociateAccount = account;
+        lastAssociateToken = token;
+        responseCode = _associateResp;
     }
 
     function cryptoTransfer(TransferList memory, TokenTransferList[] memory tokenTransfers) external override returns (int32 responseCode) {

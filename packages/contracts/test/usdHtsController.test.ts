@@ -42,9 +42,20 @@ describe("UsdHtsController", function () {
     );
   });
 
+  it("associates the token with the controller", async function () {
+    const { controller, htsMock } = await loadFixture(deployFixture);
+    const token = ethers.getAddress("0x0000000000000000000000000000000000000def");
+    await expect(controller.associateToken(token)).to.not.be.reverted;
+    expect(await htsMock.lastAssociateToken()).to.equal(token);
+    expect(await htsMock.lastAssociateAccount()).to.equal(
+      await controller.getAddress()
+    );
+  });
+
   it("mints to a borrower via the HTS precompile", async function () {
     const { controller, borrower, htsMock } = await loadFixture(deployFixture);
     const token = ethers.getAddress("0x0000000000000000000000000000000000000def");
+    await controller.associateToken(token);
     await controller.setExistingUsdToken(token, 6);
 
     await expect(controller.mintTo(borrower.address, 1_000_000))

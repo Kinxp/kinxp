@@ -15,6 +15,9 @@ import {
 import {
     OptionsBuilder
 } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+import {
+    MessagingParams
+} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 /**
  * @title EthCollateralOApp
@@ -79,25 +82,18 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         o.funded = true;
         emit OrderFunded(orderId, msg.sender, msg.value);
 
-        // Optional: notify Hedera over LayerZero (message-only)
         if (!OAPP_DISABLED && hederaEid != 0) {
             bytes memory payload = abi.encode(
-                uint8(1), // msgType 1 = OPEN
+                uint8(1),
                 orderId,
                 msg.sender,
                 msg.value
             );
-            // executor gas limit ~200k for bookkeeping on Hedera side; tune if needed
             bytes memory opts = OptionsBuilder
                 .newOptions()
                 .addExecutorLzReceiveOption(200_000, 0);
-            _lzSend(
-                hederaEid,
-                payload,
-                opts,
-                MessagingFee(0, 0),
-                payable(msg.sender)
-            );
+
+            _sendLzMessage(hederaEid, payload, opts, 0, msg.sender);
         }
     }
 
@@ -188,22 +184,17 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
             .addExecutorLzReceiveOption(200_000, 0);
 
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
-        uint256 requiredValue = depositAmountWei + q.nativeFee;
-        require(msg.value >= requiredValue, "insufficient msg.value");
+        require(msg.value >= depositAmountWei, "insufficient msg.value");
+        uint256 feeProvided = msg.value - depositAmountWei;
+        require(feeProvided >= q.nativeFee, "insufficient msg.value");
 
         o.amountWei = depositAmountWei;
         o.funded = true;
         emit OrderFunded(orderId, msg.sender, depositAmountWei);
 
-        _lzSend(
-            hederaEid,
-            payload,
-            opts,
-            MessagingFee(q.nativeFee, 0),
-            payable(msg.sender)
-        );
+        _sendLzMessage(hederaEid, payload, opts, q.nativeFee, msg.sender);
 
-        uint256 refund = msg.value - requiredValue;
+        uint256 refund = feeProvided - q.nativeFee;
         if (refund > 0) {
             (bool ok, ) = payable(msg.sender).call{value: refund}("");
             require(ok, "refund fail");
@@ -227,5 +218,24 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
 
     function setHederaEid(uint32 _eid) external onlyOwner {
         hederaEid = _eid;
+    }
+
+    function _sendLzMessage(
+        uint32 dstEid,
+        bytes memory payload,
+        bytes memory opts,
+        uint256 nativeFeePaid,
+        address refundAddress
+    ) internal virtual {
+        endpoint.send{value: nativeFeePaid}(
+            MessagingParams(
+                dstEid,
+                _getPeerOrRevert(dstEid),
+                payload,
+                opts,
+                false
+            ),
+            refundAddress
+        );
     }
 }

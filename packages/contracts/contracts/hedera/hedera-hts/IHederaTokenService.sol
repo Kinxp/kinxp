@@ -22,6 +22,7 @@ interface IHederaTokenService {
     function createFungibleToken(HederaToken memory token, int64 initialTotalSupply, uint8 decimals) external payable returns (int32 responseCode, address tokenAddress);
     function mintToken(address token, int64 amount, bytes[] memory metadata) external returns (int32 responseCode, int64 newTotalSupply, int64[] memory serialNumbers);
     function burnToken(address token, int64 amount, int64[] memory serialNumbers) external returns (int32 responseCode, int64 newTotalSupply);
+    function associateToken(address account, address token) external returns (int32 responseCode);
     function cryptoTransfer(TransferList memory transferList, TokenTransferList[] memory tokenTransfers) external returns (int32 responseCode);
     function updateTokenKeys(address token, TokenKey[] memory keys) external returns (int32 responseCode);
 }
