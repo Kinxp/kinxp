@@ -4,46 +4,52 @@ import * as path from "path";
 
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
-async function main() {
-  const ETH_COLLATERAL_ADDR = "0xFD0CeDeB9e6534b73A6b802345878Dfc348D1ef7";
-  const HEDERA_EID = 40285;
-
-  if (!process.env.HEDERA_CREDIT_ADDR) {
-    throw new Error("Missing HEDERA_CREDIT_ADDR in .env");
+function getAddressFromEnv(name: string): string {
+  const raw = process.env[name]?.trim();
+  if (!raw || !ethers.isAddress(raw)) {
+    throw new Error(`Missing or invalid ${name} in .env`);
   }
+  return ethers.getAddress(raw);
+}
+
+function getEidFromEnv(name: string): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    throw new Error(`Missing ${name} in .env`);
+  }
+  const eid = Number(raw);
+  if (!Number.isInteger(eid) || eid <= 0) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return eid;
+}
+
+async function main() {
+  const ethCollateralAddr = getAddressFromEnv("ETH_COLLATERAL_ADDR");
+  const hederaPeerAddr = getAddressFromEnv("HEDERA_CREDIT_ADDR");
+  const hederaEid = getEidFromEnv("LZ_EID_HEDERA");
 
   console.log("=== Setting Hedera Peer on Ethereum ===\n");
+  console.log("EthCollateral:", ethCollateralAddr);
+  console.log("Hedera peer:", hederaPeerAddr);
+  console.log("Hedera EID:", hederaEid);
 
   const ethCollateral = await ethers.getContractAt(
     "EthCollateralOApp",
-    ETH_COLLATERAL_ADDR
+    ethCollateralAddr
   );
 
-  const hederaCreditAddr = process.env.HEDERA_CREDIT_ADDR;
-  console.log("Hedera Credit Address:", hederaCreditAddr);
-  console.log("Hedera EID:", HEDERA_EID);
-
-  const peerBytes32 = ethers.zeroPadValue(hederaCreditAddr, 32);
+  const peerBytes32 = ethers.zeroPadValue(hederaPeerAddr, 32);
   console.log("Peer as bytes32:", peerBytes32);
 
-  try {
-    console.log("\nSetting peer...");
-    const tx = await ethCollateral.setPeer(HEDERA_EID, peerBytes32);
+  const tx = await ethCollateral.setPeer(hederaEid, peerBytes32);
+  console.log("Transaction sent:", tx.hash);
+  await tx.wait();
 
-    console.log("Transaction sent:", tx.hash);
-    await tx.wait();
-
-    console.log("✅ Peer set successfully!");
-
-    const peer = await ethCollateral.peers(HEDERA_EID);
-    console.log("\nVerification:");
-    console.log("Stored peer:", peer);
-    console.log("Expected peer:", peerBytes32);
-    console.log("Match:", peer === peerBytes32 ? "✅" : "❌");
-  } catch (error: any) {
-    console.error("\n❌ Failed:", error.message);
-    throw error;
-  }
+  const stored = await ethCollateral.peers(hederaEid);
+  console.log("\nVerification:");
+  console.log("Stored peer:", stored);
+  console.log("Match:", stored === peerBytes32 ? "✅" : "❌");
 }
 
 main().catch((error) => {
