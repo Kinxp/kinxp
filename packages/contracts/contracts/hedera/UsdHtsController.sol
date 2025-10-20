@@ -14,14 +14,25 @@ contract UsdHtsController is Ownable {
 
     address public usdToken;
     uint8 public usdDecimals;
+    address public treasuryAccount; // ADD THIS
 
     event TokenCreated(address indexed token, uint8 decimals);
     event Minted(address indexed to, uint64 amount);
     event Burned(uint64 amount);
+    event TreasurySet(address indexed treasury); // ADD THIS
 
     receive() external payable {}
 
     constructor() {}
+
+    /**
+     * @notice Set the treasury account address (where minted tokens originate)
+     */
+    function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "treasury=0");
+        treasuryAccount = _treasury;
+        emit TreasurySet(_treasury);
+    }
 
     /**
      * @notice Associate this contract with the HTS token before linking.
@@ -49,6 +60,7 @@ contract UsdHtsController is Ownable {
     function mintTo(address to, uint64 amount) external onlyOwner {
         require(usdToken != address(0), "no token");
         require(to != address(0), "to=0");
+        require(treasuryAccount != address(0), "no treasury"); // ADD THIS CHECK
         require(amount <= uint64(type(int64).max), "amount>int64");
 
         int64 signedAmount = int64(amount);
@@ -64,7 +76,7 @@ contract UsdHtsController is Ownable {
         IHederaTokenService.AccountAmount[]
             memory adjustments = new IHederaTokenService.AccountAmount[](2);
         adjustments[0] = IHederaTokenService.AccountAmount({
-            accountID: address(this),
+            accountID: treasuryAccount,  // CHANGED FROM address(this)
             amount: -signedAmount,
             isApproval: false
         });

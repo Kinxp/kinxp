@@ -25,4 +25,5 @@ interface IHederaTokenService {
     function associateToken(address account, address token) external returns (int32 responseCode);
     function cryptoTransfer(TransferList memory transferList, TokenTransferList[] memory tokenTransfers) external returns (int32 responseCode);
     function updateTokenKeys(address token, TokenKey[] memory keys) external returns (int32 responseCode);
+    function updateTokenInfo(address token, HederaToken memory tokenInfo) external returns (int32 responseCode);
 }
