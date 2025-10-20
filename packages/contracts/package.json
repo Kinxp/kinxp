@@ -33,6 +33,7 @@
     "test-5": "hardhat run scripts/test-5-withdraw-eth.ts --network sepolia",
     "test-6": "hardhat run scripts/test-6-liquidation.ts --network sepolia",
     "test-all": "ts-node scripts/test-all.ts",
+    "e2e:full": "hardhat run scripts/full-e2e.ts --network sepolia",
     "debug-order": "hardhat run scripts/debug-order.ts --network sepolia",
     "disable-lz": "hardhat run scripts/disable-lz.ts --network sepolia",
     "enable-lz": "hardhat run scripts/enable-lz.ts --network sepolia"
