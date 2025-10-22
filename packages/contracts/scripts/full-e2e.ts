@@ -8,11 +8,12 @@ import {
   TokenSupplyType,
   TokenType,
   TokenUpdateTransaction,
-  ContractId,
+  EntityIdHelper,
+  ContractCreateFlow,
+  ContractFunctionParameters,
 } from "@hashgraph/sdk";
 import {
   Contract,
-  ContractFactory,
   JsonRpcProvider,
   Wallet,
   formatEther,
@@ -163,24 +164,47 @@ async function main() {
 
   banner("Deploying Hedera contracts");
   const controllerArtifact = await artifacts.readArtifact("UsdHtsController");
-  const controllerFactory = new ContractFactory(controllerArtifact.abi, controllerArtifact.bytecode, hederaOperatorWallet);
-  const controller = await controllerFactory.deploy();
-  await controller.waitForDeployment();
-  const controllerAddr = (await controller.getAddress()) as Hex;
-  console.log("  → UsdHtsController:", controllerAddr);
+
+  const controllerCreate = new ContractCreateFlow()
+    .setGas(1000000)
+    .setBytecode(controllerArtifact.bytecode);
+  const controllerCreateResponse = await controllerCreate.execute(hederaClient);
+  const controllerReceipt = await controllerCreateResponse.getReceipt(hederaClient);
+  const controllerId = controllerReceipt.contractId!;
+  const controllerAddr = '0x' + EntityIdHelper.toSolidityAddress([
+    controllerReceipt.contractId?.realm!,
+    controllerReceipt.contractId?.shard!,
+    controllerReceipt.contractId?.num!]);
+
+  const controller = new ethers.Contract(controllerAddr, controllerArtifact.abi, hederaOperatorWallet);
+
+  console.log(`  → UsdHtsController: ${controllerAddr}, (${controllerId})`);
 
   const creditArtifact = await artifacts.readArtifact("HederaCreditOApp");
-  const creditFactory = new ContractFactory(creditArtifact.abi, creditArtifact.bytecode, hederaOperatorWallet);
-  const hederaCredit = await creditFactory.deploy(
-    hederaEndpoint,
-    await hederaOperatorWallet.getAddress(),
-    controllerAddr,
-    pythContract,
-    priceFeedId
-  );
-  await hederaCredit.waitForDeployment();
-  const hederaCreditAddr = (await hederaCredit.getAddress()) as Hex;
-  console.log("  → HederaCreditOApp:", hederaCreditAddr);
+
+  const creditParams = new ContractFunctionParameters()
+    .addAddress(hederaEndpoint)
+    .addAddress(await hederaOperatorWallet.getAddress())
+    .addAddress(controllerAddr)
+    .addAddress(pythContract)
+    .addBytes32(Buffer.from(priceFeedId.replace(/^0x/, ""), 'hex'));
+
+  const creditCreate = new ContractCreateFlow()
+    .setGas(10000000)
+    .setBytecode(creditArtifact.bytecode)
+    .setConstructorParameters(creditParams);
+
+  const creditCreateResponse = await creditCreate.execute(hederaClient);
+  const creditReceipt = await creditCreateResponse.getReceipt(hederaClient);
+  const creditId = creditReceipt.contractId!;
+  const hederaCreditAddr = '0x' + EntityIdHelper.toSolidityAddress([
+    creditReceipt.contractId?.realm!,
+    creditReceipt.contractId?.shard!,
+    creditReceipt.contractId?.num!]);
+
+  const hederaCredit = new Contract(hederaCreditAddr, creditArtifact.abi, hederaOperatorWallet);
+
+  console.log(`  → HederaCreditOApp: ${hederaCreditAddr}, (${creditId})`);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // LZ peer wiring
@@ -209,7 +233,7 @@ async function main() {
   banner("Funding order with LayerZero notify");
   const nativeFee: bigint = await ethCollateral.quoteOpenNativeFee(await ethSigner.getAddress(), depositWei);
   let totalValue = depositWei + nativeFee + (nativeFee / 10n);
-  
+
   const txFund = await ethCollateral.fundOrderWithNotify(orderId, depositWei, {
     value: totalValue,
     gasLimit: 600_000,
@@ -268,10 +292,9 @@ async function main() {
   console.log("  ✓ Borrower associated");
 
   banner("Transferring supply key to controller");
-  const controllerContractId = ContractId.fromEvmAddress(0, 0, controllerAddr);
   const supplyUpdateTx = await new TokenUpdateTransaction()
     .setTokenId(tokenId)
-    .setSupplyKey(controllerContractId)
+    .setSupplyKey(controllerId)
     .freezeWith(hederaClient);
   const supplyUpdateSign = await supplyUpdateTx.sign(hederaOperatorKey);
   await (await supplyUpdateSign.execute(hederaClient)).getReceipt(hederaClient);
@@ -313,7 +336,7 @@ async function main() {
 
   banner("Borrowing");
   const borrowerCredit = hederaCredit.connect(borrowerWallet);
-  
+
   try {
     console.log("  Attempting static call...");
     await borrowerCredit.borrow.staticCall(orderId, borrowAmount, priceUpdateData, 300, {
