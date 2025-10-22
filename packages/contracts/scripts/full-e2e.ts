@@ -71,6 +71,9 @@ const sepoliaTx = (h: string) => `https://sepolia.etherscan.io/tx/${h}`;
 const layerzeroTx = (h: string) => `https://testnet.layerzeroscan.com/tx/${h}`;
 const hashscanTx = (h: string) => `https://hashscan.io/testnet/transaction/${h}`;
 
+const HEDERA_MIN_VALUE = 1n; // Minimum LayerZero fee in tinybars
+const HBAR_WEI_PER_TINYBAR = 10_000_000_000n;
+
 function scalePrice(price: bigint, expo: number): bigint {
   const targetDecimals = 18;
   const expDiff = targetDecimals + expo;
@@ -106,6 +109,20 @@ async function waitForHederaOrderOpen(hederaCredit: Contract, orderId: Hex, maxA
     await new Promise((r) => setTimeout(r, 6000));
   }
   throw new Error("Timed out waiting for Hedera order mirror");
+}
+
+async function waitForEthRepaid(ethCollateral: Contract, orderId: Hex, maxAttempts = 40) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const order = await ethCollateral.orders(orderId);
+      if (order?.repaid) return order;
+    } catch (err) {
+      console.warn(`  [${attempt + 1}/${maxAttempts}] Ethereum order read failed: ${(err as Error).message}`);
+    }
+    console.log(`  [${attempt + 1}/${maxAttempts}] Waiting 6s for Ethereum repayment flag...`);
+    await new Promise((r) => setTimeout(r, 6000));
+  }
+  throw new Error("Timed out waiting for Ethereum repayment flag");
 }
 
 async function main() {
@@ -347,6 +364,12 @@ async function main() {
   banner("Borrowing");
   const borrowerCredit = hederaCredit.connect(borrowerWallet);
 
+
+  // Wait 90 seconds before proceeding
+  await new Promise((resolve) => setTimeout(resolve, 90000));
+  console.log("  ⏳ Waiting 90 seconds...");
+
+
   try {
     console.log("  Attempting static call...");
     await borrowerCredit.borrow.staticCall(orderId, borrowAmount, priceUpdateData, 300, {
@@ -359,6 +382,7 @@ async function main() {
     console.error("  Error data:", err.data);
     throw err;
   }
+
 
   const borrowTx = await borrowerCredit.borrow(orderId, borrowAmount, priceUpdateData, 300, {
     value: borrowValue,
@@ -375,7 +399,95 @@ async function main() {
   console.log("  Borrower balance:", formatUnits(borrowerBalAfter, 6), "hUSD");
   console.log("  Controller balance:", formatUnits(controllerBalAfter, 6), "hUSD");
 
-  console.log("\n✅ E2E TEST SUCCESSFUL - BORROW WORKS!");
+  banner("Preparing repayment");
+  const repayAmount = borrowAmount;
+  console.log("  Repay amount:", formatUnits(repayAmount, 6), "hUSD");
+  const treasuryAddress = await hederaOperatorWallet.getAddress();
+
+  banner("Returning hUSD to treasury");
+  const repayTransferTx = await token.transfer(treasuryAddress, repayAmount, { gasLimit: 1_000_000 });
+  await repayTransferTx.wait();
+  console.log("  Tokens transferred back to treasury");
+
+  banner("Quoting LayerZero fee for repay notify");
+  const repayFee = await hederaCredit.quoteRepayFee(orderId);
+  const repayValue = repayFee < HEDERA_MIN_VALUE ? HEDERA_MIN_VALUE : repayFee;
+  const repayTopUp = repayValue - repayFee;
+  console.log("  Repay fee:", formatUnits(repayFee, 8), "HBAR");
+  if (repayTopUp > 0n) {
+    console.log("  Top-up applied:", formatUnits(repayTopUp, 8), "HBAR (min tinybar)");
+  }
+  console.log("  Sending value:", formatUnits(repayValue, 8), "HBAR");
+  const repayValueWei = repayValue * HBAR_WEI_PER_TINYBAR;
+  console.log("  Sending value (wei):", repayValueWei.toString());
+
+  const treasuryBalForRepay = await token.balanceOf(treasuryAddress);
+  console.log("  Treasury balance prior to repay:", formatUnits(treasuryBalForRepay, 6), "hUSD");
+
+  try {
+    console.log("  Attempting repay static call...");
+    await borrowerCredit.repay.staticCall(orderId, repayAmount, true, {
+      value: repayValueWei,
+      gasLimit: 1_500_000,
+    });
+    console.log("  Static call passed");
+  } catch (err: any) {
+    const iface = hederaCredit.interface;
+    let decoded: any = null;
+    if (err.data) {
+      try {
+        decoded = iface.parseError(err.data);
+      } catch (_) {
+        // ignore parse failure; we'll rethrow below if unexpected
+      }
+    }
+    if (decoded && (decoded.name === "LzFeeTooLow" || decoded.name === "NotEnoughNative")) {
+      console.warn(
+        `  Static call expected revert (${decoded.name}) because msg.value cannot be forwarded in static calls`
+      );
+      console.warn("  Required native fee:", decoded.args?.[0]?.toString?.() ?? "n/a");
+      if (decoded.args?.length > 1) {
+        console.warn("  Provided native fee:", decoded.args?.[1]?.toString?.() ?? "n/a");
+      }
+    } else {
+      console.error("  Static call failed:", err.shortMessage ?? err.message);
+      if (err.data) console.error("  Error data:", err.data);
+      throw err;
+    }
+  }
+
+  banner("Repaying on Hedera");
+  const repayTx = await borrowerCredit.repay(orderId, repayAmount, true, {
+    value: repayValueWei,
+    gasLimit: 1_500_000,
+  });
+  await repayTx.wait();
+  console.log("  Repay succeeded");
+
+  banner("DEBUG: Checking balances AFTER repay");
+  const treasuryBalFinal = await token.balanceOf(treasuryAddress);
+  const borrowerBalFinal = await token.balanceOf(await borrowerWallet.getAddress());
+  const controllerBalFinal = await token.balanceOf(controllerAddr);
+  console.log("  Treasury balance:", formatUnits(treasuryBalFinal, 6), "hUSD");
+  console.log("  Borrower balance:", formatUnits(borrowerBalFinal, 6), "hUSD");
+  console.log("  Controller balance:", formatUnits(controllerBalFinal, 6), "hUSD");
+
+  banner("Waiting for Ethereum repay flag");
+  await waitForEthRepaid(ethCollateral, orderId);
+  console.log("  Ethereum order marked repaid");
+
+  banner("Withdrawing ETH on Ethereum");
+  const withdrawTx = await ethCollateral.withdraw(orderId);
+  await withdrawTx.wait();
+  console.log("  ETH withdrawn");
+
+  console.log("\n✅ E2E TEST SUCCESSFUL - REPAY & WITHDRAW COMPLETE!");
+
+
+
+
+
+
 }
 
 main().catch((err) => {

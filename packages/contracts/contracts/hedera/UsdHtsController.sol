@@ -21,6 +21,12 @@ contract UsdHtsController is Ownable {
     event Burned(uint64 amount);
     event TreasurySet(address indexed treasury); // ADD THIS
 
+    error AssociateFailed(int64 rc);
+    error MintFailed(int64 rc);
+    error TransferFailed(int64 rc);
+    error BurnFailed(int64 rc);
+
+
     receive() external payable {}
 
     constructor() {}
@@ -40,7 +46,7 @@ contract UsdHtsController is Ownable {
     function associateToken(address tokenAddr) external onlyOwner {
         require(tokenAddr != address(0), "token=0");
         int64 rc = HTS_PRECOMPILE.associateToken(address(this), tokenAddr);
-        require(rc == 22, "associate failed");
+        if (rc != 22) revert AssociateFailed(rc);
     }
 
     /**
@@ -71,7 +77,7 @@ contract UsdHtsController is Ownable {
             signedAmount,
             emptyMetadata
         );
-        require(rcMint == 22, "mint failed");
+        if (rcMint != 22) revert MintFailed(rcMint);
 
         IHederaTokenService.AccountAmount[]
             memory adjustments = new IHederaTokenService.AccountAmount[](2);
@@ -100,7 +106,7 @@ contract UsdHtsController is Ownable {
             .TransferList({transfers: new IHederaTokenService.AccountAmount[](0)});
 
         int64 rcXfer = HTS_PRECOMPILE.cryptoTransfer(emptyList, tokenTransfers);
-        require(rcXfer == 22, "xfer failed");
+        if (rcXfer != 22) revert TransferFailed(rcXfer);
 
         emit Minted(to, amount);
     }
@@ -117,7 +123,7 @@ contract UsdHtsController is Ownable {
             signedAmount,
             serials
         );
-        require(rcBurn == 22, "burn failed");
+        if (rcBurn != 22) revert BurnFailed(rcBurn);
 
         emit Burned(amount);
     }

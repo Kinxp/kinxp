@@ -8,14 +8,8 @@ import {UsdHtsController} from "./UsdHtsController.sol";
 import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
 import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 
-import {
-    OApp,
-    MessagingFee,
-    Origin
-} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
-import {
-    OptionsBuilder
-} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+import {OApp, MessagingFee, Origin} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import {OptionsBuilder} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
 
 /**
  * @title HederaCreditOApp
@@ -23,6 +17,10 @@ import {
  */
 contract HederaCreditOApp is OApp, ReentrancyGuard {
     using OptionsBuilder for bytes;
+
+    error BadOrder();
+    error BadAmount();
+    error LzFeeTooLow(uint256 required, uint256 provided);
 
     event HederaOrderOpened(
         bytes32 indexed orderId,
@@ -55,11 +53,12 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     uint32 public ethEid;
 
     uint16 public ltvBps = 7000; // 70% LTV
+    uint256 public constant HEDERA_MIN_NATIVE = 1; // 1 tinybar (Hedera exposes msg.value in tinybar units)
 
     constructor(
         address lzEndpoint,
         address owner_,
-        address payable controller_, // Correctly marked as payable
+        address payable controller_,
         address pythContract,
         bytes32 ethUsdPriceId_
     ) OApp(lzEndpoint, owner_) {
@@ -76,8 +75,12 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         address,
         bytes calldata
     ) internal override {
-        (uint8 msgType, bytes32 id, address borrower, uint256 ethAmountWei) = abi
-            .decode(message, (uint8, bytes32, address, uint256));
+        (
+            uint8 msgType,
+            bytes32 id,
+            address borrower,
+            uint256 ethAmountWei
+        ) = abi.decode(message, (uint8, bytes32, address, uint256));
         if (msgType == 1) {
             HOrder storage o = horders[id];
             require(!o.open, "exists");
@@ -117,19 +120,13 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         );
         uint256 collateralUsd18 = (o.ethAmountWei * priceScaled) / 1e18;
         uint256 maxBorrow18 = (collateralUsd18 * ltvBps) / 10_000;
-
         uint8 usdDecimals = controller.usdDecimals();
         uint256 desired18 = _to1e18(uint256(usdAmount), usdDecimals);
-        
-        // FIX: Corrected typo from _to1e1e18 to _to1e18
         uint256 currentBorrowed18 = _to1e18(
             uint256(o.borrowedUsd),
             usdDecimals
         );
-        require(
-            currentBorrowed18 + desired18 <= maxBorrow18,
-            "exceeds LTV"
-        );
+        require(currentBorrowed18 + desired18 <= maxBorrow18, "exceeds LTV");
 
         controller.mintTo(msg.sender, usdAmount);
         o.borrowedUsd += usdAmount;
@@ -137,12 +134,9 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         emit Borrowed(id, msg.sender, usdAmount);
     }
 
-    function _fetchPrice(uint32 maxAgeSecs)
-        internal
-        view
-        virtual
-        returns (PythStructs.Price memory)
-    {
+    function _fetchPrice(
+        uint32 maxAgeSecs
+    ) internal view virtual returns (PythStructs.Price memory) {
         return pyth.getPriceNoOlderThan(ethUsdPriceId, maxAgeSecs);
     }
 
@@ -150,10 +144,10 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         bytes32 id,
         uint64 usdAmount,
         bool notifyEthereum
-    ) external nonReentrant {
+    ) external payable nonReentrant {
         HOrder storage o = horders[id];
-        require(o.open && o.borrower == msg.sender, "bad order");
-        require(usdAmount > 0 && usdAmount <= o.borrowedUsd, "bad amount");
+        if (!(o.open && o.borrower == msg.sender)) revert BadOrder();
+        if (!(usdAmount > 0 && usdAmount <= o.borrowedUsd)) revert BadAmount();
 
         controller.burnFromTreasury(usdAmount);
         o.borrowedUsd -= usdAmount;
@@ -166,14 +160,46 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             bytes memory opts = OptionsBuilder
                 .newOptions()
                 .addExecutorLzReceiveOption(120_000, 0);
-            _lzSend(
-                ethEid,
-                payload,
-                opts,
-                MessagingFee(0, 0),
-                payable(msg.sender)
-            );
+
+            MessagingFee memory q = _quote(ethEid, payload, opts, false);
+            uint256 nativeFee = q.nativeFee;
+            if (nativeFee > 0 && nativeFee < HEDERA_MIN_NATIVE) {
+                nativeFee = HEDERA_MIN_NATIVE;
+            }
+            if (msg.value < nativeFee) revert LzFeeTooLow(nativeFee, msg.value);
+            q.nativeFee = nativeFee;
+
+            // ==============================================================================
+            // === THIS IS THE CORRECTED LINE ===============================================
+            // ==============================================================================
+            _lzSend(ethEid, payload, opts, q, payable(msg.sender));
+            // ==============================================================================
+
+            uint256 refund = msg.value - q.nativeFee;
+            if (refund > 0) {
+                (bool ok, ) = msg.sender.call{value: refund}("");
+                require(ok, "refund fail");
+            }
+        } else {
+            if (msg.value > 0) {
+                (bool ok, ) = msg.sender.call{value: msg.value}("");
+                require(ok, "refund fail");
+            }
         }
+    }
+
+    /**
+     * @notice Quote the LayerZero native fee the sender must include to notify Ethereum of a REPAY.
+     * @param id The orderId being repaid.
+     */
+    function quoteRepayFee(bytes32 id) external view returns (uint256 nativeFee) {
+        require(ethEid != 0, "eid unset");
+        bytes memory payload = abi.encode(uint8(2), id);
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(120_000, 0);
+        MessagingFee memory q = _quote(ethEid, payload, opts, false);
+        return q.nativeFee;
     }
 
     function setEthEid(uint32 _eid) external onlyOwner {
@@ -185,30 +211,21 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         ltvBps = _bps;
     }
 
-    function _scalePriceTo1e18(uint256 rawPrice, int32 expo)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _scalePriceTo1e18(
+        uint256 rawPrice,
+        int32 expo
+    ) internal pure returns (uint256) {
         int32 power = expo + 18;
-        if (power == 0) {
-            return rawPrice;
-        }
         if (power > 0) {
-            return rawPrice * (10 ** uint32(uint32(power)));
+            return rawPrice * (10 ** uint32(power));
         }
-        uint32 absPower = uint32(uint32(-power));
-        return rawPrice / (10 ** absPower);
+        return rawPrice / (10 ** uint32(-power));
     }
 
-    function _to1e18(uint256 amount, uint8 decimals_)
-        internal
-        pure
-        returns (uint256)
-    {
-        if (decimals_ == 18) {
-            return amount;
-        }
+    function _to1e18(
+        uint256 amount,
+        uint8 decimals_
+    ) internal pure returns (uint256) {
         if (decimals_ < 18) {
             return amount * (10 ** (18 - decimals_));
         }
