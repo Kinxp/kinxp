@@ -11,6 +11,7 @@ import {
   EntityIdHelper,
   ContractCreateFlow,
   ContractFunctionParameters,
+  AccountAllowanceApproveTransaction,
 } from "@hashgraph/sdk";
 import {
   Contract,
@@ -166,7 +167,7 @@ async function main() {
   const controllerArtifact = await artifacts.readArtifact("UsdHtsController");
 
   const controllerCreate = new ContractCreateFlow()
-    .setGas(1000000)
+    .setGas(10000000)
     .setBytecode(controllerArtifact.bytecode);
   const controllerCreateResponse = await controllerCreate.execute(hederaClient);
   const controllerReceipt = await controllerCreateResponse.getReceipt(hederaClient);
@@ -304,6 +305,15 @@ async function main() {
   await (await controller.transferOwnership(hederaCreditAddr)).wait();
   console.log("  ✓ Controller owned by OApp");
 
+  banner("Approve controller to spend tokens from the treasury");
+  const approveTx = new AccountAllowanceApproveTransaction()
+    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, 1000000000)
+    .freezeWith(hederaClient);
+  const signApproveTx = await approveTx.sign(hederaOperatorKey);
+  const approveResponse = await signApproveTx.execute(hederaClient);
+  const approveReceipt = await approveResponse.getReceipt(hederaClient);
+  console.log(`  ✓ Approval transaction status: ${approveReceipt.status}`);
+
   // ──────────────────────────────────────────────────────────────────────────────
   // Test borrow
   // ──────────────────────────────────────────────────────────────────────────────
@@ -366,7 +376,6 @@ async function main() {
   console.log("  Controller balance:", formatUnits(controllerBalAfter, 6), "hUSD");
 
   console.log("\n✅ E2E TEST SUCCESSFUL - BORROW WORKS!");
-  console.log("\nNow we know the fix works. The remaining repay/withdraw flow needs similar fixes.");
 }
 
 main().catch((err) => {

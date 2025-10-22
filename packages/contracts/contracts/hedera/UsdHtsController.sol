@@ -39,7 +39,7 @@ contract UsdHtsController is Ownable {
      */
     function associateToken(address tokenAddr) external onlyOwner {
         require(tokenAddr != address(0), "token=0");
-        int32 rc = HTS_PRECOMPILE.associateToken(address(this), tokenAddr);
+        int64 rc = HTS_PRECOMPILE.associateToken(address(this), tokenAddr);
         require(rc == 22, "associate failed");
     }
 
@@ -66,7 +66,7 @@ contract UsdHtsController is Ownable {
         int64 signedAmount = int64(amount);
         bytes[] memory emptyMetadata = new bytes[](0);
 
-        (int32 rcMint, , ) = HTS_PRECOMPILE.mintToken(
+        (int64 rcMint, , ) = HTS_PRECOMPILE.mintToken(
             usdToken,
             signedAmount,
             emptyMetadata
@@ -76,9 +76,9 @@ contract UsdHtsController is Ownable {
         IHederaTokenService.AccountAmount[]
             memory adjustments = new IHederaTokenService.AccountAmount[](2);
         adjustments[0] = IHederaTokenService.AccountAmount({
-            accountID: treasuryAccount,  // CHANGED FROM address(this)
+            accountID: treasuryAccount,
             amount: -signedAmount,
-            isApproval: false
+            isApproval: true
         });
         adjustments[1] = IHederaTokenService.AccountAmount({
             accountID: to,
@@ -93,13 +93,13 @@ contract UsdHtsController is Ownable {
         tokenTransfers[0] = IHederaTokenService.TokenTransferList({
             token: usdToken,
             transfers: adjustments,
-            nftTransfers: new int64[](0)
+            nftTransfers: new IHederaTokenService.NftTransfer[](0)
         });
 
         IHederaTokenService.TransferList memory emptyList = IHederaTokenService
             .TransferList({transfers: new IHederaTokenService.AccountAmount[](0)});
 
-        int32 rcXfer = HTS_PRECOMPILE.cryptoTransfer(emptyList, tokenTransfers);
+        int64 rcXfer = HTS_PRECOMPILE.cryptoTransfer(emptyList, tokenTransfers);
         require(rcXfer == 22, "xfer failed");
 
         emit Minted(to, amount);
@@ -112,7 +112,7 @@ contract UsdHtsController is Ownable {
         int64 signedAmount = int64(amount);
         int64[] memory serials = new int64[](0);
 
-        (int32 rcBurn, ) = HTS_PRECOMPILE.burnToken(
+        (int64 rcBurn, ) = HTS_PRECOMPILE.burnToken(
             usdToken,
             signedAmount,
             serials
