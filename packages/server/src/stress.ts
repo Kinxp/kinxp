@@ -466,17 +466,55 @@ function filterByTime(txs: any[], maxAgeSeconds: number): any[] {
   });
 }
 
+function getHash(t: any): string {
+  return (
+    t?.hash ||
+    t?.transaction_hash ||
+    t?.tx_hash ||
+    ""
+  );
+}
+
 function getMethod(t: any): string {
-  return t?.method || t?.decoded_input?.method_call || "";
+  return (
+    t?.method ||
+    t?.decoded_input?.method_call ||
+    t?.decoded_input?.method ||
+    t?.data?.method ||
+    ""
+  );
 }
 
 function getTo(t: any): string {
-  return (t?.to?.hash || t?.to || "").toLowerCase();
+  const value =
+    t?.to?.hash ??
+    t?.to ??
+    t?.to_address ??
+    t?.receiver ??
+    "";
+  return String(value).toLowerCase();
+}
+
+function getFrom(t: any): string {
+  const value =
+    t?.from?.hash ??
+    t?.from ??
+    t?.from_address ??
+    t?.sender ??
+    "";
+  return String(value).toLowerCase();
 }
 
 function getValueWei(t: any): bigint {
+  const raw = t?.value ?? t?.value_wei ?? t?.tx_value ?? t?.amount ?? "0";
   try {
-    return BigInt(t?.value || "0");
+    if (typeof raw === "bigint") {
+      return raw;
+    }
+    if (typeof raw === "number") {
+      return BigInt(Math.floor(raw));
+    }
+    return BigInt(String(raw));
   } catch {
     return 0n;
   }
@@ -544,7 +582,7 @@ export async function getMarketStress(
   const dexTxsMap = new Map<string, any>();
   dexTxArrays.forEach((txs, addrIdx) => {
     txs.forEach((tx, txIdx) => {
-      const hash = tx?.hash || tx?.transaction_hash;
+      const hash = getHash(tx);
       const key = hash ? `hash:${hash}` : `idx:${addrIdx}:${txIdx}`;
       if (!dexTxsMap.has(key)) {
         dexTxsMap.set(key, tx);

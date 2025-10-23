@@ -21,7 +21,7 @@ function links(chainId: number, tx?: string, from?: string, to?: string) {
   return out;
 }
 
-export async function explainTxLLM_MCP({ chainId, tx  Hash }: { chainId: number; txHash: string; }) {
+export async function explainTxLLM_MCP({ chainId, txHash }: { chainId: number; txHash: string; }) {
   const [info, logs, summary] = await Promise.all([
     mcp.get_transaction_info(chainId, txHash, true),
     mcp.get_transaction_logs(chainId, txHash),
