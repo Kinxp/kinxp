@@ -1,5 +1,7 @@
 // src/stress.ts - MCP + Ollama for AI-powered analysis
+import { Buffer } from "buffer";
 import { mcpRest as mcp } from "./mcp_rest.js";
+import { explorerBase } from "./config.js";
 
 const DEBUG = true;
 const log = (...a: any[]) => console.log("[STRESS]", ...a);
@@ -74,6 +76,283 @@ async function analyzeWithOllama(prompt: string): Promise<string> {
   }
 }
 
+function unwrapMcpPayload(raw: any): any {
+  let current = raw;
+  const visited = new Set<any>();
+
+  for (let depth = 0; depth < 6; depth++) {
+    if (current === null || current === undefined) {
+      return current;
+    }
+
+    if (typeof current === "string") {
+      const trimmed = current.trim();
+      if (!trimmed) {
+        return trimmed;
+      }
+      try {
+        current = JSON.parse(trimmed);
+        continue;
+      } catch {
+        return current;
+      }
+    }
+
+    if (typeof current !== "object") {
+      return current;
+    }
+
+    if (visited.has(current)) {
+      return current;
+    }
+    visited.add(current);
+
+    if (Array.isArray(current)) {
+      return current;
+    }
+
+    // Node Buffer representation
+    if (typeof current.type === "string" && Array.isArray((current as any).data)) {
+      try {
+        const buffer = Buffer.from((current as any).data);
+        current = buffer.toString("utf8");
+        continue;
+      } catch {
+        return current;
+      }
+    }
+
+    if (typeof (current as any).bodyText === "string") {
+      current = (current as any).bodyText;
+      continue;
+    }
+
+    if (typeof (current as any).body === "string") {
+      current = (current as any).body;
+      continue;
+    }
+
+    if (typeof (current as any).payload === "string") {
+      current = (current as any).payload;
+      continue;
+    }
+
+    if (typeof (current as any).data === "string") {
+      current = (current as any).data;
+      continue;
+    }
+
+    if ((current as any).data && typeof (current as any).data === "object") {
+      current = (current as any).data;
+      continue;
+    }
+
+    if (typeof (current as any).text === "string") {
+      current = (current as any).text;
+      continue;
+    }
+
+    return current;
+  }
+
+  return current;
+}
+
+function normalizeTxPage(raw: any) {
+  const data = unwrapMcpPayload(raw);
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : Array.isArray(data?.result)
+    ? data.result
+    : Array.isArray(data?.transactions)
+    ? data.transactions
+    : Array.isArray(data)
+    ? data
+    : [];
+
+  const nextParams =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data.next_page_params ??
+        data.nextPageParams ??
+        data.next ??
+        data.nextCursor ??
+        data.next_cursor ??
+        data.cursor ??
+        null)
+      : null;
+
+  return { data, items, nextParams };
+}
+
+function isRecognizedTxPayload(normalized: { data: any }) {
+  const data = normalized.data;
+  if (Array.isArray(data)) {
+    return true;
+  }
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  if (
+    Array.isArray((data as any).items) ||
+    Array.isArray((data as any).result) ||
+    Array.isArray((data as any).transactions)
+  ) {
+    return true;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(data, "next_page_params") ||
+    Object.prototype.hasOwnProperty.call(data, "nextPageParams") ||
+    Object.prototype.hasOwnProperty.call(data, "next") ||
+    Object.prototype.hasOwnProperty.call(data, "next_cursor") ||
+    Object.prototype.hasOwnProperty.call(data, "cursor")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeNextParams(input: any): Record<string, string> | null {
+  if (!input) return null;
+
+  if (typeof input === "string") {
+    return { cursor: input };
+  }
+
+  if (typeof input !== "object") {
+    return null;
+  }
+
+  const filtered = Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== null && value !== undefined && String(value).length > 0)
+  );
+
+  return Object.keys(filtered).length ? filtered : null;
+}
+
+function buildQuery(params?: Record<string, any>) {
+  if (!params) return "";
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined) continue;
+    search.set(key, String(value));
+  }
+  return search.toString();
+}
+
+async function fetchTxPage(
+  chainId: number,
+  addr: string,
+  ageFrom: string,
+  ageTo: string,
+  extraParams?: Record<string, any>
+) {
+  const sanitizedParams = sanitizeNextParams(extraParams || undefined);
+  const attemptLabel = sanitizedParams ? ` params=${JSON.stringify(sanitizedParams)}` : "";
+
+  const tryMcp = async () => {
+    const t0 = Date.now();
+    const response = await mcp.get_transactions_by_address(
+      chainId,
+      addr,
+      ageFrom,
+      ageTo,
+      undefined,
+      sanitizedParams || undefined
+    );
+    const ms = Date.now() - t0;
+    const normalized = normalizeTxPage(response?.data ?? response ?? {});
+    const recognized = isRecognizedTxPayload(normalized);
+
+    if (DEBUG) {
+      log("MCP Response structure:", {
+        type: Array.isArray(normalized.data) ? "array" : typeof normalized.data,
+        recognized,
+        hasItemsProp: Array.isArray((normalized.data as any)?.items),
+        itemsLength: normalized.items.length,
+        nextParams: sanitizedParams
+          ? sanitizedParams
+          : normalized.nextParams
+          ? typeof normalized.nextParams === "object"
+            ? Object.keys(normalized.nextParams)
+            : normalized.nextParams
+          : null,
+        sampleKeys:
+          Array.isArray(normalized.items) && normalized.items.length
+            ? Object.keys(normalized.items[0])
+            : null,
+        preview:
+          typeof normalized.data === "string"
+            ? String(normalized.data).slice(0, 120)
+            : undefined
+      });
+    }
+
+    if (!recognized) {
+      throw new Error(
+        `Unrecognized MCP payload (type=${typeof normalized.data}) preview=${String(normalized.data)
+          .slice(0, 120)
+          .replace(/\s+/g, " ")}`
+      );
+    }
+
+    return {
+      ...normalized,
+      via: "mcp" as const,
+      durationMs: ms
+    };
+  };
+
+  const tryDirect = async (reason: string) => {
+    const baseUrl = `${explorerBase(chainId)}/api/v2/addresses/${addr}/transactions`;
+    const query = buildQuery(sanitizedParams || undefined);
+    const url = query ? `${baseUrl}?${query}` : baseUrl;
+    const t0 = Date.now();
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10000)
+    });
+    const ms = Date.now() - t0;
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Direct HTTP ${res.status} ${res.statusText} ${txt.slice(0, 120)}`);
+    }
+    const json = await res.json();
+    const normalized = normalizeTxPage(json);
+    const recognized = isRecognizedTxPayload(normalized);
+
+    if (DEBUG) {
+      log("Direct Response structure:", {
+        type: Array.isArray(normalized.data) ? "array" : typeof normalized.data,
+        recognized,
+        hasItemsProp: Array.isArray((normalized.data as any)?.items),
+        itemsLength: normalized.items.length,
+        nextParams: normalized.nextParams
+          ? typeof normalized.nextParams === "object"
+            ? Object.keys(normalized.nextParams)
+            : normalized.nextParams
+          : null
+      });
+    }
+
+    if (!recognized) {
+      throw new Error(`Direct payload still unrecognized after MCP failure (${reason})`);
+    }
+
+    return {
+      ...normalized,
+      via: "direct" as const,
+      durationMs: ms
+    };
+  };
+
+  try {
+    return await tryMcp();
+  } catch (mcpErr: any) {
+    log(`MCP fetch issue${attemptLabel ? attemptLabel : ""}: ${mcpErr?.message || mcpErr}`);
+    return await tryDirect(mcpErr?.message || String(mcpErr || "unknown"));
+  }
+}
+
 // Simple transaction fetch with MCP
 async function fetchTxsViaMCP(
   chainId: number,
@@ -94,70 +373,36 @@ async function fetchTxsViaMCP(
   let page = 1;
 
   while (collected.length < limit) {
-    const extraParams = nextParams ? { ...nextParams } : undefined;
-    const extraLog =
-      extraParams && Object.keys(extraParams).length
-        ? ` params=${JSON.stringify(extraParams)}`
-        : "";
-    log(`MCP Fetch${page > 1 ? ` (page ${page})` : ""}: addr=${addr}${extraLog}`);
-
     try {
-      const t0 = Date.now();
-      const response = await mcp.get_transactions_by_address(
+      const extraParams = nextParams ? { ...nextParams } : undefined;
+      const extraLog =
+        extraParams && Object.keys(extraParams).length ? ` params=${JSON.stringify(extraParams)}` : "";
+      log(`MCP Fetch${page > 1 ? ` (page ${page})` : ""}: addr=${addr}${extraLog}`);
+
+      const result = await fetchTxPage(
         chainId,
         addr,
         ageFrom,
         ageTo,
-        undefined,
         extraParams
       );
-      const ms = Date.now() - t0;
 
-      const data = response?.data ?? response ?? {};
-      if (DEBUG) {
-        const sampleItem = Array.isArray(data?.items) && data.items.length ? data.items[0] : null;
-        log("MCP Response structure:", {
-          keys: Object.keys(data),
-          hasItems: Array.isArray(data?.items),
-          itemsLength: Array.isArray(data?.items) ? data.items.length : 0,
-          sampleKeys: sampleItem ? Object.keys(sampleItem) : null
-        });
-      }
-
-      const items = Array.isArray(data?.items) ? data.items : [];
+      const items = result.items;
       collected.push(...items);
-      log(`MCP Parsed ${items.length} transactions (total ${collected.length}) in ${ms}ms`);
+      log(
+        `${result.via.toUpperCase()} Parsed ${items.length} transactions (total ${collected.length}) in ${result.durationMs}ms`
+      );
 
       if (collected.length >= limit) {
         break;
       }
 
-      const rawNext =
-        data?.next_page_params ||
-        data?.nextPageParams ||
-        data?.next_cursor ||
-        data?.cursor ||
-        null;
-
-      if (!rawNext) {
+      const nextFromPage = sanitizeNextParams(result.nextParams);
+      if (!nextFromPage) {
         break;
       }
 
-      if (typeof rawNext === "string") {
-        nextParams = { cursor: rawNext };
-      } else if (typeof rawNext === "object") {
-        const filteredEntries = Object.entries(rawNext).filter(
-          ([, value]) => value !== null && value !== undefined && String(value).length > 0
-        );
-        nextParams = filteredEntries.length ? Object.fromEntries(filteredEntries) : null;
-      } else {
-        nextParams = null;
-      }
-
-      if (!nextParams) {
-        break;
-      }
-
+      nextParams = nextFromPage;
       page += 1;
     } catch (e) {
       log(`MCP fetch error for ${addr.slice(0, 10)}:`, {
