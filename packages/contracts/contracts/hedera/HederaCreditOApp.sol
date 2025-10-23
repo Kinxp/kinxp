@@ -11,6 +11,8 @@ import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import {OApp, MessagingFee, Origin} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
 import {OptionsBuilder} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
 
+import {MessageTypes} from "../MessageTypes.sol";
+
 /**
  * @title HederaCreditOApp
  * @notice Issues USD HTS credit against mirrored ETH collateral and handles repayments.
@@ -81,7 +83,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             address borrower,
             uint256 ethAmountWei
         ) = abi.decode(message, (uint8, bytes32, address, uint256));
-        if (msgType == 1) {
+        if (msgType == MessageTypes.FUNDED) {
             HOrder storage o = horders[id];
             require(!o.open, "exists");
             o.borrower = borrower;
@@ -156,7 +158,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         emit Repaid(id, usdAmount, full);
 
         if (full && notifyEthereum && ethEid != 0) {
-            bytes memory payload = abi.encode(uint8(2), id);
+            bytes memory payload = abi.encode(MessageTypes.REPAID, id);
             bytes memory opts = OptionsBuilder
                 .newOptions()
                 .addExecutorLzReceiveOption(120_000, 0);
@@ -194,7 +196,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
      */
     function quoteRepayFee(bytes32 id) external view returns (uint256 nativeFee) {
         require(ethEid != 0, "eid unset");
-        bytes memory payload = abi.encode(uint8(2), id);
+        bytes memory payload = abi.encode(MessageTypes.REPAID, id);
         bytes memory opts = OptionsBuilder
             .newOptions()
             .addExecutorLzReceiveOption(120_000, 0);

@@ -19,6 +19,8 @@ import {
     MessagingParams
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
+import {MessageTypes} from "../MessageTypes.sol";
+
 /**
  * @title EthCollateralOApp
  * @notice Locks ETH against an order id and optionally coordinates with Hedera via LayerZero.
@@ -84,7 +86,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
 
         if (!OAPP_DISABLED && hederaEid != 0) {
             bytes memory payload = abi.encode(
-                uint8(1),
+                MessageTypes.FUNDED,
                 orderId,
                 msg.sender,
                 msg.value
@@ -105,7 +107,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     {
         require(hederaEid != 0, "eid unset");
         bytes memory payload = abi.encode(
-            uint8(1),
+            MessageTypes.FUNDED,
             bytes32(0),
             borrower,
             depositAmountWei
@@ -134,7 +136,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
             message,
             (uint8, bytes32)
         );
-        if (msgType == 2) {
+        if (msgType == MessageTypes.REPAID) {
             orders[orderId].repaid = true;
             emit MarkRepaid(orderId);
         }
@@ -174,7 +176,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         require(depositAmountWei > 0, "no ETH");
 
         bytes memory payload = abi.encode(
-            uint8(1),
+            MessageTypes.FUNDED,
             orderId,
             msg.sender,
             depositAmountWei
