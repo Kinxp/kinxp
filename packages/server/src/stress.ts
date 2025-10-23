@@ -1,271 +1,543 @@
-// src/stress.ts
+// src/stress.ts - MCP + Ollama for AI-powered analysis
 import { mcpRest as mcp } from "./mcp_rest.js";
 import { explorerBase } from "./config.js";
 
-const DEBUG = (process.env.STRESS_DEBUG || "").trim() === "1";
-const MCP_BASE = (process.env.MCP_REST_BASE || "").trim();
+const DEBUG = true;
+const log = (...a: any[]) => console.log("[STRESS]", ...a);
 
-const log = (...a: any[]) => { if (DEBUG) console.log("[STRESS]", ...a); };
+const OLLAMA_BASE = process.env.OLLAMA_BASE || "http://localhost:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2"; // or "mistral", "phi3", etc
 
-// ---------- env helpers ----------
-function explodeList(val?: string): string[] {
-  if (!val) return [];
-  return val.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
-}
-function envList(prefix: string, chainId: number): string[] {
-  const env = process.env as Record<string, string | undefined>;
-  const merged = [env[`${prefix}_${chainId}`], env[prefix]].filter(Boolean).join(",");
-  const list = explodeList(merged).map((s) => s.toLowerCase());
-  return Array.from(new Set(list));
-}
-function minutesAgoISO(mins: number) {
-  return new Date(Date.now() - mins * 60 * 1000).toISOString();
-}
+const AAVE_POOL = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2";
+const UNI_V2_ROUTER = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d";
+const UNI_V3_ROUTER = "0xE592427a0AEce92De3Edee1F18E0157C05861564";
+const ONEINCH_V5 = "0x1111111254EEB25477B68fb85Ed929f73A960582";
+const COW_SETTLER = "0x9008d19f58aabd9ed0d60971565aa8510560ab41";
+const BINANCE_HOT = "0xf977814e90da44bfa03b6295a0616a897441acec";
 
-// ---------- normalizers ----------
-function pick<T = any>(...vals: any[]): T | undefined {
-  for (const v of vals) if (v !== undefined && v !== null) return v as T;
-  return undefined;
-}
-function normAddr(x: any): string {
-  const s = pick<string>(x?.hash, x?.address, x?.addr, typeof x === "string" ? x : undefined);
-  return (s || "").toLowerCase();
-}
-function getMethod(t: any): string {
-  return (
-    pick<string>(
-      t?.method,
-      t?.data?.method,
-      t?.summary?.method,
-      t?.decoded_call?.name,
-      t?.decoded_input?.name,
-      t?.input?.function_name
-    ) || ""
-  );
-}
-function getTo(t: any): string {
-  return (normAddr(t?.to) || normAddr(t?.to_address) || (t?.to ? String(t?.to).toLowerCase() : "") || "").toLowerCase();
-}
-function getFrom(t: any): string {
-  return (normAddr(t?.from) || normAddr(t?.from_address) || (t?.from ? String(t?.from).toLowerCase() : "") || "").toLowerCase();
-}
-function getValueWei(t: any): bigint {
-  const raw = pick<any>(t?.value, t?.data?.value, t?.msg_value, t?.eth_value_wei, t?.transfer_value_wei);
-  try {
-    if (typeof raw === "string") return BigInt(raw);
-    if (typeof raw === "number") return BigInt(Math.trunc(raw));
-    if (typeof raw === "bigint") return raw;
-  } catch {}
-  return 0n;
-}
-function weiToEthNum(wei: bigint): number {
-  const s = wei.toString();
-  if (s.length <= 18) return Number(`0.${"0".repeat(18 - s.length)}${s}`.replace(/0+$/, "")) || 0;
-  const int = s.slice(0, s.length - 18);
-  const frac = s.slice(s.length - 18).replace(/0+$/, "");
-  return Number(frac ? `${int}.${frac}` : int);
-}
+const DEX_TARGETS = [
+  UNI_V2_ROUTER,
+  UNI_V3_ROUTER,
+  ONEINCH_V5,
+  COW_SETTLER
+];
 
-// ---------- fetch with multi-stage fallback ----------
-type AttemptRow = {
-  kind: "liquidation" | "dex" | "cex";
-  addr: string;
-  methods?: string;
-  age_from: string;
-  age_to: string;
-  http_ok: boolean;
-  items?: number;
-  ms: number;
-  error?: string;
+const DEX_TARGET_SET = new Set(DEX_TARGETS.map((addr) => addr.toLowerCase()));
+
+const DEX_LABELS: Record<string, string> = {
+  [UNI_V2_ROUTER.toLowerCase()]: "Uniswap V2",
+  [UNI_V3_ROUTER.toLowerCase()]: "Uniswap V3",
+  [ONEINCH_V5.toLowerCase()]: "1inch v5",
+  [COW_SETTLER.toLowerCase()]: "CowSwap Settler"
 };
 
-async function callOnce(
-  kind: AttemptRow["kind"],
-  chainId: number,
-  addr: string,
-  from: string,
-  to: string,
-  methods?: string
-) {
-  const t0 = Date.now();
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.floor(num);
+}
+
+const DEFAULT_WINDOW_SECONDS = parsePositiveInt(process.env.STRESS_WINDOW_DEFAULT_SECONDS, 600);
+const MIN_WINDOW_SECONDS = parsePositiveInt(process.env.STRESS_WINDOW_MIN_SECONDS, DEFAULT_WINDOW_SECONDS);
+const FALLBACK_WINDOW_SECONDS = Math.max(
+  MIN_WINDOW_SECONDS,
+  parsePositiveInt(process.env.STRESS_WINDOW_FALLBACK_SECONDS, 60 * 60 * 24 * 7) // 7 days
+);
+
+// Ollama API call
+async function analyzeWithOllama(prompt: string): Promise<string> {
   try {
-    const txs = await mcp.get_transactions_by_address(chainId, addr, from, to, methods);
-    const ms = Date.now() - t0;
-    const items = pick<any[]>(txs?.data?.items, txs?.items, txs?.result, txs?.data) || [];
-    const okRow: AttemptRow = { kind, addr, methods, age_from: from, age_to: to, http_ok: true, items: items.length, ms };
-    log("OK", okRow);
-    return { items, row: okRow };
+    const response = await fetch(`${OLLAMA_BASE}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+        options: {
+          temperature: 0.3, // Lower = more focused
+          num_predict: 200  // Max tokens
+        }
+      }),
+      signal: AbortSignal.timeout(30000) // 30s timeout
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.response || "";
   } catch (e: any) {
-    const ms = Date.now() - t0;
-    const errMsg = String(e?.message || e);
-    const errRow: AttemptRow = { kind, addr, methods, age_from: from, age_to: to, http_ok: false, ms, error: errMsg };
-    log("ERR", errRow);
-    return { items: [] as any[], row: errRow };
+    log(`Ollama error: ${e.message}`);
+    return "";
   }
 }
 
-async function tryGetTxs(
-  kind: AttemptRow["kind"],
+// Simple transaction fetch with MCP
+async function fetchTxsViaMCP(
   chainId: number,
   addr: string,
-  windowMins: number,
-  methods?: string,
-  doChunked = false
-): Promise<{ items: any[]; attempts: AttemptRow[] }> {
-  const attempts: AttemptRow[] = [];
+  limit: number = 50
+): Promise<any[]> {
+  if (limit <= 0) {
+    return [];
+  }
 
-  // 1) First attempt: full window
-  {
-    const from = minutesAgoISO(windowMins);
-    const to = new Date().toISOString();
-    const { items, row } = await callOnce(kind, chainId, addr, from, to, methods);
-    attempts.push(row);
-    if (row.http_ok) return { items, attempts };
-    // if it's not a timeout-ish error, bail early
-    if (!/524|timeout|timed out|Time-out/i.test(row.error || "")) {
-      return { items: [], attempts };
+  const baseUrl = `${explorerBase(chainId)}/api/v2/addresses/${addr}/transactions`;
+  const collected: any[] = [];
+  let nextParams: Record<string, string> | null = null;
+  let page = 1;
+
+  while (collected.length < limit) {
+    const search = new URLSearchParams();
+    if (nextParams) {
+      for (const [key, value] of Object.entries(nextParams)) {
+        if (value !== null && value !== undefined && String(value).length > 0) {
+          search.set(key, String(value));
+        }
+      }
+    }
+
+    const url = search.toString() ? `${baseUrl}?${search.toString()}` : baseUrl;
+    log(`Fetching${page > 1 ? ` (page ${page})` : ""}: ${url}`);
+
+    try {
+      const t0 = Date.now();
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(10000)
+      });
+
+      const ms = Date.now() - t0;
+      log(`Response: HTTP ${response.status} in ${ms}ms`);
+
+      if (!response.ok) {
+        const text = await response.text();
+        log("Error body:", text.slice(0, 500));
+        break;
+      }
+
+      const data = await response.json();
+
+      if (DEBUG) {
+        log("Response structure:", {
+          keys: Object.keys(data),
+          hasItems: !!data.items,
+          itemsLength: data.items?.length
+        });
+      }
+
+      const items = Array.isArray(data?.items) ? data.items : [];
+      collected.push(...items);
+      log(`Parsed ${items.length} transactions (total ${collected.length})`);
+
+      if (collected.length >= limit) {
+        break;
+      }
+
+      const rawNext = data?.next_page_params;
+      if (!rawNext) {
+        break;
+      }
+
+      const filteredEntries = Object.entries(rawNext).filter(
+        ([, value]) => value !== null && value !== undefined && String(value).length > 0
+      );
+
+      if (filteredEntries.length === 0) {
+        break;
+      }
+
+      nextParams = Object.fromEntries(filteredEntries);
+      page += 1;
+    } catch (e) {
+      log(`Fetch error for ${addr.slice(0, 10)}:`, {
+        message: e instanceof Error ? e.message : String(e),
+        stack: e instanceof Error ? e.stack?.slice(0, 200) : undefined
+      });
+      break;
     }
   }
 
-  // 2) Second attempt: half window (min 10m)
-  {
-    const half = Math.max(10, Math.floor(windowMins / 2));
-    const from = minutesAgoISO(half);
-    const to = new Date().toISOString();
-    const { items, row } = await callOnce(kind, chainId, addr, from, to, methods);
-    attempts.push(row);
-    if (row.http_ok) return { items, attempts };
-  }
-
-  // 3) Third attempt (optional): chunked scan in 5-min slices from now backwards
-  if (doChunked) {
-    const chunk = 5;
-    const now = Date.now();
-    // Scan up to 6 chunks (~30m) or until success
-    for (let i = 0; i < 6; i++) {
-      const to = new Date(now - i * chunk * 60 * 1000).toISOString();
-      const from = new Date(new Date(to).getTime() - chunk * 60 * 1000).toISOString();
-      const { items, row } = await callOnce(kind, chainId, addr, from, to, methods);
-      attempts.push(row);
-      if (row.http_ok) return { items, attempts };
-    }
-  }
-
-  return { items: [], attempts };
+  return collected.slice(0, limit);
 }
 
-type StressPart = { label: string; score: number; count?: number; valueEth?: number; links?: string[] };
+function getTimestampMs(t: any): number | null {
+  const candidates = [
+    t?.timestamp,
+    t?.block_timestamp,
+    t?.inserted_at,
+    t?.created_at,
+    t?.block_signed_at,
+    t?.time
+  ];
 
-export async function getMarketStress(chainId: number, windowMins = 30): Promise<{
-  score: number;
-  parts: StressPart[];
-  debug?: any;
-}> {
-  const age_to = new Date().toISOString();
-  const age_from = minutesAgoISO(windowMins);
+  for (const value of candidates) {
+    if (value === null || value === undefined) {
+      continue;
+    }
 
-  log("BEGIN", { MCP_BASE, chainId, windowMins, age_from, age_to });
+    if (typeof value === "number") {
+      // Heuristic: assume value already milliseconds if large, otherwise treat as seconds
+      if (value > 1e12) {
+        return value;
+      }
+      return value * 1000;
+    }
 
-  const aavePools = envList("AAVE_POOL_ADDR", chainId);
-  const compAddrs = envList("COMPOUND_ADDR", chainId);
-  const routers = [...envList("UNIV2_ROUTER", chainId), ...envList("UNIV3_ROUTER", chainId), ...envList("ONEINCH_ROUTER", chainId)];
-  const cexAddrs = [...envList("BINANCE_HOT", chainId), ...envList("COINBASE_HOT", chainId)];
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      if (!Number.isNaN(ms)) {
+        return ms;
+      }
+      continue;
+    }
 
-  log("ENV_ADDRS", { aavePools, compAddrs, routers, cexAddrs });
-
-  const debugCalls: AttemptRow[] = [];
-  const warnings: string[] = [];
-
-  // ===== Liquidations (method-filter + chunked fallback) =====
-  const LIQ_METHODS = "liquidationCall,liquidateBorrow,liquidatePosition,liquidate";
-  const liquidParts: StressPart[] = [];
-  for (const addr of [...aavePools, ...compAddrs]) {
-    const { items, attempts } = await tryGetTxs("liquidation", chainId, addr, windowMins, LIQ_METHODS, true);
-    debugCalls.push(...attempts);
-
-    const hadSuccess = attempts.some((a) => a.http_ok);
-    if (!hadSuccess) warnings.push(`timeout_liquidations:${addr.slice(0, 10)}…`);
-
-    const liqs = items.filter((t) => /liquid/i.test(getMethod(t)));
-    if (DEBUG) log("LIQ_SUMMARY", { addr, items: items.length, liqCount: liqs.length });
-
-    if (liqs.length) {
-      liquidParts.push({
-        label: `Liquidations@${addr.slice(0, 6)}`,
-        score: Math.min(40, liqs.length * 2),
-        count: liqs.length,
-        links: [`${explorerBase(chainId)}/address/${addr}`],
-      });
+    if (typeof value === "string") {
+      const ms = Date.parse(value);
+      if (!Number.isNaN(ms)) {
+        return ms;
+      }
     }
   }
 
-  // ===== DEX Routers =====
-  const dexParts: StressPart[] = [];
-  for (const addr of routers) {
-    const { items, attempts } = await tryGetTxs("dex", chainId, addr, windowMins /* no methods */);
-    debugCalls.push(...attempts);
+  return null;
+}
 
-    const swaps = items.filter((t) => {
-      const m = getMethod(t);
-      const to = getTo(t);
-      return /(swap|multicall|exact|router)/i.test(m) || to === addr.toLowerCase();
+function filterByTime(txs: any[], maxAgeSeconds: number): any[] {
+  const cutoff = Date.now() - maxAgeSeconds * 1000;
+  return txs.filter((t) => {
+    const ts = getTimestampMs(t);
+    return ts !== null && ts >= cutoff;
+  });
+}
+
+function getMethod(t: any): string {
+  return t?.method || t?.decoded_input?.method_call || "";
+}
+
+function getTo(t: any): string {
+  return (t?.to?.hash || t?.to || "").toLowerCase();
+}
+
+function getValueWei(t: any): bigint {
+  try {
+    return BigInt(t?.value || "0");
+  } catch {
+    return 0n;
+  }
+}
+
+function weiToEth(wei: bigint): number {
+  return Number(wei) / 1e18;
+}
+
+type TxSummary = {
+  method: string;
+  value_eth: number;
+  from: string;
+  to: string;
+  timestamp: string;
+};
+
+type StressPart = {
+  label: string;
+  score: number;
+  count: number;
+  valueEth?: number;
+  aiInsight?: string;
+  topTxs?: TxSummary[];
+};
+
+export async function getMarketStress(
+  chainId: number = 1,
+  requestedWindowSeconds: number = DEFAULT_WINDOW_SECONDS,
+  useAI: boolean = true
+): Promise<{
+  score: number;
+  riskLevel: string;
+  parts: StressPart[];
+  summary: string;
+  aiAnalysis?: string;
+}> {
+  const requested =
+    typeof requestedWindowSeconds === "number" && Number.isFinite(requestedWindowSeconds)
+      ? Math.max(1, Math.floor(requestedWindowSeconds))
+      : DEFAULT_WINDOW_SECONDS;
+  const windowSeconds = Math.max(requested, MIN_WINDOW_SECONDS);
+  const requestedMinutes = Math.round((requested / 60) * 10) / 10;
+  const windowMinutes = Math.round((windowSeconds / 60) * 10) / 10;
+  const windowDescriptor =
+    requested === windowSeconds
+      ? `${windowSeconds}s window (~${windowMinutes}m)`
+      : `requested ${requested}s (~${requestedMinutes}m) -> using ${windowSeconds}s (~${windowMinutes}m)`;
+  log(`=== START: ${windowDescriptor}, AI=${useAI} ===`);
+  
+  const parts: StressPart[] = [];
+  let totalRecentTxs = 0;
+
+  const fetchTasks = [
+    fetchTxsViaMCP(chainId, AAVE_POOL, 200),
+    ...DEX_TARGETS.map((addr) => fetchTxsViaMCP(chainId, addr, 200)),
+    fetchTxsViaMCP(chainId, BINANCE_HOT, 200)
+  ];
+
+  const fetchResults = await Promise.all(fetchTasks);
+  const aaveTxs = fetchResults[0];
+  const dexTxArrays = fetchResults.slice(1, 1 + DEX_TARGETS.length);
+  const binanceTxs = fetchResults[fetchResults.length - 1];
+
+  const dexTxsMap = new Map<string, any>();
+  dexTxArrays.forEach((txs, addrIdx) => {
+    txs.forEach((tx, txIdx) => {
+      const hash = tx?.hash || tx?.transaction_hash;
+      const key = hash ? `hash:${hash}` : `idx:${addrIdx}:${txIdx}`;
+      if (!dexTxsMap.has(key)) {
+        dexTxsMap.set(key, tx);
+      }
     });
+  });
+  const dexTxs = Array.from(dexTxsMap.values());
 
-    const ethValue = swaps.reduce((acc: number, t: any) => {
-      const to = getTo(t);
-      if (to !== addr.toLowerCase()) return acc;
-      return acc + weiToEthNum(getValueWei(t));
+  // 1. Liquidations Analysis
+  {
+    log(`\n📊 Analyzing Aave liquidations...`);
+    log(`Total txs fetched: ${aaveTxs.length}`);
+    
+    const recent = filterByTime(aaveTxs, windowSeconds);
+    totalRecentTxs += recent.length;
+    log(`Txs in time window (${windowSeconds}s): ${recent.length}`);
+    
+    if (recent.length > 0 && DEBUG) {
+      log(`Sample tx methods:`, recent.slice(0, 5).map(t => ({
+        method: getMethod(t),
+        to: getTo(t).slice(0, 10),
+        value: t.value
+      })));
+    }
+    
+    const liqs = recent.filter(t => /liquid/i.test(getMethod(t)));
+    log(`Liquidation txs found: ${liqs.length}`);
+    
+    const totalEth = liqs.reduce((sum, t) => sum + weiToEth(getValueWei(t)), 0);
+    const score = Math.min(50, liqs.length * 3 + Math.min(20, totalEth * 0.2));
+    
+    // Get top 3 liquidations for AI context
+    const topTxs = liqs.slice(0, 3).map(t => ({
+      method: getMethod(t),
+      value_eth: weiToEth(getValueWei(t)),
+      from: (t.from?.hash || t.from || "").slice(0, 10),
+      to: getTo(t).slice(0, 10),
+      timestamp: t.timestamp || t.block_timestamp || t.inserted_at || ""
+    }));
+    
+    let aiInsight = "";
+    if (useAI && liqs.length > 0) {
+      const prompt = `Analyze these ${liqs.length} liquidation events on Aave (total ${totalEth.toFixed(2)} ETH) in the last ${Math.floor(windowSeconds/60)} minutes. Top transactions: ${JSON.stringify(topTxs)}. What does this indicate about market stress? Be concise (2-3 sentences).`;
+      
+      aiInsight = await analyzeWithOllama(prompt);
+    }
+    
+    parts.push({
+      label: 'Liquidations',
+      score: Math.round(score),
+      count: liqs.length,
+      valueEth: Number(totalEth.toFixed(2)),
+      aiInsight,
+      topTxs
+    });
+    
+    log(`Liquidations: ${liqs.length} events, ${totalEth.toFixed(2)} ETH`);
+  }
+
+  // 2. DEX Activity Analysis
+  {
+    log(`\n📊 Analyzing DEX activity...`);
+    log(`Total txs fetched: ${dexTxs.length}`);
+
+    if (DEBUG && dexTxs.length > 0) {
+      const perTarget = DEX_TARGETS.map((addr, idx) => ({
+        label: DEX_LABELS[addr.toLowerCase()] || addr.slice(0, 10),
+        count: dexTxArrays[idx]?.length ?? 0
+      }));
+      log(`Per router counts:`, perTarget);
+    }
+    
+    const recent = filterByTime(dexTxs, windowSeconds);
+    totalRecentTxs += recent.length;
+    log(`Txs in time window: ${recent.length}`);
+    
+    if (recent.length > 0 && DEBUG) {
+      log(`Sample tx methods:`, recent.slice(0, 5).map(t => ({
+        method: getMethod(t),
+        to: getTo(t).slice(0, 10),
+        value: t.value
+      })));
+    }
+    
+    const swaps = recent.filter(t => /swap|exact/i.test(getMethod(t)));
+    log(`Swap txs found: ${swaps.length}`);
+    
+    const totalEth = swaps.reduce((sum, t) => {
+      const toAddr = getTo(t);
+      if (DEX_TARGET_SET.has(toAddr)) {
+        return sum + weiToEth(getValueWei(t));
+      }
+      return sum;
     }, 0);
-
-    const score = Math.min(30, swaps.length * 0.5 + Math.min(10, ethValue));
-    dexParts.push({
-      label: `DEX@${addr.slice(0, 6)}`,
-      score,
+    
+    const score = Math.min(30, swaps.length * 0.8 + Math.min(10, totalEth * 0.3));
+    
+    const topTxs = swaps.slice(0, 3).map(t => ({
+      method: getMethod(t),
+      value_eth: weiToEth(getValueWei(t)),
+      from: (t.from?.hash || t.from || "").slice(0, 10),
+      to: getTo(t).slice(0, 10),
+      timestamp: t.timestamp || t.block_timestamp || t.inserted_at || ""
+    }));
+    
+    let aiInsight = "";
+    if (useAI && swaps.length > 5) {
+      const prompt = `${swaps.length} DEX swaps on Uniswap (${totalEth.toFixed(2)} ETH volume) in ${Math.floor(windowSeconds/60)} minutes. Is this elevated trading activity? What might it signal? Be concise.`;
+      
+      aiInsight = await analyzeWithOllama(prompt);
+    }
+    
+    parts.push({
+      label: 'DEX Volume',
+      score: Math.round(score),
       count: swaps.length,
-      valueEth: Number(ethValue.toFixed(3)),
-      links: [`${explorerBase(chainId)}/address/${addr}`],
+      valueEth: Number(totalEth.toFixed(2)),
+      aiInsight,
+      topTxs
     });
-    if (DEBUG) log("DEX_SUMMARY", { addr, items: items.length, swaps: swaps.length, ethValue, score });
+    
+    log(`DEX: ${swaps.length} swaps, ${totalEth.toFixed(2)} ETH`);
   }
 
-  // ===== CEX inflows =====
-  const cexParts: StressPart[] = [];
-  for (const addr of cexAddrs) {
-    const { items, attempts } = await tryGetTxs("cex", chainId, addr, windowMins /* no methods */);
-    debugCalls.push(...attempts);
-
-    const inbound = items.filter((t) => getTo(t) === addr.toLowerCase() && getValueWei(t) > 0n);
-    const ethIn = inbound.reduce((acc: number, t) => acc + weiToEthNum(getValueWei(t)), 0);
-    const score = Math.min(30, inbound.length * 0.7 + Math.min(15, ethIn));
-    cexParts.push({
-      label: `CEXIn@${addr.slice(0, 6)}`,
-      score,
-      count: inbound.length,
-      valueEth: Number(ethIn.toFixed(3)),
-      links: [`${explorerBase(chainId)}/address/${addr}`],
+  // 3. CEX Inflows Analysis
+  {
+    log(`\n📊 Analyzing CEX inflows...`);
+    log(`Total txs fetched: ${binanceTxs.length}`);
+    
+    const recent = filterByTime(binanceTxs, windowSeconds);
+    totalRecentTxs += recent.length;
+    log(`Txs in time window: ${recent.length}`);
+    
+    if (recent.length > 0 && DEBUG) {
+      log(`Sample tx details:`, recent.slice(0, 5).map(t => ({
+        method: getMethod(t),
+        to: getTo(t).slice(0, 10),
+        value: t.value,
+        timestamp: t.timestamp || t.block_timestamp || t.inserted_at || ""
+      })));
+    }
+    
+    const inflows = recent.filter(t => 
+      getTo(t) === BINANCE_HOT.toLowerCase() && getValueWei(t) > 0n
+    );
+    log(`Inflow txs found: ${inflows.length}`);
+    
+    const totalEth = inflows.reduce((sum, t) => sum + weiToEth(getValueWei(t)), 0);
+    const score = Math.min(20, inflows.length * 0.6 + Math.min(10, totalEth * 0.15));
+    
+    const topTxs = inflows.slice(0, 3).map(t => ({
+      method: getMethod(t),
+      value_eth: weiToEth(getValueWei(t)),
+      from: (t.from?.hash || t.from || "").slice(0, 10),
+      to: getTo(t).slice(0, 10),
+      timestamp: t.timestamp || t.block_timestamp || t.inserted_at || ""
+    }));
+    
+    let aiInsight = "";
+    if (useAI && totalEth > 10) {
+      const prompt = `${inflows.length} large transfers to Binance (${totalEth.toFixed(2)} ETH) in ${Math.floor(windowSeconds/60)} minutes. Does this suggest panic selling or normal flow? Be concise.`;
+      
+      aiInsight = await analyzeWithOllama(prompt);
+    }
+    
+    parts.push({
+      label: 'CEX Inflows',
+      score: Math.round(score),
+      count: inflows.length,
+      valueEth: Number(totalEth.toFixed(2)),
+      aiInsight,
+      topTxs
     });
-    if (DEBUG) log("CEX_SUMMARY", { addr, items: items.length, inbound: inbound.length, ethIn, score });
+    
+    log(`CEX: ${inflows.length} inflows, ${totalEth.toFixed(2)} ETH`);
   }
 
-  const parts = [...liquidParts, ...dexParts, ...cexParts];
-  const score = Math.max(0, Math.min(100, parts.reduce((s, p) => s + p.score, 0)));
-  log("END", { score, partsCount: parts.length });
+  if (totalRecentTxs === 0) {
+    const fallbackWindow = Math.max(windowSeconds, FALLBACK_WINDOW_SECONDS);
+    if (fallbackWindow > windowSeconds) {
+      const fallbackMinutes = Math.round((fallbackWindow / 60) * 10) / 10;
+      log(
+        `No transactions found within ${windowSeconds}s window. Auto-expanding to ${fallbackWindow}s (~${fallbackMinutes}m) to validate data.`
+      );
+      return getMarketStress(chainId, fallbackWindow, useAI);
+    }
+  }
 
+  const totalScore = Math.min(100, parts.reduce((s, p) => s + p.score, 0));
+  
+  let riskLevel: string;
+  let summary: string;
+  
+  if (totalScore < 20) {
+    riskLevel = 'LOW';
+    summary = 'Market is calm. Minimal liquidation risk.';
+  } else if (totalScore < 50) {
+    riskLevel = 'MODERATE';
+    summary = 'Normal market activity. Standard monitoring recommended.';
+  } else if (totalScore < 75) {
+    riskLevel = 'HIGH';
+    summary = 'Elevated stress. Increased liquidation risk.';
+  } else {
+    riskLevel = 'CRITICAL';
+    summary = 'Severe market stress! High liquidation activity.';
+  }
+  
+  // Overall AI analysis
+  let aiAnalysis = "";
+  if (useAI) {
+    const prompt = `Market stress score: ${totalScore}/100 (${riskLevel}). Liquidations: ${parts[0].count} (${parts[0].valueEth} ETH), DEX: ${parts[1].count} swaps (${parts[1].valueEth} ETH), CEX inflows: ${parts[2].count} (${parts[2].valueEth} ETH). Provide a brief overall market assessment and liquidation risk forecast. 2-3 sentences.`;
+    
+    aiAnalysis = await analyzeWithOllama(prompt);
+  }
+  
+  log(`=== FINAL: ${riskLevel} (${totalScore}/100) ===`);
+  
   return {
-    score,
+    score: totalScore,
+    riskLevel,
     parts,
-    ...(DEBUG
-      ? {
-          debug: {
-            chainId,
-            windowMins,
-            age_from,
-            age_to,
-            MCP_BASE,
-            calls: debugCalls,
-            warnings
-          },
-        }
-      : {}),
+    summary,
+    aiAnalysis
   };
+}
+
+// Test function
+export async function testWithAI() {
+  console.log('\nAI Test Run: Ollama Analysis\n');
+
+  const result = await getMarketStress(1, DEFAULT_WINDOW_SECONDS, true); // default window
+
+  console.log(`\nScore: ${result.score}/100 - ${result.riskLevel}`);
+  console.log(`Summary: ${result.summary}`);
+  
+  if (result.aiAnalysis) {
+    console.log(`\nAI Analysis:\n${result.aiAnalysis}`);
+  }
+  
+  result.parts.forEach(p => {
+    console.log(`\n${p.label}: ${p.count} txs, ${p.valueEth} ETH (${p.score} pts)`);
+    if (p.aiInsight) {
+      console.log(`  Insight: ${p.aiInsight}`);
+    }
+  });
+
+  console.log('\nDone\n');
 }
