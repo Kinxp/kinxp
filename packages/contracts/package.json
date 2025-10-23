@@ -48,6 +48,7 @@
     "@pythnetwork/pyth-sdk-solidity": "^2.2.0",
     "chai": "^4.4.1",
     "dotenv": "^16.4.5",
+    "ethers": "^6.15.0",
     "hardhat": "^2.22.5",
     "solidity-bytes-utils": "^0.8.2",
     "ts-node": "^10.9.2",
