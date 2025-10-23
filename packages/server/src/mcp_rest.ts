@@ -34,6 +34,21 @@ export const mcpRest = {
     get("/v1/get_tokens_by_address", { chain_id, address }),
 
   get_transactions_by_address: (
-    chain_id: number, address: string, age_from?: string, age_to?: string, methods?: string
-  ) => get("/v1/get_transactions_by_address", { chain_id, address, age_from, age_to, methods }),
+    chain_id: number,
+    address: string,
+    age_from?: string,
+    age_to?: string,
+    methods?: string | string[],
+    extraParams?: Record<string, any>
+  ) => {
+    const methodsParam = Array.isArray(methods) ? methods.join(",") : methods;
+    return get("/v1/get_transactions_by_address", {
+      chain_id,
+      address,
+      age_from,
+      age_to,
+      methods: methodsParam,
+      ...(extraParams || {})
+    });
+  },
 };
