@@ -1,262 +1,78 @@
-import { artifacts, ethers } from "hardhat";
 import {
-  Client,
-  AccountId,
-  PrivateKey,
-  Hbar,
-  TokenCreateTransaction,
-  TokenSupplyType,
-  TokenType,
-  TokenUpdateTransaction,
-  EntityIdHelper,
-  ContractCreateFlow,
-  ContractFunctionParameters,
-  AccountAllowanceApproveTransaction,
-} from "@hashgraph/sdk";
-import {
-  Contract,
-  JsonRpcProvider,
-  Wallet,
   formatEther,
   formatUnits,
-  getAddress,
-  parseEther,
 } from "ethers";
 import * as dotenv from "dotenv";
 import * as path from "path";
+import {
+  approveTokens,
+  associateToken,
+  banner,
+  borrowerWallet,
+  createHtsToken,
+  createOrderEthereum,
+  deployEthCollateralOApp,
+  deployHederaController,
+  deployHederaCreditOApp, ethSigner,
+  fetchPythUpdate,
+  fundOrderEthereum,
+  getBorrowAmount,
+  getLayerZeroRepayFee,
+  getPriceUpdateFee, hederaBorrow, hederaClient,
+  hederaOperatorId,
+  hederaOperatorKey,
+  hederaOperatorWallet,
+  layerzeroTx,
+  linkContractsWithLayerZero,
+  linkControllerToToken, printBalances, repayTokens, scalePrice,
+  transferOwnership,
+  transferSupplyKey,
+  waitForEthRepaid,
+  waitForHederaOrderOpen
+} from "./util";
 
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
-type Hex = `0x${string}`;
-
-interface TxRecord {
-  label: string;
-  hash: string;
-  chain: "sepolia" | "hedera" | "layerzero";
-}
-
-const ERC20_ABI = [
-  "function balanceOf(address) view returns (uint256)",
-  "function decimals() view returns (uint8)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function transfer(address to, uint256 amount) returns (bool)",
-];
-
-const IPYTH_ABI = [
-  "function getUpdateFee(bytes[] calldata updateData) external view returns (uint256)",
-];
-
-function banner(title: string) {
-  console.log("\n" + "═".repeat(94));
-  console.log(`▶ ${title}`);
-  console.log("═".repeat(94) + "\n");
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value || !value.trim()) throw new Error(`Missing environment variable ${name}`);
-  return value.trim();
-}
-function requireAddress(name: string): Hex {
-  return getAddress(requireEnv(name)) as Hex;
-}
-function requireEid(name: string): number {
-  const raw = requireEnv(name);
-  const eid = Number(raw);
-  if (!Number.isInteger(eid) || eid <= 0) throw new Error(`Invalid ${name}: ${raw}`);
-  return eid;
-}
-
-const sepoliaTx = (h: string) => `https://sepolia.etherscan.io/tx/${h}`;
-const layerzeroTx = (h: string) => `https://testnet.layerzeroscan.com/tx/${h}`;
-const hashscanTx = (h: string) => `https://hashscan.io/testnet/transaction/${h}`;
-
-const HEDERA_MIN_VALUE = 1n; // Minimum LayerZero fee in tinybars
-const HBAR_WEI_PER_TINYBAR = 10_000_000_000n;
-
-function scalePrice(price: bigint, expo: number): bigint {
-  const targetDecimals = 18;
-  const expDiff = targetDecimals + expo;
-  if (expDiff === 0) return price;
-  if (expDiff > 0) return price * 10n ** BigInt(expDiff);
-  return price / 10n ** BigInt(-expDiff);
-}
-
-async function fetchPythUpdate(priceId: Hex) {
-  const url = `https://hermes.pyth.network/v2/updates/price/latest?ids[]=${priceId}&encoding=hex&parsed=true`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch Pyth price update (${res.status}): ${await res.text()}`);
-  const data: any = await res.json();
-  if (!data?.binary?.data?.length) throw new Error("No binary price update data in response");
-  const priceUpdateBytes = "0x" + data.binary.data[0];
-
-  if (!data?.parsed?.length) throw new Error("No parsed price data in response");
-  const parsed = data.parsed[0];
-  if (!parsed?.price?.price || parsed.price.expo === undefined) throw new Error("Parsed price data incomplete");
-
-  return { priceUpdateBytes, price: BigInt(parsed.price.price), expo: Number(parsed.price.expo) };
-}
-
-async function waitForHederaOrderOpen(hederaCredit: Contract, orderId: Hex, maxAttempts = 60) {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const order = await hederaCredit.horders(orderId);
-      if (order && order.open) return order;
-    } catch (err) {
-      console.warn(`  [${attempt + 1}/${maxAttempts}] Hedera mirror read failed: ${(err as Error).message}`);
-    }
-    console.log(`  [${attempt + 1}/${maxAttempts}] Waiting 6s for Hedera mirror...`);
-    await new Promise((r) => setTimeout(r, 6000));
-  }
-  throw new Error("Timed out waiting for Hedera order mirror");
-}
-
-async function waitForEthRepaid(ethCollateral: Contract, orderId: Hex, maxAttempts = 40) {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const order = await ethCollateral.orders(orderId);
-      if (order?.repaid) return order;
-    } catch (err) {
-      console.warn(`  [${attempt + 1}/${maxAttempts}] Ethereum order read failed: ${(err as Error).message}`);
-    }
-    console.log(`  [${attempt + 1}/${maxAttempts}] Waiting 6s for Ethereum repayment flag...`);
-    await new Promise((r) => setTimeout(r, 6000));
-  }
-  throw new Error("Timed out waiting for Ethereum repayment flag");
-}
-
 async function main() {
   banner("Full cross-chain flow - DEBUG VERSION");
-  const txs: TxRecord[] = [];
 
-  // Params
-  const depositEth = parseFloat(process.env.DEPOSIT_ETH ?? "0.00001");
-  const depositWei = parseEther(depositEth.toString());
-  const borrowSafetyBps = Number(process.env.BORROW_TARGET_BPS ?? "8000");
-
-  // Env
-  const ethEndpoint = requireAddress("LZ_ENDPOINT_ETHEREUM");
-  const ethEid = requireEid("LZ_EID_ETHEREUM");
-  const hederaEndpoint = requireAddress("LZ_ENDPOINT_HEDERA");
-  const hederaEid = requireEid("LZ_EID_HEDERA");
-  const pythContract = requireAddress("PYTH_CONTRACT_HEDERA");
-  const priceFeedId = requireEnv("PYTH_ETHUSD_PRICE_ID") as Hex;
-
-  // Providers
-  const ethProvider = new JsonRpcProvider(requireEnv("ETH_RPC_URL"));
-  const ethSigner = new Wallet(requireEnv("DEPLOYER_KEY"), ethProvider);
-
-  const hederaRpc = requireEnv("HEDERA_RPC_URL");
-  const hederaProvider = new JsonRpcProvider(hederaRpc);
-
-  // Hedera keys
-  const hederaOperatorKeyHex = requireEnv("HEDERA_ECDSA_KEY").replace(/^0x/, "");
-  const hederaOperatorId = AccountId.fromString(requireEnv("HEDERA_ACCOUNT_ID"));
-  const hederaOperatorKey = PrivateKey.fromStringECDSA(hederaOperatorKeyHex);
-  const hederaOperatorWallet = new Wallet(hederaOperatorKeyHex, hederaProvider);
-
-  // Borrower = same ECDSA for simplicity
-  const borrowerKeyHex = requireEnv("DEPLOYER_KEY").replace(/^0x/, "");
-  const borrowerWallet = new Wallet(borrowerKeyHex, hederaProvider);
-
-  // Hedera SDK client (for HTS admin ops)
-  const hederaClient = Client.forTestnet();
-  hederaClient.setOperator(hederaOperatorId, hederaOperatorKey);
-  hederaClient.setDefaultMaxTransactionFee(new Hbar(5));
+  const hederaOperatorWalletAddress = await hederaOperatorWallet.getAddress()
 
   console.log("Ethereum deployer:", await ethSigner.getAddress());
-  console.log("  Balance:", formatEther(await ethProvider.getBalance(await ethSigner.getAddress())), "ETH");
+  console.log("  Balance:", formatEther(await ethSigner.provider!.getBalance(await ethSigner.getAddress())), "ETH");
   console.log("Hedera operator:", hederaOperatorId.toString());
-  console.log("Hedera operator EVM:", await hederaOperatorWallet.getAddress());
+  console.log("Hedera operator EVM:", hederaOperatorWalletAddress);
   console.log("Borrower (shared key):", await borrowerWallet.getAddress());
 
   // ──────────────────────────────────────────────────────────────────────────────
   // Deploy contracts
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Deploying EthCollateralOApp");
-  const EthCollateralFactory = await ethers.getContractFactory("EthCollateralOApp");
-  const ethCollateral = await EthCollateralFactory.deploy(ethEndpoint);
-  await ethCollateral.waitForDeployment();
-  const ethCollateralAddr = (await ethCollateral.getAddress()) as Hex;
+  const { ethCollateralAddr, ethCollateral } = await deployEthCollateralOApp();
   console.log("  → EthCollateralOApp:", ethCollateralAddr);
 
   banner("Deploying Hedera contracts");
-  const controllerArtifact = await artifacts.readArtifact("UsdHtsController");
-
-  const controllerCreate = new ContractCreateFlow()
-    .setGas(10000000)
-    .setBytecode(controllerArtifact.bytecode);
-  const controllerCreateResponse = await controllerCreate.execute(hederaClient);
-  const controllerReceipt = await controllerCreateResponse.getReceipt(hederaClient);
-  const controllerId = controllerReceipt.contractId!;
-  const controllerAddr = '0x' + EntityIdHelper.toSolidityAddress([
-    controllerReceipt.contractId?.realm!,
-    controllerReceipt.contractId?.shard!,
-    controllerReceipt.contractId?.num!]);
-
-  const controller = new ethers.Contract(controllerAddr, controllerArtifact.abi, hederaOperatorWallet);
-
+  const { controllerAddr, controllerId, controller } = await deployHederaController(hederaClient, hederaOperatorWallet);
   console.log(`  → UsdHtsController: ${controllerAddr}, (${controllerId})`);
 
-  const creditArtifact = await artifacts.readArtifact("HederaCreditOApp");
-
-  const creditParams = new ContractFunctionParameters()
-    .addAddress(hederaEndpoint)
-    .addAddress(await hederaOperatorWallet.getAddress())
-    .addAddress(controllerAddr)
-    .addAddress(pythContract)
-    .addBytes32(Buffer.from(priceFeedId.replace(/^0x/, ""), 'hex'));
-
-  const creditCreate = new ContractCreateFlow()
-    .setGas(10000000)
-    .setBytecode(creditArtifact.bytecode)
-    .setConstructorParameters(creditParams);
-
-  const creditCreateResponse = await creditCreate.execute(hederaClient);
-  const creditReceipt = await creditCreateResponse.getReceipt(hederaClient);
-  const creditId = creditReceipt.contractId!;
-  const hederaCreditAddr = '0x' + EntityIdHelper.toSolidityAddress([
-    creditReceipt.contractId?.realm!,
-    creditReceipt.contractId?.shard!,
-    creditReceipt.contractId?.num!]);
-
-  const hederaCredit = new Contract(hederaCreditAddr, creditArtifact.abi, hederaOperatorWallet);
-
+  const { hederaCreditAddr, creditId, hederaCredit } = await deployHederaCreditOApp(hederaOperatorWallet, controllerAddr, hederaClient);
   console.log(`  → HederaCreditOApp: ${hederaCreditAddr}, (${creditId})`);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // LZ peer wiring
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Configuring LayerZero peers");
-  await (await ethCollateral.setHederaEid(hederaEid)).wait();
-  const hedPeerBytes = ethers.zeroPadValue(hederaCreditAddr, 32);
-  await (await ethCollateral.setPeer(hederaEid, hedPeerBytes)).wait();
-  await (await hederaCredit.setEthEid(ethEid)).wait();
-  const ethPeerBytes = ethers.zeroPadValue(ethCollateralAddr, 32);
-  await (await hederaCredit.setPeer(ethEid, ethPeerBytes)).wait();
+  await linkContractsWithLayerZero(ethCollateral, hederaCreditAddr, hederaCredit, ethCollateralAddr);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // Create + fund order on Ethereum
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Creating order on Ethereum");
-  const txCreateOrder = await ethCollateral.createOrderId();
-  const createReceipt = await txCreateOrder.wait();
-  const createEvent = createReceipt.logs
-    .map((log: any) => { try { return ethCollateral.interface.parseLog(log); } catch { return null; } })
-    .find((log: any) => log?.name === "OrderCreated");
-  if (!createEvent) throw new Error("OrderCreated event not found");
-  const orderId = createEvent.args.orderId as Hex;
+  const orderId = await createOrderEthereum(ethCollateral);
   console.log("  → Order ID:", orderId);
 
   banner("Funding order with LayerZero notify");
-  const nativeFee: bigint = await ethCollateral.quoteOpenNativeFee(await ethSigner.getAddress(), depositWei);
-  let totalValue = depositWei + nativeFee + (nativeFee / 10n);
-
-  const txFund = await ethCollateral.fundOrderWithNotify(orderId, depositWei, {
-    value: totalValue,
-    gasLimit: 600_000,
-  });
-  await txFund.wait();
+  const txFund = await fundOrderEthereum(ethCollateral, ethSigner, orderId);
   console.log("  LayerZero packet:", layerzeroTx(txFund.hash));
 
   banner("Waiting for Hedera mirror");
@@ -267,170 +83,82 @@ async function main() {
   // Create HTS token
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Creating HTS token");
-  const tokenCreateTx = await new TokenCreateTransaction()
-    .setTokenName("Hedera Stable USD (Autogen)")
-    .setTokenSymbol("hUSD")
-    .setTokenType(TokenType.FungibleCommon)
-    .setDecimals(6)
-    .setInitialSupply(0)
-    .setSupplyType(TokenSupplyType.Infinite)
-    .setTreasuryAccountId(hederaOperatorId)
-    .setSupplyKey(hederaOperatorKey)
-    .setAdminKey(hederaOperatorKey)
-    .setAutoRenewAccountId(hederaOperatorId)
-    .setAutoRenewPeriod(7_776_000)
-    .setMaxTransactionFee(new Hbar(20))
-    .freezeWith(hederaClient);
-
-  const tokenCreateSign = await tokenCreateTx.sign(hederaOperatorKey);
-  const tokenCreateSubmit = await tokenCreateSign.execute(hederaClient);
-  const tokenCreateReceipt = await tokenCreateSubmit.getReceipt(hederaClient);
-  const tokenId = tokenCreateReceipt.tokenId;
-  if (!tokenId) throw new Error("Token creation failed");
-  const tokenAddress = ("0x" + tokenId.toSolidityAddress()) as Hex;
+  const { tokenId, tokenAddress } = await createHtsToken(hederaOperatorId, hederaOperatorKey, hederaClient);
   console.log("  → Token ID:", tokenId.toString());
   console.log("  → EVM address:", tokenAddress);
-  console.log("  → Treasury:", hederaOperatorId.toString(), "=", await hederaOperatorWallet.getAddress());
+  console.log("  → Treasury:", hederaOperatorId.toString(), "=", hederaOperatorWalletAddress);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // Configure controller & token
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Linking token to controller");
-  await (await controller.setExistingUsdToken(tokenAddress, 6)).wait();
-  await (await controller.setTreasury(await hederaOperatorWallet.getAddress())).wait();
-  console.log("  ✓ Treasury set to:", await hederaOperatorWallet.getAddress());
-  await (await controller.associateToken(tokenAddress)).wait();
+  await linkControllerToToken(controller, tokenAddress, hederaOperatorWalletAddress);
+  console.log("  ✓ Treasury set to:", hederaOperatorWalletAddress);
   console.log("  ✓ Controller associated with token");
 
   banner("Associating borrower with token");
-  const HTS_ADDRESS = "0x0000000000000000000000000000000000000167";
-  const HTS_ABI = ["function associateToken(address account, address token) external returns (int64)"];
-  const hts = new Contract(HTS_ADDRESS, HTS_ABI, borrowerWallet);
-  await (await hts.associateToken(await borrowerWallet.getAddress(), tokenAddress, { gasLimit: 1_000_000 })).wait();
+  await associateToken(borrowerWallet, tokenAddress);
   console.log("  ✓ Borrower associated");
 
   banner("Transferring supply key to controller");
-  const supplyUpdateTx = await new TokenUpdateTransaction()
-    .setTokenId(tokenId)
-    .setSupplyKey(controllerId)
-    .freezeWith(hederaClient);
-  const supplyUpdateSign = await supplyUpdateTx.sign(hederaOperatorKey);
-  await (await supplyUpdateSign.execute(hederaClient)).getReceipt(hederaClient);
+  await transferSupplyKey(tokenId, controllerId, hederaClient, hederaOperatorKey);
   console.log("  ✓ Supply key transferred");
 
   banner("Transferring controller ownership");
-  await (await controller.transferOwnership(hederaCreditAddr)).wait();
+  await transferOwnership(controller, hederaCreditAddr);
   console.log("  ✓ Controller owned by OApp");
 
   banner("Approve controller to spend tokens from the treasury");
-  const approveTx = new AccountAllowanceApproveTransaction()
-    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, 1000000000)
-    .freezeWith(hederaClient);
-  const signApproveTx = await approveTx.sign(hederaOperatorKey);
-  const approveResponse = await signApproveTx.execute(hederaClient);
-  const approveReceipt = await approveResponse.getReceipt(hederaClient);
+  const approveReceipt = await approveTokens(tokenId, hederaOperatorId, controllerId, hederaClient, hederaOperatorKey);
   console.log(`  ✓ Approval transaction status: ${approveReceipt.status}`);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // Test borrow
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Fetching Pyth price");
-  const { priceUpdateBytes, price, expo } = await fetchPythUpdate(priceFeedId);
+  const { priceUpdateData, price, expo } = await fetchPythUpdate();
   const scaledPrice = scalePrice(price, expo);
   console.log("  ETH/USD:", formatUnits(scaledPrice, 18));
 
   banner("Computing borrow amount");
-  const collateralUsd18 = (depositWei * scaledPrice) / parseEther("1");
-  const ltvBps = await hederaCredit.ltvBps();
-  const maxBorrow18 = (collateralUsd18 * BigInt(ltvBps)) / 10_000n;
-  const borrowTarget18 = (maxBorrow18 * BigInt(borrowSafetyBps)) / 10_000n;
-  const borrowAmount = borrowTarget18 / 10n ** 12n; // Convert to 6 decimals
+  const borrowAmount = await getBorrowAmount(scaledPrice, hederaCredit);
   console.log("  Borrow amount:", formatUnits(borrowAmount, 6), "hUSD");
 
-  const pythContract2 = new Contract(pythContract, IPYTH_ABI, hederaOperatorWallet);
-  const priceUpdateData = [priceUpdateBytes];
-  const pythFee = await pythContract2.getUpdateFee(priceUpdateData);
-  const borrowValue = pythFee < 10_000_000_000n ? 10_000_000_000n : pythFee;
+  const { priceUpdateFee } = await getPriceUpdateFee(priceUpdateData);
 
-  banner("DEBUG: Checking balances BEFORE borrow");
-  const token = new Contract(tokenAddress, ERC20_ABI, borrowerWallet);
-  const treasuryBalBefore = await token.balanceOf(await hederaOperatorWallet.getAddress());
-  const borrowerBalBefore = await token.balanceOf(await borrowerWallet.getAddress());
-  const controllerBalBefore = await token.balanceOf(controllerAddr);
-  console.log("  Treasury balance:", formatUnits(treasuryBalBefore, 6), "hUSD");
-  console.log("  Borrower balance:", formatUnits(borrowerBalBefore, 6), "hUSD");
-  console.log("  Controller balance:", formatUnits(controllerBalBefore, 6), "hUSD");
+  banner("Checking balances BEFORE borrow");
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
 
   banner("Borrowing");
-  const borrowerCredit = hederaCredit.connect(borrowerWallet);
-
-
-  // Wait 90 seconds before proceeding
-  await new Promise((resolve) => setTimeout(resolve, 90000));
-  console.log("  ⏳ Waiting 90 seconds...");
-
-
-  try {
-    console.log("  Attempting static call...");
-    await borrowerCredit.borrow.staticCall(orderId, borrowAmount, priceUpdateData, 300, {
-      value: borrowValue,
-      gasLimit: 1_500_000,
-    });
-    console.log("  ✓ Static call passed");
-  } catch (err: any) {
-    console.error("  ✗ Static call failed:", err.message);
-    console.error("  Error data:", err.data);
-    throw err;
-  }
-
-
-  const borrowTx = await borrowerCredit.borrow(orderId, borrowAmount, priceUpdateData, 300, {
-    value: borrowValue,
-    gasLimit: 1_500_000,
-  });
-  await borrowTx.wait();
+  const borrowerCredit = await hederaBorrow(hederaCredit, orderId, borrowAmount, priceUpdateData, priceUpdateFee);
   console.log("  ✓ Borrow succeeded");
 
-  banner("DEBUG: Checking balances AFTER borrow");
-  const treasuryBalAfter = await token.balanceOf(await hederaOperatorWallet.getAddress());
-  const borrowerBalAfter = await token.balanceOf(await borrowerWallet.getAddress());
-  const controllerBalAfter = await token.balanceOf(controllerAddr);
-  console.log("  Treasury balance:", formatUnits(treasuryBalAfter, 6), "hUSD");
-  console.log("  Borrower balance:", formatUnits(borrowerBalAfter, 6), "hUSD");
-  console.log("  Controller balance:", formatUnits(controllerBalAfter, 6), "hUSD");
+  banner("Checking balances AFTER borrow");
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
 
   banner("Preparing repayment");
   const repayAmount = borrowAmount;
   console.log("  Repay amount:", formatUnits(repayAmount, 6), "hUSD");
-  const treasuryAddress = await hederaOperatorWallet.getAddress();
+  const treasuryAddress = hederaOperatorWalletAddress;
 
   banner("Returning hUSD to treasury");
-  const repayTransferTx = await token.transfer(treasuryAddress, repayAmount, { gasLimit: 1_000_000 });
-  await repayTransferTx.wait();
+  await repayTokens(tokenAddress, treasuryAddress, repayAmount);
   console.log("  Tokens transferred back to treasury");
 
   banner("Quoting LayerZero fee for repay notify");
-  const repayFee = await hederaCredit.quoteRepayFee(orderId);
-  const repayValue = repayFee < HEDERA_MIN_VALUE ? HEDERA_MIN_VALUE : repayFee;
-  const repayTopUp = repayValue - repayFee;
-  console.log("  Repay fee:", formatUnits(repayFee, 8), "HBAR");
-  if (repayTopUp > 0n) {
-    console.log("  Top-up applied:", formatUnits(repayTopUp, 8), "HBAR (min tinybar)");
-  }
-  console.log("  Sending value:", formatUnits(repayValue, 8), "HBAR");
-  const repayValueWei = repayValue * HBAR_WEI_PER_TINYBAR;
-  console.log("  Sending value (wei):", repayValueWei.toString());
+  const { repayValue, repayValueWei } = await getLayerZeroRepayFee(hederaCredit, orderId);
+  console.log("  Sending value:", formatUnits(repayValue, 8), "HBAR (", repayValueWei, " wei)");
 
-  const treasuryBalForRepay = await token.balanceOf(treasuryAddress);
-  console.log("  Treasury balance prior to repay:", formatUnits(treasuryBalForRepay, 6), "hUSD");
+  banner("Checking balances prior to repay");
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
 
+  banner("Attempting repay static call...");
   try {
-    console.log("  Attempting repay static call...");
     await borrowerCredit.repay.staticCall(orderId, repayAmount, true, {
       value: repayValueWei,
       gasLimit: 1_500_000,
     });
-    console.log("  Static call passed");
+    console.log("  ✓ Static call passed");
   } catch (err: any) {
     const iface = hederaCredit.interface;
     let decoded: any = null;
@@ -465,12 +193,7 @@ async function main() {
   console.log("  Repay succeeded");
 
   banner("DEBUG: Checking balances AFTER repay");
-  const treasuryBalFinal = await token.balanceOf(treasuryAddress);
-  const borrowerBalFinal = await token.balanceOf(await borrowerWallet.getAddress());
-  const controllerBalFinal = await token.balanceOf(controllerAddr);
-  console.log("  Treasury balance:", formatUnits(treasuryBalFinal, 6), "hUSD");
-  console.log("  Borrower balance:", formatUnits(borrowerBalFinal, 6), "hUSD");
-  console.log("  Controller balance:", formatUnits(controllerBalFinal, 6), "hUSD");
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
 
   banner("Waiting for Ethereum repay flag");
   await waitForEthRepaid(ethCollateral, orderId);
@@ -482,12 +205,6 @@ async function main() {
   console.log("  ETH withdrawn");
 
   console.log("\n✅ E2E TEST SUCCESSFUL - REPAY & WITHDRAW COMPLETE!");
-
-
-
-
-
-
 }
 
 main().catch((err) => {
