@@ -90,6 +90,10 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             o.ethAmountWei = ethAmountWei;
             o.open = true;
             emit HederaOrderOpened(id, borrower, ethAmountWei);
+        } else if (msgType == MessageTypes.LIQUIDATED) {
+            HOrder storage o = horders[id];
+            // close order, so repayment is not possible anymore
+            o.open = false;
         }
     }
 

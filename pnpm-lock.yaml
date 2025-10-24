@@ -51,6 +51,9 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      ethers:
+        specifier: ^6.15.0
+        version: 6.15.0
       hardhat:
         specifier: ^2.22.5
         version: 2.26.3(ts-node@10.9.2(@types/node@24.8.0)(typescript@5.9.3))(typescript@5.9.3)
@@ -6213,7 +6216,7 @@ snapshots:
 
   '@types/node-fetch@2.6.13':
     dependencies:
-      '@types/node': 22.7.5
+      '@types/node': 24.8.0
       form-data: 4.0.4
 
   '@types/node@10.17.60': {}
