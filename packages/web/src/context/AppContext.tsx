@@ -19,16 +19,14 @@ const WEI_PER_TINYBAR = 10_000_000_000n;
 
 // Define the shape (interface) of our global context
 interface AppContextType {
-  // State
   appState: AppState;
   logs: string[];
   orderId: `0x${string}` | null;
+  selectedOrderId: `0x${string}` | null;
   ethAmount: string;
   borrowAmount: string | null;
   error: string | null;
   lzTxHash: `0x${string}` | null;
-
-  // Functions that components can call
   handleCreateOrder: (amount: string) => void;
   handleFundOrder: (amountToFund: string) => void;
   handleBorrow: (amountToBorrow: string) => Promise<void>;
@@ -36,6 +34,7 @@ interface AppContextType {
   handleWithdraw: () => void;
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
+  setSelectedOrderId: (orderId: `0x${string}` | null) => void;
 }
 
 // Create the actual React Context
@@ -43,10 +42,10 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 // Create the Provider component. It will wrap the parts of our app that need access to the context.
 export const AppProvider = ({ children }: { children: ReactNode }) => {
-  // All the state from your old App.tsx is moved here
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [logs, setLogs] = useState<string[]>([]);
-  const [orderId, setOrderId] = useState<`0x${string}` | null>(null);
+  const [orderId, setOrderId] = useState<`0x${string}` | null>(null); // For the linear "create" flow
+  const [selectedOrderId, setSelectedOrderId] = useState<`0x${string}` | null>(null); // For dashboard selections
   const [ethAmount, setEthAmount] = useState('0.001');
   const [borrowAmount, setBorrowAmount] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,14 +57,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const hederaPollingRef = useRef<NodeJS.Timeout | null>(null);
   const ethPollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  // All wagmi hooks are moved here
   const { isConnected, chainId, address } = useAccount();
   const { switchChain } = useSwitchChain();
   const { data: hash, error: writeError, isPending: isWritePending, writeContract, reset: resetWriteContract } = useWriteContract();
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash });
   const hederaPublicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
+  
+  // This helper variable determines the currently active order ID,
+  // whether it comes from the linear flow (`orderId`) or the dashboard (`selectedOrderId`).
+  const activeOrderId = orderId || selectedOrderId;
 
-  // All functions from your old App.tsx are moved here
   const addLog = useCallback((log: string) => setLogs(prev => [...prev, log]), []);
 
   const sendTxOnChain = useCallback((chainIdToSwitch: number, config: any) => {
@@ -84,16 +85,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [sendTxOnChain, addLog]);
 
   const handleFundOrder = useCallback((amountToFund: string) => {
-    if (!address || !orderId) return;
+    if (!address || !activeOrderId) return;
     setAppState(AppState.FUNDING_IN_PROGRESS);
-    addLog(`▶ Funding order with ${amountToFund} ETH...`);
-    const nativeFee = parseEther('0.0001'); // Example fee
+    addLog(`▶ Funding order ${activeOrderId.slice(0, 10)}... with ${amountToFund} ETH...`);
+    const nativeFee = parseEther('0.0001');
     const totalValue = parseEther(amountToFund) + nativeFee;
-    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [orderId, parseEther(amountToFund)], value: totalValue });
-  }, [address, orderId, sendTxOnChain, addLog]);
+    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [activeOrderId, parseEther(amountToFund)], value: totalValue });
+  }, [address, activeOrderId, sendTxOnChain, addLog]);
 
   const handleBorrow = useCallback(async (amountToBorrow: string) => {
-    if (!orderId) return;
+    if (!activeOrderId) return;
     setUserBorrowAmount(amountToBorrow);
     setAppState(AppState.BORROWING_IN_PROGRESS);
     setLogs(['▶ Preparing borrow transaction...']);
@@ -106,13 +107,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const valueInWei = requiredFeeInTinybars * WEI_PER_TINYBAR;
       addLog(`✓ Pyth fee quoted: ${formatUnits(requiredFeeInTinybars, 8)} HBAR`);
       addLog(`3/3: Sending borrow transaction with exact fee...`);
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [orderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
+      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [activeOrderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
     } catch (e: any) {
       addLog(`❌ An error occurred during the borrow process: ${e.shortMessage || e.message}`);
       setError(`Borrow failed: ${e.shortMessage || e.message}`);
       setAppState(AppState.ERROR);
     }
-  }, [orderId, sendTxOnChain, addLog]);
+  }, [activeOrderId, sendTxOnChain, addLog]);
 
   const resolveTreasuryAddress = useCallback(async (): Promise<`0x${string}`> => {
     if (treasuryAddress) return treasuryAddress;
@@ -130,25 +131,25 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [treasuryAddress, addLog]);
 
   const repayAndCross = useCallback(async () => {
-    if (!orderId || !borrowAmount) return;
+    if (!activeOrderId || !borrowAmount) return;
     setAppState(AppState.REPAYING_IN_PROGRESS);
     addLog('▶ 2/2: Calling repay to burn tokens and notify Ethereum...');
     try {
       addLog('   Quoting LayerZero fee for repay...');
-      const feeInTinybars = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'quoteRepayFee', args: [orderId], chainId: HEDERA_CHAIN_ID }) as bigint;
+      const feeInTinybars = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'quoteRepayFee', args: [activeOrderId], chainId: HEDERA_CHAIN_ID }) as bigint;
       addLog(`✓ LayerZero fee quoted: ${formatUnits(feeInTinybars, 8)} HBAR`);
       const valueInWei = feeInTinybars * WEI_PER_TINYBAR;
       addLog('   Sending repay transaction...');
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'repay', args: [orderId, parseUnits(borrowAmount, 6), true], value: valueInWei, gas: 1_500_000n });
+      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'repay', args: [activeOrderId, parseUnits(borrowAmount, 6), true], value: valueInWei, gas: 1_500_000n });
     } catch (e: any) {
       addLog(`❌ An error occurred during the repay process: ${e.message}`);
       setError(`Repay failed: ${e.message}`);
       setAppState(AppState.ERROR);
     }
-  }, [orderId, borrowAmount, sendTxOnChain, addLog]);
+  }, [activeOrderId, borrowAmount, sendTxOnChain, addLog]);
 
   const handleRepay = useCallback(async () => {
-    if (!orderId || !address || !borrowAmount) return;
+    if (!activeOrderId || !address || !borrowAmount) return;
     try {
       const treasury = await resolveTreasuryAddress();
       addLog('▶ 1/2: Returning hUSD to the Hedera treasury...');
@@ -160,14 +161,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setError(message);
       setAppState(AppState.ERROR);
     }
-  }, [orderId, address, borrowAmount, resolveTreasuryAddress, sendTxOnChain, addLog]);
+  }, [activeOrderId, address, borrowAmount, resolveTreasuryAddress, sendTxOnChain, addLog]);
 
   const handleWithdraw = useCallback(() => {
-    if (!orderId) return;
+    if (!activeOrderId) return;
     setAppState(AppState.WITHDRAWING_IN_PROGRESS);
     addLog('▶ Withdrawing ETH on Ethereum...');
-    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [orderId] });
-  }, [orderId, sendTxOnChain, addLog]);
+    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [activeOrderId] });
+  }, [activeOrderId, sendTxOnChain, addLog]);
 
   const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
@@ -210,13 +211,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [addLog]);
 
   const calculateBorrowAmount = useCallback(async () => {
-    if (!address || !orderId) return null;
+    if (!address || !activeOrderId) return null;
     addLog('▶ Calculating max borrow amount...');
     try {
       const { scaledPrice } = await fetchPythUpdateData();
       const formattedPrice = Number(formatUnits(scaledPrice, 18)).toFixed(2);
       addLog(`✓ Current ETH Price: $${formattedPrice}`);
-      const hOrder = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'horders', args: [orderId], chainId: HEDERA_CHAIN_ID }) as { ethAmountWei: bigint; };
+      const hOrder = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'horders', args: [activeOrderId], chainId: HEDERA_CHAIN_ID }) as { ethAmountWei: bigint; };
       const depositWei = hOrder.ethAmountWei;
       if (depositWei === 0n) throw new Error("Collateral amount on Hedera is zero.");
       addLog(`✓ Collateral confirmed: ${formatUnits(depositWei, 18)} ETH`);
@@ -230,7 +231,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       addLog(`✓ Calculated max borrow: ${formattedBorrowAmount} hUSD`);
       return { amount: formattedBorrowAmount, price: formattedPrice };
     } catch (e: any) { addLog(`❌ Calc failed: ${e.message}`); setError(`Calc failed: ${e.message}`); setAppState(AppState.ERROR); return null; }
-  }, [orderId, address, addLog]);
+  }, [activeOrderId, address, addLog]);
 
   const resetFlow = () => {
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
@@ -240,6 +241,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setLogs([]);
     setError(null);
     setOrderId(null);
+    setSelectedOrderId(null); 
     setLzTxHash(null);
     setBorrowAmount(null);
     setUserBorrowAmount(null);
@@ -274,6 +276,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             setPollingStartBlock(Number(hederaBlockNumber));
           } else { setPollingStartBlock(0); }
           setAppState(AppState.CROSSING_TO_HEDERA);
+          setTimeout(() => {
+              addLog('✓ Funding tx sent. Polling in background. You can perform other actions.');
+              setAppState(AppState.IDLE);
+              setSelectedOrderId(null);
+              setOrderId(null);
+          }, 100);
           break;
         case AppState.BORROWING_IN_PROGRESS:
           setBorrowAmount(userBorrowAmount);
@@ -297,7 +305,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount]);
 
-  // All useEffect hooks are moved here to manage side effects
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
     if (isConfirming) addLog(`⏳ Waiting for transaction confirmation: ${hash}`);
@@ -309,10 +316,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (appState === AppState.CROSSING_TO_HEDERA && orderId && pollingStartBlock > 0) {
       startPollingForHederaOrder(orderId);
     }
-    if (appState === AppState.CROSSING_TO_ETHEREUM && orderId) {
-      startPollingForEthRepay(orderId);
+    if (appState === AppState.CROSSING_TO_ETHEREUM && activeOrderId) {
+      startPollingForEthRepay(activeOrderId);
     }
-  }, [appState, orderId, pollingStartBlock, startPollingForHederaOrder, startPollingForEthRepay]);
+  }, [appState, orderId, activeOrderId, pollingStartBlock, startPollingForHederaOrder, startPollingForEthRepay]);
 
   useEffect(() => {
     if (appState === AppState.LOAN_ACTIVE && !treasuryAddress) {
@@ -322,11 +329,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [appState, treasuryAddress, resolveTreasuryAddress, addLog]);
 
-  // The value object contains all the state and functions to be provided to consuming components
   const value = {
     appState,
     logs,
     orderId,
+    selectedOrderId,
     ethAmount,
     borrowAmount,
     error,
@@ -338,12 +345,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     handleWithdraw,
     calculateBorrowAmount,
     resetFlow,
+    setSelectedOrderId,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
 
-// Create a custom hook for easy, typed access to the context
 export const useAppContext = () => {
   const context = useContext(AppContext);
   if (context === undefined) {

@@ -17,7 +17,8 @@ export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603';
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase();
 // Calculate the correct topic hash for the 'MarkRepaid' event
 export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
-
+// This is the signature for: event OrderCreated(bytes32 indexed orderId, address indexed user);
+export const ORDER_CREATED_TOPIC = keccak256(toHex('OrderCreated(bytes32,address)'));
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx

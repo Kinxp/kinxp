@@ -12,6 +12,7 @@ import {
   ETH_COLLATERAL_OAPP_ADDR,
   SEPOLIA_BLOCKSCOUT_API_URL,
   MARK_REPAID_TOPIC,
+  ORDER_CREATED_TOPIC,
   HEDERA_BLOCKSCOUT_API_URL,
   HEDERA_CREDIT_OAPP_ADDR,
   HEDERA_ORDER_OPENED_TOPIC
@@ -72,9 +73,7 @@ export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<
  */
 export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
   
-  // This padding logic is correct and creates the URL you've confirmed works.
   const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
-
   const params = new URLSearchParams({
     module: 'logs',
     action: 'getLogs',
@@ -85,44 +84,27 @@ export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<Us
     fromBlock: '0',
     toBlock: 'latest',
   });
-
   const url = `${HEDERA_BLOCKSCOUT_API_URL}?${params.toString()}`;
-  console.log("Fetching all orders from URL:", url);
-
+  console.log(url)
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Blockscout API request failed: ${response.statusText}`);
   }
-  
   const data = await response.json();
-
-  // ==============================================================================
-  // === THIS IS THE FIX ==========================================================
-  // ==============================================================================
-  // We now check for `data.message === 'OK'` and that the result array exists,
-  // which exactly matches the JSON response you provided.
   if (data.message !== 'OK' || !Array.isArray(data.result) || data.result.length === 0) {
-    console.log("No orders found for this user or API error.");
-    return []; // Return an empty array if no logs are found, which is a valid result.
+    console.log("No orders found for this user on Hedera Blockscout.");
+    return [];
   }
-  // ==============================================================================
-
-  // Step 2: Parse the raw log data (this logic is correct)
+  console.log(data)
   const hederaOrders = data.result.map((log: any) => {
-    // The amount is the non-indexed data
     const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'ethAmountWei' }], log.data);
-    // The orderId is the first indexed topic
-    return {
-      orderId: log.topics[1] as `0x${string}`,
-      amountWei: amountWei as bigint,
-    };
+    return { orderId: log.topics[1] as `0x${string}`, amountWei: amountWei as bigint };
   });
 
   if (hederaOrders.length === 0) {
     return [];
   }
 
-  // Step 3: Use multicall to get status from Ethereum (this logic is correct)
   const ethContractCalls = hederaOrders.map(order => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
     abi: ETH_COLLATERAL_ABI,
@@ -133,38 +115,98 @@ export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<Us
   const ethOrderStates = await multicall(wagmiConfig, {
     chainId: ETH_CHAIN_ID,
     contracts: ethContractCalls,
+    allowFailure: true,
   });
 
-  // Step 4: Combine the data (this logic is correct)
+  // --- THIS IS THE CORRECTED LOGIC BLOCK ---
   const combinedOrders: UserOrderSummary[] = hederaOrders.map((hOrder, index) => {
     const ethState = ethOrderStates[index];
-    let status: OrderStatus = 'Created';
+    let status: OrderStatus = 'Created'; // Default status
 
-    if (ethState.status === 'success') {
-      const ethData = ethState.result as { amount: bigint, owner: string, repaid: boolean, open: boolean };
+    if (ethState.status === 'success' && ethState.result) {
+      // Use the correct fields: funded, repaid, liquidated
+      const ethData = ethState.result as { amountWei: bigint, owner: string, funded: boolean, repaid: boolean, liquidated: boolean };
       
-      if (ethData.repaid && !ethData.open) {
-        status = 'Withdrawn';
-      } else if (ethData.repaid && ethData.open) {
-        status = 'ReadyToWithdraw';
-      } else if (!ethData.open && !ethData.repaid) {
+      // Determine the status based on the contract's actual logic.
+      // The order of these checks is important.
+      if (ethData.liquidated) {
         status = 'Liquidated';
-      } else if (ethData.open) {
+      } else if (ethData.repaid && !ethData.funded) {
+        // The `withdraw` function sets `funded` to false, so this means withdrawn.
+        status = 'Withdrawn';
+      } else if (ethData.repaid && ethData.funded) {
+        status = 'ReadyToWithdraw';
+      } else if (ethData.funded) {
         status = 'Funded';
       }
+      // If none of the above, it remains in the default 'Created' state.
+    } else {
+      console.warn(`Could not fetch on-chain status for order ${hOrder.orderId}`);
     }
-    
     return {
       orderId: hOrder.orderId,
       amountWei: hOrder.amountWei,
       status: status,
     };
   });
-  
+  console.log(combinedOrders)
+
   return combinedOrders;
 }
 
+/**
+ * Fetches only the orders that have been created on Sepolia but not yet funded.
+ * It does this by finding all 'OrderCreated' events and filtering out any that
+ * already appear in the list of funded/active orders.
+ * @param userAddress The user's wallet address.
+ * @param existingOrderIds A set of order IDs that are already known to be funded or closed.
+ * @returns A promise that resolves to an array of UserOrderSummary objects with 'Created' status.
+ */
+export async function fetchCreatedOrdersFromSepolia(
+  userAddress: `0x${string}`,
+  existingOrderIds: Set<string>
+): Promise<UserOrderSummary[]> {
+  
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
 
+  const params = new URLSearchParams({
+    module: 'logs',
+    action: 'getLogs',
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    topic0: ORDER_CREATED_TOPIC,
+    topic2: paddedUserAddress, // The user address is the second indexed topic
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  const url = `${SEPOLIA_BLOCKSCOUT_API_URL}?${params.toString()}`;
+  console.log("Fetching CREATED orders from Sepolia URL:", url);
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Failed to fetch created orders from Sepolia Blockscout");
+    
+    const data = await response.json();
+    if (data.message !== 'OK' || !Array.isArray(data.result) || data.result.length === 0) {
+      return [];
+    }
+
+    const createdOrders: UserOrderSummary[] = data.result.map((log: any) => ({
+      orderId: log.topics[1] as `0x${string}`,
+      amountWei: 0n, // Amount is 0 until funded
+      status: 'Created',
+    }));
+
+    // Filter out any orders that we already fetched from the Hedera-based list.
+    // This prevents duplicates if Blockscout indexing is slightly delayed.
+    return createdOrders.filter(order => !existingOrderIds.has(order.orderId));
+
+  } catch (error) {
+    console.error("Error fetching created orders from Sepolia:", error);
+    return [];
+  }
+}
 /**
  * Polls the Sepolia Blockscout API for a specific MarkRepaid event by its orderId.
  * @param orderId The order ID to check for.
