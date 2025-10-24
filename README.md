@@ -1,6 +1,6 @@
 # KINXP — Cross-Chain Collateral → USD on Hedera
 
-**What it does:** Lock crypto (starting with ETH on Ethereum/Sepolia) as collateral and mint USD on **Hedera** (HTS). Messaging is handled by **LayerZero v2**; pricing/limits use **Pyth**. Repay on Hedera to unlock your ETH back on Ethereum.
+Lock crypto (starting with ETH on Ethereum/Sepolia) as collateral and mint USD on **Hedera** (HTS). Messaging is handled by **LayerZero v2**; pricing/limits use **Pyth**. Repay on Hedera to unlock your ETH back on Ethereum.
 
 ## Why Hedera
 
