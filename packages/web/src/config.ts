@@ -39,15 +39,15 @@ export const ETH_COLLATERAL_ABI = parseAbi([
 ]);
 
 export const HEDERA_CREDIT_ABI = parseAbi([
-  "struct HOrder { uint256 collateralAmount; address owner; bool open; }",
-  "function horders(bytes32) view returns (HOrder memory)",
-  "function borrow(bytes32 orderId, uint64 amount, bytes[] calldata priceUpdateData, uint32 pythMaxAgeSec) payable",
-  "function repay(bytes32 id, uint64 usdAmount, bool notifyEthereum) payable",
-  "function quoteRepayFee(bytes32 orderId) view returns (uint256)",
-  "function ltvBps() view returns (uint16)",
-  "event HederaOrderOpened(bytes32 indexed orderId, address indexed borrower, uint256 ethAmountWei)",
-  "event Borrowed(bytes32 indexed orderId, address indexed to, uint64 usdAmount)",
-  "event Repaid(bytes32 indexed orderId, uint64 repaidAmount, bool fullyRepaid)"
-]);
+    "struct HOrder { address borrower; uint256 ethAmountWei; uint64 borrowedUsd; bool open; }",
+    "function horders(bytes32) view returns (HOrder memory)",
+    "function borrow(bytes32 orderId, uint64 amount, bytes[] calldata priceUpdateData, uint32 pythMaxAgeSec) payable",
+    "function repay(bytes32 id, uint64 usdAmount, bool notifyEthereum) payable",
+    "function quoteRepayFee(bytes32 orderId) view returns (uint256)",
+    "function ltvBps() view returns (uint16)",
+    "event HederaOrderOpened(bytes32 indexed orderId, address indexed borrower, uint256 ethAmountWei)",
+    "event Borrowed(bytes32 indexed orderId, address indexed to, uint64 usdAmount)",
+    "event Repaid(bytes32 indexed orderId, uint64 repaidAmount, bool fullyRepaid)"
+  ]);
 
 export const HEDERA_ORDER_OPENED_TOPIC = '0xb8c7df1413610d962f04c4eb8df98f0194228023b45937a1075398981ca9f207';

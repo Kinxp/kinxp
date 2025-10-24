@@ -200,21 +200,39 @@ function App() {
       const { scaledPrice } = await fetchPythUpdateData();
       const formattedPrice = Number(formatUnits(scaledPrice, 18)).toFixed(2);
       addLog(`✓ Current ETH Price: $${formattedPrice}`);
-      const hOrder = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'horders', args: [orderId], chainId: HEDERA_CHAIN_ID }) as { collateralAmount: bigint };
-      const depositWei = hOrder.collateralAmount;
+      
+      const hOrder = await readContract(wagmiConfig, { 
+          address: HEDERA_CREDIT_OAPP_ADDR, 
+          abi: HEDERA_CREDIT_ABI, 
+          functionName: 'horders', 
+          args: [orderId], 
+          chainId: HEDERA_CHAIN_ID 
+      }) as { ethAmountWei: bigint; borrower: string; borrowedUsd: bigint, open: boolean };
+      
+      // Access the correct property name
+      const depositWei = hOrder.ethAmountWei;
+
       if (depositWei === 0n) throw new Error("Collateral amount on Hedera is zero.");
       addLog(`✓ Collateral confirmed: ${formatUnits(depositWei, 18)} ETH`);
+      
       const ltvBps = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'ltvBps', chainId: HEDERA_CHAIN_ID }) as number;
       addLog(`✓ LTV read: ${ltvBps / 100}%`);
+      
       const collateralUsd18 = (depositWei * scaledPrice) / parseEther("1");
       const maxBorrow18 = (collateralUsd18 * BigInt(ltvBps)) / 10_000n;
       const borrowTarget18 = (maxBorrow18 * BigInt(BORROW_SAFETY_BPS)) / 10_000n;
       const finalBorrowAmount = borrowTarget18 / 10n ** 12n;
       const formattedBorrowAmount = formatUnits(finalBorrowAmount, 6);
+      
       addLog(`✓ Calculated max borrow: ${formattedBorrowAmount} hUSD`);
       return { amount: formattedBorrowAmount, price: formattedPrice };
-    } catch (e: any) { addLog(`❌ Calc failed: ${e.message}`); setError(`Calc failed: ${e.message}`); setAppState(AppState.ERROR); return null; } 
-}, [orderId, address, addLog]);
+    } catch (e: any) { 
+        addLog(`❌ Calc failed: ${e.message}`); 
+        setError(`Calc failed: ${e.message}`); 
+        setAppState(AppState.ERROR); 
+        return null; 
+    } 
+  }, [orderId, address, addLog]);
 
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash });
   
