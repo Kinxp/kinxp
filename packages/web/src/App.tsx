@@ -1,17 +1,17 @@
 // App.tsx
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, useReadContract, usePublicClient } from 'wagmi';
+import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from './wagmi';
-import { decodeEventLog, parseEther, parseUnits, maxUint256, formatUnits } from 'viem';
+import { parseEther, parseUnits, formatUnits } from 'viem';
 
 // Config and ABIs
 import { 
   ETH_CHAIN_ID, ETH_COLLATERAL_ABI, ETH_COLLATERAL_OAPP_ADDR, 
   HEDERA_CHAIN_ID, HEDERA_CREDIT_ABI, HEDERA_CREDIT_OAPP_ADDR,
   HUSD_TOKEN_ADDR, ERC20_ABI, PYTH_CONTRACT_ADDR, PYTH_ABI,
-  BORROW_SAFETY_BPS
+  BORROW_SAFETY_BPS, USD_CONTROLLER_ABI
 } from './config';
 import { pollForHederaOrderOpened } from './services/blockscoutService';
 import { fetchPythUpdateData } from './services/pythService';
@@ -28,13 +28,17 @@ import ProgressView from './components/ProgressView';
 import BorrowView from './components/BorrowView';
 import RepayView from './components/RepayView';
 import WithdrawView from './components/WithdrawView';
+import OrderList from './components/OrderList';
+import { fetchUserOrders } from './services/orderService';
+import { UserOrderSummary } from './types';
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
 
 enum AppState {
   IDLE, ORDER_CREATING, ORDER_CREATED, FUNDING_IN_PROGRESS, CROSSING_TO_HEDERA,
   READY_TO_BORROW, BORROWING_IN_PROGRESS, LOAN_ACTIVE,
-  APPROVING_REPAYMENT, REPAYING_IN_PROGRESS,
+  RETURNING_FUNDS,
+  REPAYING_IN_PROGRESS,
   CROSSING_TO_ETHEREUM, READY_TO_WITHDRAW, WITHDRAWING_IN_PROGRESS, COMPLETED, ERROR
 }
 
@@ -50,6 +54,10 @@ function App() {
   const [lzTxHash, setLzTxHash]         = useState<`0x${string}` | null>(null);
   const [pollingStartBlock, setPollingStartBlock] = useState<number>(0);
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
+  const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
+  const [userOrders, setUserOrders] = useState<UserOrderSummary[]>([]);
+  const [isOrdersLoading, setIsOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
 
   // --- THIS IS THE FIX ---
   // Use two separate refs to avoid intervals interfering with each other
@@ -60,15 +68,6 @@ function App() {
   const { switchChain } = useSwitchChain();
   const { data: hash, error: writeError, isPending: isWritePending, writeContract, reset: resetWriteContract } = useWriteContract();
   const hederaPublicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
-
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
-    address: HUSD_TOKEN_ADDR,
-    abi: ERC20_ABI,
-    functionName: 'allowance',
-    args: [address!, HEDERA_CREDIT_OAPP_ADDR],
-    chainId: HEDERA_CHAIN_ID,
-    query: { enabled: isConnected && !!address && appState === AppState.LOAN_ACTIVE }
-  });
 
   const addLog = useCallback((log: string) => setLogs(prev => [...prev, log]), []);
 
@@ -131,6 +130,52 @@ function App() {
     }
   }, [orderId, sendTxOnChain, addLog]);
   
+  const resolveTreasuryAddress = useCallback(async (): Promise<`0x${string}`> => {
+    if (treasuryAddress) return treasuryAddress;
+    addLog('Resolving treasury address on Hedera...');
+    try {
+      const controllerAddr = await readContract(wagmiConfig, {
+        address: HEDERA_CREDIT_OAPP_ADDR,
+        abi: HEDERA_CREDIT_ABI,
+        functionName: 'controller',
+        chainId: HEDERA_CHAIN_ID,
+      }) as `0x${string}`;
+      const resolvedTreasury = await readContract(wagmiConfig, {
+        address: controllerAddr,
+        abi: USD_CONTROLLER_ABI,
+        functionName: 'treasuryAccount',
+        chainId: HEDERA_CHAIN_ID,
+      }) as `0x${string}`;
+      if (!resolvedTreasury || resolvedTreasury === '0x0000000000000000000000000000000000000000') {
+        throw new Error('Treasury address is not configured on Hedera controller');
+      }
+      setTreasuryAddress(resolvedTreasury);
+      addLog(`Treasury resolved: ${controllerAddr.slice(0, 10)}... -> ${resolvedTreasury.slice(0, 10)}...`);
+      return resolvedTreasury;
+    } catch (error: any) {
+      throw new Error(error?.shortMessage || error?.message || 'Failed to resolve treasury address');
+    }
+  }, [treasuryAddress, addLog]);
+
+  const loadOrders = useCallback(async () => {
+    if (!address) {
+      setUserOrders([]);
+      setOrdersError(null);
+      return;
+    }
+    setIsOrdersLoading(true);
+    try {
+      const data = await fetchUserOrders(address);
+      setUserOrders(data);
+      setOrdersError(null);
+    } catch (err: any) {
+      console.error('Failed to load orders', err);
+      setOrdersError(err?.message ?? 'Unable to load orders');
+    } finally {
+      setIsOrdersLoading(false);
+    }
+  }, [address]);
+
   const repayAndCross = useCallback(async () => {
     if (!orderId || !borrowAmount) return;
     setAppState(AppState.REPAYING_IN_PROGRESS);
@@ -149,19 +194,20 @@ function App() {
     }
   }, [orderId, borrowAmount, sendTxOnChain, addLog]);
 
-  const handleRepay = useCallback(() => {
+  const handleRepay = useCallback(async () => {
     if (!orderId || !address || !borrowAmount) return;
-    const repayAmountBigInt = parseUnits(borrowAmount, 6);
-    // Note: The `allowance` hook automatically runs when appState is LOAN_ACTIVE
-    if (allowance !== undefined && (allowance as bigint) >= repayAmountBigInt) {
-      addLog('✓ hUSD allowance is sufficient.');
-      repayAndCross();
-    } else {
-      addLog('▶ hUSD allowance is insufficient. Please approve the token.');
-      setAppState(AppState.APPROVING_REPAYMENT);
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HUSD_TOKEN_ADDR, abi: ERC20_ABI, functionName: 'approve', args: [HEDERA_CREDIT_OAPP_ADDR, maxUint256] });
+    try {
+      const treasury = await resolveTreasuryAddress();
+      addLog('1/2: Returning hUSD to the Hedera treasury...');
+      setAppState(AppState.RETURNING_FUNDS);
+      sendTxOnChain(HEDERA_CHAIN_ID, { address: HUSD_TOKEN_ADDR, abi: ERC20_ABI, functionName: 'transfer', args: [treasury, parseUnits(borrowAmount, 6)] });
+    } catch (err: any) {
+      const message = err?.message ?? 'Failed to return hUSD to treasury';
+      addLog(`�?O ${message}`);
+      setError(message);
+      setAppState(AppState.ERROR);
     }
-  }, [orderId, address, borrowAmount, allowance, repayAndCross, sendTxOnChain, addLog]);
+  }, [orderId, address, borrowAmount, resolveTreasuryAddress, sendTxOnChain, addLog]);
   
   const handleWithdraw = useCallback(() => { if (!orderId) return; setAppState(AppState.WITHDRAWING_IN_PROGRESS); addLog('▶ Withdrawing ETH on Ethereum...'); sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [orderId] }); }, [orderId, sendTxOnChain, addLog]);
 
@@ -197,6 +243,7 @@ function App() {
       if (found) {
         addLog('✅ [Polling Ethereum] Success! Collateral is unlocked.');
         if(ethPollingRef.current) clearInterval(ethPollingRef.current);
+        void loadOrders();
         setAppState(AppState.READY_TO_WITHDRAW);
       } else if (attempts >= maxAttempts) {
         addLog('❌ [Polling Ethereum] Timed out.');
@@ -205,7 +252,7 @@ function App() {
         setAppState(AppState.ERROR);
       }
     }, 5000);
-  }, [addLog]);
+  }, [addLog, loadOrders]);
 
   const calculateBorrowAmount = useCallback(async () => {
     if (!address || !orderId) return null;
@@ -267,10 +314,9 @@ function App() {
                 addLog(`✅ Successfully borrowed ${userBorrowAmount} hUSD!`); 
                 setAppState(AppState.LOAN_ACTIVE); 
                 break;
-            case AppState.APPROVING_REPAYMENT: 
-                addLog('✓ Approval successful! Now proceeding to repay...'); 
-                refetchAllowance(); 
-                repayAndCross(); 
+            case AppState.RETURNING_FUNDS:
+                addLog('Treasury transfer complete. Proceeding with repay...');
+                repayAndCross();
                 break;
             case AppState.REPAYING_IN_PROGRESS: 
                 addLog('▶ Crossing chains back to Ethereum...');
@@ -284,8 +330,9 @@ function App() {
                 setAppState(AppState.COMPLETED); 
                 break;
         }
+        await loadOrders();
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, refetchAllowance, repayAndCross, userBorrowAmount]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount, loadOrders]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -293,6 +340,15 @@ function App() {
     if (writeError) { addLog(`❌ Error: ${writeError.shortMessage || writeError.message}`); setError(writeError.shortMessage || writeError.message); setAppState(AppState.ERROR); }
     if (receipt) handleReceipt();
   }, [isWritePending, isConfirming, writeError, receipt, handleReceipt, addLog]);
+
+  useEffect(() => {
+    if (isConnected && address) {
+      loadOrders();
+    } else if (!isConnected) {
+      setUserOrders([]);
+      setOrdersError(null);
+    }
+  }, [isConnected, address, loadOrders]);
 
   useEffect(() => {
     if (appState === AppState.CROSSING_TO_HEDERA && orderId && pollingStartBlock > 0) {
@@ -305,6 +361,14 @@ function App() {
     }
   }, [appState, orderId, pollingStartBlock, startPollingForHederaOrder, startPollingForEthRepay]);
 
+  useEffect(() => {
+    if (appState === AppState.LOAN_ACTIVE && !treasuryAddress) {
+      resolveTreasuryAddress().catch((err) => {
+        addLog(`Could not resolve treasury address: ${err.message ?? err}`);
+      });
+    }
+  }, [appState, treasuryAddress, resolveTreasuryAddress, addLog]);
+
   const resetFlow = () => { 
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
     if (ethPollingRef.current) clearInterval(ethPollingRef.current);
@@ -316,9 +380,11 @@ function App() {
     setLzTxHash(null);
     setBorrowAmount(null);
     setUserBorrowAmount(null);
+    setTreasuryAddress(null);
     setIsCalculating(false);
     setEthPrice(null);
     setPollingStartBlock(0);
+    void loadOrders();
   }
 
   const renderContent = () => {
@@ -340,7 +406,19 @@ function App() {
   return (
     <div className="bg-gray-900 min-h-screen text-white font-sans">
       <Header />
-      <main className="container mx-auto p-4 sm:p-8"><div className="max-w-2xl mx-auto">{renderContent()}</div></main>
+      <main className="container mx-auto p-4 sm:p-8">
+        <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-2xl mx-auto">{renderContent()}</div>
+          {isConnected && (
+            <OrderList
+              orders={userOrders}
+              isLoading={isOrdersLoading}
+              error={ordersError}
+              onRefresh={() => { void loadOrders(); }}
+            />
+          )}
+        </div>
+      </main>
     </div>
   );
 }

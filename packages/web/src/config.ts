@@ -26,6 +26,7 @@ export const PYTH_ABI = parseAbi([
 export const ERC20_ABI = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)",
   "function allowance(address owner, address spender) view returns (uint256)",
+  "function transfer(address to, uint256 value) returns (bool)",
 ]);
 
 export const ETH_COLLATERAL_ABI = parseAbi([
@@ -33,8 +34,8 @@ export const ETH_COLLATERAL_ABI = parseAbi([
   "function fundOrderWithNotify(bytes32 orderId, uint256 amount) payable",
   "function quoteOpenNativeFee(address, uint256) view returns (uint256)",
   "function withdraw(bytes32 orderId)",
-  "struct Order { uint256 amount; address owner; bool repaid; bool open; }",
-  "function orders(bytes32) view returns (Order memory)",
+  "function nonces(address owner) view returns (uint96)",
+  "function orders(bytes32) view returns (address owner, uint256 amountWei, bool funded, bool repaid, bool liquidated)",
   "event OrderCreated(bytes32 indexed orderId, address indexed owner)",
 ]);
 
@@ -45,9 +46,13 @@ export const HEDERA_CREDIT_ABI = parseAbi([
     "function repay(bytes32 id, uint64 usdAmount, bool notifyEthereum) payable",
     "function quoteRepayFee(bytes32 orderId) view returns (uint256)",
     "function ltvBps() view returns (uint16)",
+    "function controller() view returns (address)",
     "event HederaOrderOpened(bytes32 indexed orderId, address indexed borrower, uint256 ethAmountWei)",
     "event Borrowed(bytes32 indexed orderId, address indexed to, uint64 usdAmount)",
     "event Repaid(bytes32 indexed orderId, uint64 repaidAmount, bool fullyRepaid)"
   ]);
 
+export const USD_CONTROLLER_ABI = parseAbi([
+  "function treasuryAccount() view returns (address)",
+]);
 export const HEDERA_ORDER_OPENED_TOPIC = '0xb8c7df1413610d962f04c4eb8df98f0194228023b45937a1075398981ca9f207';

@@ -33,10 +33,10 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, onRepay })
         disabled={!borrowAmount}
         className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        Approve & Repay {borrowAmount ? `${borrowAmount} hUSD` : ''}
+        Return & Repay {borrowAmount ? `${borrowAmount} hUSD` : ''}
       </button>
       <p className="text-xs text-gray-500">
-        This is a two-step process if you haven't approved the token before. You will be asked to sign an `approve` transaction first, followed by the `repay` transaction.
+        We'll return your hUSD to the treasury and then submit the repay transaction.
       </p>
     </div>
   );

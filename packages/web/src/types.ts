@@ -24,3 +24,14 @@ export interface OrderData {
       liquidationPrice: number;
     };
   }
+
+  export type OrderStatus = 'Created' | 'Funded' | 'ReadyToWithdraw' | 'Withdrawn' | 'Liquidated';
+
+  export interface UserOrderSummary {
+    orderId: `0x${string}`;
+    amountWei: bigint;
+    funded: boolean;
+    repaid: boolean;
+    liquidated: boolean;
+    status: OrderStatus;
+  }

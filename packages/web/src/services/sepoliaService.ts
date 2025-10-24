@@ -17,9 +17,9 @@ export async function pollForEthRepaid(orderId: `0x${string}`): Promise<boolean>
       functionName: 'orders',
       args: [orderId],
       chainId: ETH_CHAIN_ID,
-    }) as { amount: bigint; owner: string; repaid: boolean; open: boolean };
+    }) as { owner: `0x${string}`; amountWei: bigint; funded: boolean; repaid: boolean; liquidated: boolean };
 
-    console.log(`[Polling Sepolia] Checking order ${orderId.slice(0,10)}... Repaid status: ${orderData.repaid}`);
+    console.log(`[Polling Sepolia] Checking order ${orderId.slice(0,10)}... Repaid status: ${orderData.repaid}, funded: ${orderData.funded}`);
 
     return orderData.repaid === true;
   } catch (error) {
