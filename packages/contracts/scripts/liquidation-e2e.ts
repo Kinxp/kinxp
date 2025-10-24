@@ -17,17 +17,22 @@ import {
   fetchPythUpdate,
   fundOrderEthereum,
   getBorrowAmount,
-  getLayerZeroRepayFee,
-  getPriceUpdateFee, hederaBorrow, hederaClient,
+  getPriceUpdateFee,
+  hederaBorrow,
+  hederaClient,
   hederaOperatorId,
   hederaOperatorKey,
   hederaOperatorWallet,
   layerzeroTx,
   linkContractsWithLayerZero,
-  linkControllerToToken, printBalances, repayTokens, scalePrice,
+  linkControllerToToken,
+  liquidateOrderEthereum,
+  printBalances,
+  printEthBalances,
+  scalePrice,
   transferOwnership,
   transferSupplyKey,
-  waitForEthRepaid,
+  waitForHederaOrderLiquidated,
   waitForHederaOrderOpen
 } from "./util";
 
@@ -134,75 +139,29 @@ async function main() {
   banner("Checking balances AFTER borrow");
   await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
 
-  banner("Preparing repayment");
-  const repayAmount = borrowAmount;
-  console.log("  Repay amount:", formatUnits(repayAmount, 6), "hUSD");
-  const treasuryAddress = hederaOperatorWalletAddress;
+  banner("Checking ETH balances before liquidation");
+  await printEthBalances(ethCollateral, ethSigner);
 
-  banner("Returning hUSD to treasury");
-  await repayTokens(tokenAddress, treasuryAddress, repayAmount);
-  console.log("  Tokens transferred back to treasury");
+  banner("Liquidating order on Ethereum");
+  const txLiquidate = await liquidateOrderEthereum(ethCollateral, ethSigner, orderId);
+  if (txLiquidate?.status === 1) {
+    console.log(`  ✓ Liquidation transaction successful!`);
+  } else {
+    throw new Error('Liquidation transaction failed!');
+  }
+  
+  banner("Checking ETH balances after liquidation");
+  await printEthBalances(ethCollateral, ethSigner);
 
-  banner("Quoting LayerZero fee for repay notify");
-  const { fee: repayValue, feeWei: repayValueWei } = await getLayerZeroRepayFee(hederaCredit, orderId);
-  console.log("  Sending value:", formatUnits(repayValue, 8), "HBAR (", repayValueWei, " wei)");
-
-  banner("Checking balances prior to repay");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
-
-  banner("Attempting repay static call...");
-  try {
-    await borrowerCredit.repay.staticCall(orderId, repayAmount, true, {
-      value: repayValueWei,
-      gasLimit: 1_500_000,
-    });
-    console.log("  ✓ Static call passed");
-  } catch (err: any) {
-    const iface = hederaCredit.interface;
-    let decoded: any = null;
-    if (err.data) {
-      try {
-        decoded = iface.parseError(err.data);
-      } catch (_) {
-        // ignore parse failure; we'll rethrow below if unexpected
-      }
-    }
-    if (decoded && (decoded.name === "LzFeeTooLow" || decoded.name === "NotEnoughNative")) {
-      console.warn(
-        `  Static call expected revert (${decoded.name}) because msg.value cannot be forwarded in static calls`
-      );
-      console.warn("  Required native fee:", decoded.args?.[0]?.toString?.() ?? "n/a");
-      if (decoded.args?.length > 1) {
-        console.warn("  Provided native fee:", decoded.args?.[1]?.toString?.() ?? "n/a");
-      }
-    } else {
-      console.error("  Static call failed:", err.shortMessage ?? err.message);
-      if (err.data) console.error("  Error data:", err.data);
-      throw err;
-    }
+  banner("Waiting for liquidation message on Hedera");
+  const order = await waitForHederaOrderLiquidated(hederaCredit, orderId);
+  if (!order.open) {
+    console.log(`  ✓ Order on Hedera closed!`);
+  } else {
+    throw new Error('Order on Hedera not closed, even though it was liquidated!')
   }
 
-  banner("Repaying on Hedera");
-  const repayTx = await borrowerCredit.repay(orderId, repayAmount, true, {
-    value: repayValueWei,
-    gasLimit: 1_500_000,
-  });
-  await repayTx.wait();
-  console.log("  Repay succeeded");
-
-  banner("DEBUG: Checking balances AFTER repay");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
-
-  banner("Waiting for Ethereum repay flag");
-  await waitForEthRepaid(ethCollateral, orderId);
-  console.log("  Ethereum order marked repaid");
-
-  banner("Withdrawing ETH on Ethereum");
-  const withdrawTx = await ethCollateral.withdraw(orderId);
-  await withdrawTx.wait();
-  console.log("  ETH withdrawn");
-
-  console.log("\n✅ E2E TEST SUCCESSFUL - REPAY & WITHDRAW COMPLETE!");
+  console.log("\n✅ E2E TEST SUCCESSFUL - LIQUIDATION COMPLETE!");
 }
 
 main().catch((err) => {

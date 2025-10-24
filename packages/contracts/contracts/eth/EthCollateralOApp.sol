@@ -204,7 +204,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     }
 
     /// @notice Owner safety valve: liquidate funds if repayment fails.
-    function adminLiquidate(bytes32 orderId, address payout) external onlyOwner {
+    function adminLiquidate(bytes32 orderId, address payout) payable external nonReentrant onlyOwner {
         Order storage o = orders[orderId];
         require(o.funded && !o.repaid, "nothing to liquidate");
         o.liquidated = true;
@@ -215,7 +215,28 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         (bool ok, ) = payout.call{value: amt}("");
         require(ok, "send fail");
 
+        bytes memory payload = _getLiquidationMessage(orderId);
+        bytes memory opts = _getMessageOptions();
+
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        uint256 feeProvided = msg.value;
+        require(feeProvided >= q.nativeFee, "insufficient msg.value");
+
+        _sendLzMessage(hederaEid, payload, opts, q.nativeFee, msg.sender);
+
         emit Liquidated(orderId, amt);
+    }
+
+    /**
+     * @notice Quote the LayerZero native fee the sender must include to notify Hedera of a LIQUIDATION.
+     * @param orderId The orderId being liquidated.
+     */
+    function quoteLiquidationFee(bytes32 orderId) external view returns (uint256 nativeFee) {
+        require(hederaEid != 0, "eid unset");
+        bytes memory payload = _getLiquidationMessage(orderId);
+        bytes memory opts = _getMessageOptions();
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        return q.nativeFee;
     }
 
     function setHederaEid(uint32 _eid) external onlyOwner {
@@ -239,5 +260,20 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
             ),
             refundAddress
         );
+    }
+
+    function _getLiquidationMessage(bytes32 orderId) private pure returns (bytes memory liquidationMessage) {
+        return abi.encode(
+            MessageTypes.LIQUIDATED,
+            orderId,
+            address(0),
+            uint256(0)
+        );
+    }
+
+    function _getMessageOptions() private pure returns (bytes memory messageOptions) {
+        return OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(200_000, 0);
     }
 }

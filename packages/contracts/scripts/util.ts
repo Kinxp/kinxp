@@ -16,7 +16,6 @@ import {
 } from "@hashgraph/sdk";
 import {
   Contract,
-  formatEther,
   formatUnits,
   getAddress,
   JsonRpcProvider,
@@ -26,6 +25,10 @@ import {
 } from "ethers";
 import { artifacts, ethers } from "hardhat";
 import { EthCollateralOApp, HederaCreditOApp, UsdHtsController } from "../typechain-types";
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 const HEDERA_MIN_VALUE = 1n; // Minimum LayerZero fee in tinybars
 const HBAR_WEI_PER_TINYBAR = 10_000_000_000n;
@@ -191,10 +194,28 @@ export async function fetchPythUpdate() {
 }
 
 export async function waitForHederaOrderOpen(hederaCredit: HederaCreditOApp, orderId: Hex, maxAttempts = 60) {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
+  const testFn = async () => {
       const order = await hederaCredit.horders(orderId);
       if (order && order.open) return order;
+  }
+  return waitForHedera(testFn, maxAttempts);
+}
+
+export async function waitForHederaOrderLiquidated(hederaCredit: HederaCreditOApp, orderId: Hex, maxAttempts = 60) {
+  const testFn = async () => {
+    const order = await hederaCredit.horders(orderId);
+    if (order && !order.open) return order;
+  }
+  return waitForHedera(testFn, maxAttempts);
+}
+
+async function waitForHedera<T>(testFn: () => Promise<T | undefined>, maxAttempts: number): Promise<T> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const testValue = await testFn();
+      if (testValue !== undefined) {
+        return testValue;
+      }
     } catch (err) {
       console.warn(`  [${attempt + 1}/${maxAttempts}] Hedera mirror read failed: ${(err as Error).message}`);
     }
@@ -346,8 +367,23 @@ export async function repayTokens(tokenAddress: string, treasuryAddress: string,
 
 export async function getLayerZeroRepayFee(hederaCredit: HederaCreditOApp, orderId: string) {
   const repayFee = await hederaCredit.quoteRepayFee(orderId);
-  const repayValue = repayFee < HEDERA_MIN_VALUE ? HEDERA_MIN_VALUE : repayFee;
-  const repayValueWei = repayValue * HBAR_WEI_PER_TINYBAR;
-  return { repayValue, repayValueWei };
+  return getMinFee(repayFee);
 }
 
+export async function liquidateOrderEthereum(ethCollateral: EthCollateralOApp, ethSigner: Wallet, orderId: string) {
+  const feeQuote = await ethCollateral.quoteLiquidationFee(orderId);
+  const { fee } = getMinFee(feeQuote);
+  const tx = await ethCollateral.adminLiquidate(orderId, await ethSigner.getAddress(), { value: fee });
+  return tx.wait();
+}
+
+function getMinFee(actualFee: bigint) {
+  const fee = actualFee < HEDERA_MIN_VALUE ? HEDERA_MIN_VALUE : actualFee;
+  const feeWei = fee * HBAR_WEI_PER_TINYBAR;
+  return { fee, feeWei };
+}
+
+export async function printEthBalances(contract: EthCollateralOApp, wallet: Wallet) {
+  console.log(`  Wallet balance: ${await wallet.provider!.getBalance(await wallet.getAddress())}`);
+  console.log(`  Contract balance: ${await wallet.provider!.getBalance(await contract.getAddress())}`);
+}
