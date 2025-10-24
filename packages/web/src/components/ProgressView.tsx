@@ -1,0 +1,57 @@
+// src/components/ProgressView.tsx
+import React from 'react';
+import { SpinnerIcon } from './Icons';
+
+interface ProgressViewProps { 
+  logs: string[];
+  showManualCheckButton?: boolean;
+  onManualCheck?: () => void;
+  isChecking?: boolean;
+  lzTxHash?: `0x${string}` | null;
+}
+
+const ProgressView: React.FC<ProgressViewProps> = ({ logs, showManualCheckButton, onManualCheck, isChecking, lzTxHash }) => {
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 space-y-4">
+      <div className="flex items-center justify-center gap-4">
+        <SpinnerIcon />
+        <h3 className="text-xl font-bold text-yellow-300">Transaction in Progress...</h3>
+      </div>
+      
+      {/* Display LayerZero Scan link if available */}
+      {lzTxHash && (
+        <div className="text-center bg-gray-900/50 p-3 rounded-lg">
+          <p className="text-sm text-gray-400">Your cross-chain message has been sent!</p>
+          <a
+            href={`https://testnet.layerzeroscan.com/tx/${lzTxHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-400 hover:text-cyan-300 underline text-xs font-mono break-all"
+          >
+            Track on LayerZero Scan
+          </a>
+        </div>
+      )}
+
+      <div className="bg-black/50 rounded-lg p-4 font-mono text-xs text-gray-300 h-64 overflow-y-auto whitespace-pre-wrap">
+        {logs.join('\n')}
+      </div>
+
+      {/* Conditionally render the manual check button */}
+      {showManualCheckButton && (
+        <div className="pt-4 border-t border-gray-700">
+          <p className="text-xs text-center text-gray-500 mb-2">If this is taking too long, you can check the status on Hedera manually.</p>
+          <button 
+            onClick={onManualCheck}
+            disabled={isChecking}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50"
+          >
+            {isChecking ? 'Checking...' : 'Check Status on Hedera Manually'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ProgressView;
