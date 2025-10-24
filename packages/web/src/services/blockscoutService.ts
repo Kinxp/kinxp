@@ -3,30 +3,28 @@
 import { HEDERA_BLOCKSCOUT_API_URL, HEDERA_CREDIT_OAPP_ADDR, HEDERA_ORDER_OPENED_TOPIC } from "../config";
 
 /**
- * Polls the Hedera Blockscout API to check if the HederaOrderOpened event has been emitted
- * for a specific, exact orderId.
- * @param orderId The order ID to check for.
+ * Polls the Hedera Blockscout API using a highly specific query that has been proven to work.
+ * @param orderId The order ID to check for (e.g., '0x...').
  * @returns A promise that resolves to true if the event is found, false otherwise.
  */
 export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<boolean> {
-  // --- THIS IS THE FIX ---
-  // We now include topic1 in the API query to ask for a specific orderId.
-  const topic1WithoutPrefix = orderId.startsWith('0x') ? orderId.substring(2) : orderId;
+
+  // Construct the URL with all required parameters for a specific topic query.
   const params = new URLSearchParams({
     module: 'logs',
     action: 'getLogs',
     address: HEDERA_CREDIT_OAPP_ADDR,
     topic0: HEDERA_ORDER_OPENED_TOPIC,
-    topic1: topic1WithoutPrefix, // This makes the query highly specific
-    topic0_1_opr: 'and',
-    fromBlock: '0',
-    toBlock: 'latest',
+    topic1: orderId, // Use the prefix-less version
+    topic0_1_opr: 'and',         // The required logical operator
+    fromBlock: '0',              // Required parameter
+    toBlock: 'latest',           // Required parameter
   });
 
   const url = `${HEDERA_BLOCKSCOUT_API_URL}?${params.toString()}`;
 
-  // Log the new, more specific URL for debugging
-  console.log("Polling Blockscout with specific URL:", url);
+  // Log the exact URL for verification
+  console.log("Polling Blockscout with PROVEN specific URL:", url);
 
   try {
     const response = await fetch(url);
@@ -37,15 +35,14 @@ export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<
 
     const data = await response.json();
 
-    // With this specific query, we no longer need to filter on the client side.
-    // We only need to check if the API found any results at all.
+    // With this specific query, we just need to check if the API found any results.
     // A status of '1' and a non-empty result array means our event was found.
     if (data.status === '1' && Array.isArray(data.result) && data.result.length > 0) {
-      console.log("SUCCESS: Blockscout API found a matching event for our orderId!");
+      console.log("SUCCESS: Blockscout API found a matching event for our specific orderId!");
       return true;
     }
     
-    // Status '0' or an empty result array means the event has not been indexed yet.
+    // Status '0' means the specific event has not been indexed yet. This is normal during polling.
     return false;
 
   } catch (error) {

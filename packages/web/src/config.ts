@@ -1,28 +1,33 @@
 // src/config.ts
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
-
-
-export const USE_MOCK_API = true;
-
-// src/config.ts
-
 import { parseAbi } from 'viem';
-
 
 // Chain IDs
 export const ETH_CHAIN_ID = 11155111; // Sepolia
 export const HEDERA_CHAIN_ID = 296; // Hedera Testnet
 
-// --- FIX: Point to our local Vite proxy to bypass CORS ---
+// Blockscout API endpoint for Hedera Testnet
 export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 
 // --- CONTRACT ADDRESSES ---
-// Using the verified contract address from your logs
 export const ETH_COLLATERAL_OAPP_ADDR = '0x3692aF62148947126f1A1E4010f508892e586B96'; 
-export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006ca0c3';
+export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006C85bb';
+export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603'; // From your original script log
+export const PYTH_CONTRACT_ADDR = '0x99cb203F49A113659FEA3f932975928dFE91379C'.toLowerCase();
 
-// ABI Fragments
+// --- THIS IS THE FIX ---
+// Add the missing constant required by App.tsx
+export const BORROW_SAFETY_BPS = 8000; // 80% safety margin, from your script's default
+
+export const PYTH_ABI = parseAbi([
+  "function getUpdateFee(bytes[] calldata updateData) external view returns (uint256)",
+]);
+
+export const ERC20_ABI = parseAbi([
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+]);
+
 export const ETH_COLLATERAL_ABI = parseAbi([
   "function createOrderId() returns (bytes32)",
   "function fundOrderWithNotify(bytes32 orderId, uint256 amount) payable",
@@ -37,12 +42,12 @@ export const HEDERA_CREDIT_ABI = parseAbi([
   "struct HOrder { uint256 collateralAmount; address owner; bool open; }",
   "function horders(bytes32) view returns (HOrder memory)",
   "function borrow(bytes32 orderId, uint256 amount, bytes[] calldata priceUpdateData, uint32 pythMaxAgeSec) payable",
-  "function repay(bytes32 orderId, uint256 amount, bool notify) payable",
+  "function repay(bytes32 id, uint64 usdAmount, bool notifyEthereum) payable",
   "function quoteRepayFee(bytes32 orderId) view returns (uint256)",
+  "function ltvBps() view returns (uint16)",
   "event HederaOrderOpened(bytes32 indexed orderId, address indexed borrower, uint256 ethAmountWei)",
   "event Borrowed(bytes32 indexed orderId, address indexed to, uint64 usdAmount)",
   "event Repaid(bytes32 indexed orderId, uint64 repaidAmount, bool fullyRepaid)"
 ]);
 
-// This is the correct topic hash from the verified contract
 export const HEDERA_ORDER_OPENED_TOPIC = '0xb8c7df1413610d962f04c4eb8df98f0194228023b45937a1075398981ca9f207';

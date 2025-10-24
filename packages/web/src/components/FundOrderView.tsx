@@ -4,8 +4,8 @@ import React from 'react';
 
 interface FundOrderViewProps {
   orderId: string;
-  ethAmount: string;
-  onFund: () => void;
+  ethAmount: string; 
+  onFund: (amountToFund: string) => void; // UPDATED: onFund now takes an argument
 }
 
 const FundOrderView: React.FC<FundOrderViewProps> = ({ orderId, ethAmount, onFund }) => {
@@ -25,7 +25,7 @@ const FundOrderView: React.FC<FundOrderViewProps> = ({ orderId, ethAmount, onFun
         </div>
       </div>
 
-      <button onClick={onFund} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg">
+      <button onClick={() => onFund(ethAmount)} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg">
         Fund Order & Cross to Hedera
       </button>
     </div>
