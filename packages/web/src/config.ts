@@ -13,7 +13,7 @@ export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 export const ETH_COLLATERAL_OAPP_ADDR = '0x3692aF62148947126f1A1E4010f508892e586B96'; 
 export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006C85bb';
 export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603'; // From your original script log
-export const PYTH_CONTRACT_ADDR = '0x99cb203F49A113659FEA3f932975928dFE91379C'.toLowerCase();
+export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase();
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx

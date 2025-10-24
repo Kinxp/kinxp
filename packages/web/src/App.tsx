@@ -96,23 +96,39 @@ function App() {
     setAppState(AppState.BORROWING_IN_PROGRESS); 
     setLogs(['▶ Preparing borrow transaction...']);
     try {
-      addLog('1/2: Fetching latest price data from Pyth Network...');
+      addLog('1/3: Fetching latest price data from Pyth Network...');
       const { priceUpdateData } = await fetchPythUpdateData();
       addLog('✓ Pyth data received.');
 
-      // --- THIS IS THE FIX ---
-      // Instead of quoting the fee, we send a fixed, generous amount.
-      // 1 HBAR is more than enough to cover any likely Pyth fee.
-      const safeFeeInTinybars = parseUnits('1', 8);
-      const valueInWei = safeFeeInTinybars * WEI_PER_TINYBAR;
-      addLog(`2/2: Sending borrow transaction with a safe fee of 1 HBAR...`);
+      // ==============================================================================
+      // === THIS IS THE CORRECTED LOGIC ==============================================
+      // ==============================================================================
+      addLog('2/3: Quoting exact Pyth update fee...');
+      
+      // Step 1: Call the Pyth contract off-chain to get the exact required fee.
+      // The fee is returned in tinybars (1e8 decimals).
+      const requiredFeeInTinybars = await readContract(wagmiConfig, {
+          address: PYTH_CONTRACT_ADDR,
+          abi: PYTH_ABI,
+          functionName: 'getUpdateFee',
+          args: [priceUpdateData],
+          chainId: HEDERA_CHAIN_ID,
+      }) as bigint;
+
+      // Step 2: Convert the tinybar fee to the 18-decimal "wei" format that wagmi expects
+      // for the Hedera chain, based on your wagmi config.
+      const valueInWei = requiredFeeInTinybars * WEI_PER_TINYBAR;
+
+      addLog(`✓ Pyth fee quoted: ${formatUnits(requiredFeeInTinybars, 8)} HBAR`);
+      addLog(`3/3: Sending borrow transaction with exact fee...`);
+      // ==============================================================================
       
       sendTxOnChain(HEDERA_CHAIN_ID, { 
         address: HEDERA_CREDIT_OAPP_ADDR, 
         abi: HEDERA_CREDIT_ABI, 
         functionName: 'borrow', 
         args: [orderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300],
-        value: valueInWei,
+        value: valueInWei, // Step 3: Use the EXACT required fee here
         gas: 1_500_000n, 
       });
     } catch (e: any) {
