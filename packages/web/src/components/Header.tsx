@@ -10,7 +10,7 @@ const Header: React.FC = () => {
   return (
     <nav className="bg-gray-800/50 backdrop-blur-sm border-b border-gray-700 p-4 sticky top-0 z-10">
       <div className="container mx-auto flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-cyan-400">ChainBridge</h1>
+        <h1 className="text-2xl font-bold text-cyan-400">KINXP</h1>
         {isConnected ? (
           <div className="flex items-center gap-4">
             <div className="bg-gray-700 text-sm text-cyan-300 font-mono py-2 px-4 rounded-lg">

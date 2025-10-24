@@ -17,7 +17,7 @@ const HomePage: React.FC = () => {
 
   return (
     <div className="bg-gray-800 rounded-2xl shadow-2xl p-8 text-center animate-fade-in">
-      <h2 className="text-4xl font-bold text-cyan-400 mb-4">Welcome to ChainBridge</h2>
+      <h2 className="text-4xl font-bold text-cyan-400 mb-4">Welcome to KINXP</h2>
       <p className="text-lg text-gray-300 mb-8">
         The simplest way to swap your Ethereum (ETH) for US Dollars (USD) on the Hedera network.
       </p>
