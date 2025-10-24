@@ -55,6 +55,40 @@ sequenceDiagram
 
 ```
 
+## Blockscout Integration
+
+**Blockscout** serves as our definitive source of truth for transaction statuses, logs, and token states across different chains. This integration allows us to feed verifiable, on-chain facts directly into our risk analysis logic.
+
+### Dedicated Blockscout Instance (Hedera)
+
+To ensure reliable data access, we have deployed a dedicated Blockscout instance specifically for the Hedera Testnet using standard deployment tools.
+
+-   **Frontend Access:** The user interface connects to this instance through a Vite proxy configuration:
+    -   ` /blockscout-api → https://hedera.cloud.blockscout.com `
+-   **Primary Use Case:** We continuously poll this endpoint to confirm that an order funded on Ethereum has been successfully mirrored and opened on Hedera.
+
+### Blockscout App SDK in the Frontend
+
+Our React application leverages the `@blockscout/app-sdk` to standardize how we access and format blockchain data. By combining the SDK providers with the Logs API, we can:
+
+-   **Detect Events:** Quickly identify key on-chain events, such as `HederaOrderOpened`.
+-   **Improve User Experience:** Surface deep-links to addresses and transactions within the UI.
+-   **Maintain State:** Keep the application's state aligned with Blockscout's indexing, removing the need for us to operate our own indexer.
+
+### Blockscout MCP for Risk Intelligence
+
+Our backend server utilizes the **Blockscout MCP (Model Context Protocol)** to enhance our risk assessment capabilities. The MCP fetches first-party chain data (transaction details, logs, address activity) and feeds it to a Large Language Model (LLM) to estimate proxies for liquidation risk.
+
+The LLM never "guesses" raw data; MCP provides the verifiable facts, and structured prompting composes these facts into simple risk flags that the UI can display.
+
+Signals we analyze for risk include:
+
+-   Recent liquidation densities in the market.
+-   Sharp, sudden bursts in DEX volume or large swaps through common routers.
+-   Significant CEX hot-wallet inflows or outflows.
+-   Abnormal or suspicious token approval patterns.
+
+
 ## User Flow
 
 1. **Create order (Ethereum)** → deterministic `orderId`.
