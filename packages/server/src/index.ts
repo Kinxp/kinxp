@@ -10,8 +10,39 @@ import { getMarketStress } from "./stress.js";
 import { resolveLtvForChain } from "./config.js";
 
 const app = express();
-const corsOrigin = process.env.WEB_ORIGIN || "*";
-app.use(cors({ origin: corsOrigin }));
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://localhost:5173",
+  "https://localhost:5174",
+];
+
+const rawCorsOrigins = process.env.WEB_ORIGIN || "";
+const envOrigins = rawCorsOrigins
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]))
+  .map((origin) => origin.replace(/\/$/, "").toLowerCase());
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const normalizedOrigin = origin.replace(/\/$/, "").toLowerCase();
+      const isWildcard = allowedOrigins.includes("*");
+      const isExplicit = allowedOrigins.includes(normalizedOrigin);
+      const isLocaLt = normalizedOrigin.endsWith(".loca.lt");
+
+      if (isWildcard || isExplicit || isLocaLt) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS: ${origin} not allowed`));
+    },
+  })
+);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
