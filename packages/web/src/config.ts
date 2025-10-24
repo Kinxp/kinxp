@@ -64,3 +64,4 @@ export const USD_CONTROLLER_ABI = parseAbi([
   "function treasuryAccount() view returns (address)",
 ]);
 export const HEDERA_ORDER_OPENED_TOPIC = '0xb8c7df1413610d962f04c4eb8df98f0194228023b45937a1075398981ca9f207';
+export const AI_LIQUIDATION_RISK_URL = import.meta.env.VITE_AI_RISK_URL ?? 'https://kinxp.loca.lt/ai/liquidation-risk';

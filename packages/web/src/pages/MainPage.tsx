@@ -43,7 +43,7 @@ const MainPage = () => {
       case AppState.IDLE: return <CreateOrderView onSubmit={handleCreateOrder} />;
       case AppState.ORDER_CREATED: return <FundOrderView orderId={orderId!} ethAmount={ethAmount} onFund={handleFundOrder} />;
       case AppState.READY_TO_BORROW: return <BorrowView orderId={orderId!} onBorrow={handleBorrow} calculateBorrowAmount={calculateBorrowAmount} />;
-      case AppState.LOAN_ACTIVE: return <RepayView orderId={orderId!} borrowAmount={borrowAmount} onRepay={handleRepay} />;
+      case AppState.LOAN_ACTIVE: return <RepayView orderId={orderId!} borrowAmount={borrowAmount} collateralEth={ethAmount} onRepay={handleRepay} />;
       case AppState.READY_TO_WITHDRAW: return <WithdrawView orderId={orderId!} onWithdraw={handleWithdraw} />;
       case AppState.COMPLETED: return <div className="text-center space-y-4"><h3 className="text-2xl font-bold text-green-400">✅ Success!</h3><p>You can now start a new transaction.</p><button onClick={resetFlow} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg">Start Over</button></div>;
       case AppState.ERROR: return <div className="text-center space-y-4"><h3 className="text-2xl font-bold text-red-400">❌ Error</h3><p className="text-sm text-gray-400 mt-2">{error}</p><button onClick={resetFlow} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg">Try Again</button></div>;
