@@ -41,7 +41,7 @@ export const ETH_COLLATERAL_ABI = parseAbi([
 export const HEDERA_CREDIT_ABI = parseAbi([
   "struct HOrder { uint256 collateralAmount; address owner; bool open; }",
   "function horders(bytes32) view returns (HOrder memory)",
-  "function borrow(bytes32 orderId, uint256 amount, bytes[] calldata priceUpdateData, uint32 pythMaxAgeSec) payable",
+  "function borrow(bytes32 orderId, uint64 amount, bytes[] calldata priceUpdateData, uint32 pythMaxAgeSec) payable",
   "function repay(bytes32 id, uint64 usdAmount, bool notifyEthereum) payable",
   "function quoteRepayFee(bytes32 orderId) view returns (uint256)",
   "function ltvBps() view returns (uint16)",
