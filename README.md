@@ -93,4 +93,12 @@ pnpm --filter @kinxp/web dev
 # (optional) Contracts build
 pnpm --filter @kinxp/contracts build
 ```
+## Status & scope
 
+Testnets: Sepolia ↔ Hedera Testnet.
+
+Assets: ETH → USD (HTS) first; more chains/assets are straightforward via another Collateral OApp.
+
+## Security
+
+Prototype code; not audited. Use only on testnets.
