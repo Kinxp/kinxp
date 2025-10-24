@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { useAccount } from 'wagmi';
 // Import our new service function
-import { fetchAllUserOrders, fetchCreatedOrdersFromSepolia } from '../services/blockscoutService';
+import { fetchAllUserOrders } from '../services/blockscoutService';
 import { UserOrderSummary } from '../types';
 import { useAppContext } from '../context/AppContext';
 
@@ -25,15 +25,8 @@ const DashboardPage = () => {
       setIsLoading(true);
       setError(null);
       try {
-        // Step 1: Fetch all ACTIVE orders (Funded, Repaid, etc.) from the Hedera-based source.
-        const activeOrders = await fetchAllUserOrders(address);
-        const existingOrderIds = new Set(activeOrders.map(o => o.orderId));
-
-        // Step 2: Fetch all CREATED orders from Sepolia, passing in the existing IDs to avoid duplicates.
-        const createdOrders = await fetchCreatedOrdersFromSepolia(address, existingOrderIds);
-
-        // Step 3: Combine both lists and set the state.
-        setAllOrders([...createdOrders, ...activeOrders]);
+        const orders = await fetchAllUserOrders(address);
+        setAllOrders(orders);
 
       } catch (err) {
         console.error("Failed to fetch orders:", err);

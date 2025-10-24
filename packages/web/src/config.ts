@@ -1,6 +1,8 @@
 // src/config.ts
 
-import { parseAbi,keccak256,toHex } from 'viem';
+import { parseAbi, keccak256, toHex } from 'viem';
+
+export const API_BASE_URL = import.meta.env.VITE_API_BASE ?? 'https://kinxp.loca.lt';
 
 // Chain IDs
 export const ETH_CHAIN_ID = 11155111; // Sepolia
@@ -10,6 +12,7 @@ export const HEDERA_CHAIN_ID = 296; // Hedera Testnet
 export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 // Sepolia Blockscout API endpoint
 export const SEPOLIA_BLOCKSCOUT_API_URL = '/sepolia-blockscout-api/api';
+export const USE_MOCK_API = (import.meta.env.VITE_USE_MOCK_API ?? 'false') === 'true';
 // --- CONTRACT ADDRESSES ---
 export const ETH_COLLATERAL_OAPP_ADDR = '0x3692aF62148947126f1A1E4010f508892e586B96'; 
 export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006C85bb';
@@ -17,8 +20,9 @@ export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603';
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase();
 // Calculate the correct topic hash for the 'MarkRepaid' event
 export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
-// This is the signature for: event OrderCreated(bytes32 indexed orderId, address indexed user);
 export const ORDER_CREATED_TOPIC = keccak256(toHex('OrderCreated(bytes32,address)'));
+export const ORDER_FUNDED_TOPIC = keccak256(toHex('OrderFunded(bytes32,address,uint256)'));
+export const HEDERA_REPAID_TOPIC = keccak256(toHex('Repaid(bytes32,uint64,bool)'));
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx
@@ -66,3 +70,7 @@ export const USD_CONTROLLER_ABI = parseAbi([
 ]);
 export const HEDERA_ORDER_OPENED_TOPIC = '0xb8c7df1413610d962f04c4eb8df98f0194228023b45937a1075398981ca9f207';
 export const AI_LIQUIDATION_RISK_URL = import.meta.env.VITE_AI_RISK_URL ?? 'https://kinxp.loca.lt/ai/liquidation-risk';
+export const CHAIN_EXPLORERS: Record<number, string> = {
+  [ETH_CHAIN_ID]: 'https://eth-sepolia.blockscout.com/tx/',
+  [HEDERA_CHAIN_ID]: 'https://hedera.cloud.blockscout.com/tx/',
+};

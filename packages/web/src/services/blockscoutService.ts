@@ -1,13 +1,11 @@
-// src/services/blockscoutService.ts
-import { multicall } from 'wagmi/actions';
-// --- THIS IS THE FIX ---
-// Add 'pad' and 'toHex' to the import statement from viem
-import { decodeAbiParameters, pad, toHex } from 'viem';
+﻿import { multicall } from 'wagmi/actions';
+import { pad } from 'viem';
 import { config as wagmiConfig } from '../wagmi';
 import { UserOrderSummary, OrderStatus } from '../types';
 
 import {
   ETH_CHAIN_ID,
+  HEDERA_CHAIN_ID,
   ETH_COLLATERAL_ABI,
   ETH_COLLATERAL_OAPP_ADDR,
   SEPOLIA_BLOCKSCOUT_API_URL,
@@ -15,240 +13,250 @@ import {
   ORDER_CREATED_TOPIC,
   HEDERA_BLOCKSCOUT_API_URL,
   HEDERA_CREDIT_OAPP_ADDR,
-  HEDERA_ORDER_OPENED_TOPIC
-} from "../config";
-/**
- * Polls the Hedera Blockscout API using a highly specific query that has been proven to work.
- * @param orderId The order ID to check for (e.g., '0x...').
- * @returns A promise that resolves to true if the event is found, false otherwise.
- */
-export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<boolean> {
+  HEDERA_ORDER_OPENED_TOPIC,
+  ORDER_FUNDED_TOPIC,
+  HEDERA_REPAID_TOPIC,
+} from '../config';
 
-  // Construct the URL with all required parameters for a specific topic query.
-  const params = new URLSearchParams({
-    module: 'logs',
-    action: 'getLogs',
-    address: HEDERA_CREDIT_OAPP_ADDR,
-    topic0: HEDERA_ORDER_OPENED_TOPIC,
-    topic1: orderId, // Use the prefix-less version
-    topic0_1_opr: 'and',         // The required logical operator
-    fromBlock: '0',              // Required parameter
-    toBlock: 'latest',           // Required parameter
-  });
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-  const url = `${HEDERA_BLOCKSCOUT_API_URL}?${params.toString()}`;
-
-  // Log the exact URL for verification
-  console.log("Polling Blockscout with PROVEN specific URL:", url);
-
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.error("Blockscout API request failed:", response.status, response.statusText);
-      return false;
-    }
-
-    const data = await response.json();
-
-    // With this specific query, we just need to check if the API found any results.
-    // A status of '1' and a non-empty result array means our event was found.
-    if (data.status === '1' && Array.isArray(data.result) && data.result.length > 0) {
-      console.log("SUCCESS: Blockscout API found a matching event for our specific orderId!");
-      return true;
-    }
-    
-    // Status '0' means the specific event has not been indexed yet. This is normal during polling.
-    return false;
-
-  } catch (error) {
-    console.error("Error fetching or parsing from Blockscout API:", error);
-    return false;
-  }
+function determineStatus(order: { funded: boolean; repaid: boolean; liquidated: boolean }): OrderStatus {
+  if (order.liquidated) return 'Liquidated';
+  if (order.repaid && !order.funded) return 'Withdrawn';
+  if (order.repaid && order.funded) return 'ReadyToWithdraw';
+  if (order.funded) return 'Funded';
+  return 'Created';
 }
 
-/**
- * Fetches all orders associated with a user wallet.
- * @param userAddress The EVM address of the user.
- * @returns A promise that resolves to an array of UserOrderSummary objects.
- */
-export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
-  
-  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
-  const params = new URLSearchParams({
-    module: 'logs',
-    action: 'getLogs',
-    address: HEDERA_CREDIT_OAPP_ADDR,
-    topic0: HEDERA_ORDER_OPENED_TOPIC,
-    topic2: paddedUserAddress,
-    topic0_2_opr: 'and',
-    fromBlock: '0',
-    toBlock: 'latest',
-  });
-  const url = `${HEDERA_BLOCKSCOUT_API_URL}?${params.toString()}`;
-  console.log(url)
+async function fetchBlockscoutLogs(baseUrl: string, params: Record<string, string>): Promise<any[]> {
+  const query = new URLSearchParams(params).toString();
+  const url = `${baseUrl}?${query}`;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Blockscout API request failed: ${response.statusText}`);
+    throw new Error(`Blockscout request failed (${response.status}): ${response.statusText}`);
   }
   const data = await response.json();
-  if (data.message !== 'OK' || !Array.isArray(data.result) || data.result.length === 0) {
-    console.log("No orders found for this user on Hedera Blockscout.");
+  if (data.message !== 'OK' || !Array.isArray(data.result)) {
     return [];
   }
-  console.log(data)
-  const hederaOrders = data.result.map((log: any) => {
-    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'ethAmountWei' }], log.data);
-    return { orderId: log.topics[1] as `0x${string}`, amountWei: amountWei as bigint };
-  });
-
-  if (hederaOrders.length === 0) {
-    return [];
-  }
-
-  const ethContractCalls = hederaOrders.map(order => ({
-    address: ETH_COLLATERAL_OAPP_ADDR,
-    abi: ETH_COLLATERAL_ABI,
-    functionName: 'orders',
-    args: [order.orderId],
-  }));
-
-  const ethOrderStates = await multicall(wagmiConfig, {
-    chainId: ETH_CHAIN_ID,
-    contracts: ethContractCalls,
-    allowFailure: true,
-  });
-
-  // --- THIS IS THE CORRECTED LOGIC BLOCK ---
-  const combinedOrders: UserOrderSummary[] = hederaOrders.map((hOrder, index) => {
-    const ethState = ethOrderStates[index];
-    let status: OrderStatus = 'Created'; // Default status
-
-    if (ethState.status === 'success' && ethState.result) {
-      // Use the correct fields: funded, repaid, liquidated
-      const ethData = ethState.result as { amountWei: bigint, owner: string, funded: boolean, repaid: boolean, liquidated: boolean };
-      
-      // Determine the status based on the contract's actual logic.
-      // The order of these checks is important.
-      if (ethData.liquidated) {
-        status = 'Liquidated';
-      } else if (ethData.repaid && !ethData.funded) {
-        // The `withdraw` function sets `funded` to false, so this means withdrawn.
-        status = 'Withdrawn';
-      } else if (ethData.repaid && ethData.funded) {
-        status = 'ReadyToWithdraw';
-      } else if (ethData.funded) {
-        status = 'Funded';
-      }
-      // If none of the above, it remains in the default 'Created' state.
-    } else {
-      console.warn(`Could not fetch on-chain status for order ${hOrder.orderId}`);
-    }
-    return {
-      orderId: hOrder.orderId,
-      amountWei: hOrder.amountWei,
-      status: status,
-    };
-  });
-  console.log(combinedOrders)
-
-  return combinedOrders;
+  return data.result;
 }
 
-/**
- * Fetches only the orders that have been created on Sepolia but not yet funded.
- * It does this by finding all 'OrderCreated' events and filtering out any that
- * already appear in the list of funded/active orders.
- * @param userAddress The user's wallet address.
- * @param existingOrderIds A set of order IDs that are already known to be funded or closed.
- * @returns A promise that resolves to an array of UserOrderSummary objects with 'Created' status.
- */
-export async function fetchCreatedOrdersFromSepolia(
-  userAddress: `0x${string}`,
-  existingOrderIds: Set<string>
-): Promise<UserOrderSummary[]> {
-  
-  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
-
-  const params = new URLSearchParams({
+async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${string}`[]> {
+  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
     module: 'logs',
     action: 'getLogs',
     address: ETH_COLLATERAL_OAPP_ADDR,
     topic0: ORDER_CREATED_TOPIC,
-    topic2: paddedUserAddress, // The user address is the second indexed topic
+    topic2: pad(userAddress, { size: 32 }),
     topic0_2_opr: 'and',
     fromBlock: '0',
     toBlock: 'latest',
   });
 
-  const url = `${SEPOLIA_BLOCKSCOUT_API_URL}?${params.toString()}`;
-  console.log("Fetching CREATED orders from Sepolia URL:", url);
+  const orderIds: `0x${string}`[] = [];
+  const seen = new Set<string>();
 
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error("Failed to fetch created orders from Sepolia Blockscout");
-    
-    const data = await response.json();
-    if (data.message !== 'OK' || !Array.isArray(data.result) || data.result.length === 0) {
-      return [];
-    }
-
-    const createdOrders: UserOrderSummary[] = data.result.map((log: any) => ({
-      orderId: log.topics[1] as `0x${string}`,
-      amountWei: 0n, // Amount is 0 until funded
-      status: 'Created',
-    }));
-
-    // Filter out any orders that we already fetched from the Hedera-based list.
-    // This prevents duplicates if Blockscout indexing is slightly delayed.
-    return createdOrders.filter(order => !existingOrderIds.has(order.orderId));
-
-  } catch (error) {
-    console.error("Error fetching created orders from Sepolia:", error);
-    return [];
+  for (const log of logs) {
+    const raw = log?.topics?.[1];
+    if (typeof raw !== 'string') continue;
+    const normalized = raw.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    orderIds.push(raw as `0x${string}`);
   }
+
+  return orderIds;
 }
-/**
- * Polls the Sepolia Blockscout API for a specific MarkRepaid event by its orderId.
- * @param orderId The order ID to check for.
- * @returns A promise that resolves to an object with the event data if found, otherwise null.
- */
-export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<{ orderId: `0x${string}` } | null> {
-  const params = new URLSearchParams({
-    module: 'logs',
-    action: 'getLogs',
+
+async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderSummary[]> {
+  if (orderIds.length === 0) return [];
+
+  const contracts = orderIds.map(orderId => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
-    topic0: MARK_REPAID_TOPIC,
-    topic1: orderId,
-    topic0_1_opr: 'and',
-    fromBlock: '0',
-    toBlock: 'latest',
+    abi: ETH_COLLATERAL_ABI,
+    functionName: 'orders',
+    args: [orderId],
+  }));
+
+  const results = await multicall(wagmiConfig, {
+    chainId: ETH_CHAIN_ID,
+    contracts,
+    allowFailure: true,
   });
 
-  const url = `${SEPOLIA_BLOCKSCOUT_API_URL}?${params.toString()}`;
-  console.log("Polling Sepolia Blockscout with URL:", url);
+  const summaries: UserOrderSummary[] = [];
 
+  results.forEach((callResult, index) => {
+    if (callResult.status !== 'success' || !callResult.result) return;
+
+    const [owner, amountWei, funded, repaid, liquidated] = callResult.result as unknown as [
+      `0x${string}`,
+      bigint,
+      boolean,
+      boolean,
+      boolean
+    ];
+
+    if (!owner || owner.toLowerCase() === ZERO_ADDRESS) return;
+
+    summaries.push({
+      orderId: orderIds[index],
+      amountWei,
+      status: determineStatus({ funded, repaid, liquidated }),
+    });
+  });
+
+  return summaries;
+}
+
+export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
+  const orderIds = await fetchOrderIdsForUser(userAddress);
+  if (orderIds.length === 0) return [];
+  return loadOrderSummaries(orderIds);
+}
+
+export interface OrderTransactionInfo {
+  chainId: number;
+  label: string;
+  txHash: `0x${string}`;
+  timestamp?: string;
+}
+
+export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<OrderTransactionInfo[]> {
+  const queries = [
+    {
+      chainId: ETH_CHAIN_ID,
+      label: 'Ethereum (Sepolia) - Order Funded',
+      baseUrl: SEPOLIA_BLOCKSCOUT_API_URL,
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: ORDER_FUNDED_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
+    {
+      chainId: ETH_CHAIN_ID,
+      label: 'Ethereum (Sepolia) - Mark Repaid',
+      baseUrl: SEPOLIA_BLOCKSCOUT_API_URL,
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: MARK_REPAID_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
+    {
+      chainId: HEDERA_CHAIN_ID,
+      label: 'Hedera Testnet - Order Opened',
+      baseUrl: HEDERA_BLOCKSCOUT_API_URL,
+      address: HEDERA_CREDIT_OAPP_ADDR,
+      topic0: HEDERA_ORDER_OPENED_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
+    {
+      chainId: HEDERA_CHAIN_ID,
+      label: 'Hedera Testnet - Repaid',
+      baseUrl: HEDERA_BLOCKSCOUT_API_URL,
+      address: HEDERA_CREDIT_OAPP_ADDR,
+      topic0: HEDERA_REPAID_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
+  ];
+
+  const collected: OrderTransactionInfo[] = [];
+  let hederaLogsFound = false;
+  let hederaError = false;
+
+  for (const query of queries) {
+    const params: Record<string, string> = {
+      module: 'logs',
+      action: 'getLogs',
+      address: query.address,
+      topic0: query.topic0,
+      fromBlock: '0',
+      toBlock: 'latest',
+      ...query.extraParams,
+    };
+
+    try {
+      const logs = await fetchBlockscoutLogs(query.baseUrl, params);
+      if (!logs.length) continue;
+
+      if (query.chainId === HEDERA_CHAIN_ID) {
+        hederaLogsFound = true;
+      }
+
+      for (const log of logs) {
+        const txHash =
+          log.transactionHash ||
+          log.transaction_hash ||
+          log.tx_hash ||
+          log.hash;
+        if (!txHash) continue;
+
+        collected.push({
+          chainId: query.chainId,
+          label: query.label,
+          txHash: txHash as `0x${string}`,
+          timestamp: log.timeStamp || log.timestamp,
+        });
+      }
+    } catch (error) {
+      if (query.chainId === HEDERA_CHAIN_ID) {
+        hederaError = true;
+        console.warn('Hedera explain unavailable via Blockscout', error);
+      } else {
+        console.error(`Error fetching ${query.label}`, error);
+      }
+    }
+  }
+
+  if (hederaError && !hederaLogsFound) {
+    collected.push({
+      chainId: HEDERA_CHAIN_ID,
+      label: 'Hedera Testnet - Explain unavailable',
+      txHash: orderId,
+    });
+  }
+
+  return collected;
+}
+
+export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<boolean> {
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.error("Sepolia Blockscout API request failed:", response.status, response.statusText);
-      return null; // Return null on failure
-    }
-
-    const data = await response.json();
-
-    if (data.message === 'OK' && Array.isArray(data.result) && data.result.length > 0) {
-      const log = data.result[0];
-      const foundOrderId = log.topics[1] as `0x${string}`;
-      console.log(`SUCCESS: Sepolia Blockscout found a matching MarkRepaid event for ${foundOrderId.slice(0,10)}...`);
-      // Return the found data instead of just 'true'
-      return { orderId: foundOrderId };
-    }
-
-    // Return null if the event is not found yet
-    return null;
-
+    const logs = await fetchBlockscoutLogs(HEDERA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: HEDERA_CREDIT_OAPP_ADDR,
+      topic0: HEDERA_ORDER_OPENED_TOPIC,
+      topic1: orderId,
+      topic0_1_opr: 'and',
+      fromBlock: '0',
+      toBlock: 'latest',
+    });
+    return logs.length > 0;
   } catch (error) {
-    console.error("Error fetching from Sepolia Blockscout API:", error);
-    return null; // Return null on error
+    console.error('Error polling Hedera order opened:', error);
+    return false;
+  }
+}
+
+export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<{ orderId: `0x${string}` } | null> {
+  try {
+    const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: MARK_REPAID_TOPIC,
+      topic1: orderId,
+      topic0_1_opr: 'and',
+      fromBlock: '0',
+      toBlock: 'latest',
+    });
+
+    if (!logs.length) {
+      return null;
+    }
+
+    return { orderId: logs[0].topics[1] as `0x${string}` };
+  } catch (error) {
+    console.error('Error polling Sepolia repay event:', error);
+    return null;
   }
 }

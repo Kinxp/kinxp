@@ -1,4 +1,4 @@
-// src/services/api.ts
+﻿// src/services/api.ts
 
 import { API_BASE_URL, USE_MOCK_API } from '../config';
 
@@ -34,28 +34,57 @@ export const fetchLiquidationRisk = async (borrowId: string): Promise<Liquidatio
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ borrowId }), // Enviamos el ID en el cuerpo
+      body: JSON.stringify({ borrowId }),
     });
 
     if (!response.ok) {
-      // Si el servidor responde con un error (ej. 404, 500)
       throw new Error(`API Error: ${response.statusText}`);
     }
 
-    return await response.json() as LiquidationRiskResponse;
+    return (await response.json()) as LiquidationRiskResponse;
   } catch (error) {
-    console.error("Failed to fetch liquidation risk:", error);
-    // Re-lanzamos el error para que el componente que llama pueda manejarlo.
+    console.error('Failed to fetch liquidation risk:', error);
     throw error;
   }
 };
 
+export interface TxExplanation {
+  summary?: string;
+  aiAnalysis?: string;
+  explanation?: string;
+  [key: string]: any;
+}
+
+export const explainTransaction = async (chainId: number, txHash: `0x${string}`): Promise<TxExplanation> => {
+  if (!txHash) throw new Error('txHash is required');
+
+  if (USE_MOCK_API) {
+    return {
+      summary: `Mock explanation for ${txHash.slice(0, 12)}…`,
+      aiAnalysis: 'Mocked analysis: no additional data in mock mode.',
+      explanation: 'Mock server response. Replace with real server call.',
+    };
+  }
+
+  const response = await fetch(`${API_BASE_URL}/ai/explain-tx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chainId, txHash }),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Explain TX failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as TxExplanation;
+};
 
 // --- Funciones de Simulación (Mock) ---
 
 // Esta función simula la respuesta del API con un retraso para imitar la latencia de red.
 const mockLiquidationRisk = (borrowId: string): Promise<LiquidationRiskResponse> => {
-  console.warn("--- USING MOCK API DATA ---");
+  console.warn('--- USING MOCK API DATA ---');
 
   // Simulamos diferentes escenarios de riesgo
   const mockScenarios: LiquidationRiskResponse[] = [
