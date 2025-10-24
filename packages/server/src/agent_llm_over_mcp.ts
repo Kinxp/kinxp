@@ -25,7 +25,7 @@ export async function explainTxLLM_MCP({ chainId, txHash }: { chainId: number; t
   const [info, logs, summary] = await Promise.all([
     mcp.get_transaction_info(chainId, txHash, true),
     mcp.get_transaction_logs(chainId, txHash),
-    mcp.transaction_summary(chainId, txHash),
+    mcp.transaction_summary(chainId, txHash), 
   ]);
 
   const prompt = `
