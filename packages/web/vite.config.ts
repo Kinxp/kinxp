@@ -27,6 +27,11 @@ export default defineConfig({
         // so the final request will be to "https://hedera.cloud.blockscout.com/api?..."
         rewrite: (path) => path.replace(/^\/blockscout-api/, ''),
       },
+      '/sepolia-blockscout-api': {
+        target: 'https://eth-sepolia.blockscout.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/sepolia-blockscout-api/, ''),
+      },
     }
   }
 });

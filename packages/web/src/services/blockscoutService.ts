@@ -10,6 +10,8 @@ import {
   ETH_CHAIN_ID,
   ETH_COLLATERAL_ABI,
   ETH_COLLATERAL_OAPP_ADDR,
+  SEPOLIA_BLOCKSCOUT_API_URL,
+  MARK_REPAID_TOPIC,
   HEDERA_BLOCKSCOUT_API_URL,
   HEDERA_CREDIT_OAPP_ADDR,
   HEDERA_ORDER_OPENED_TOPIC
@@ -160,4 +162,51 @@ export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<Us
   });
   
   return combinedOrders;
+}
+
+
+/**
+ * Polls the Sepolia Blockscout API for a specific MarkRepaid event by its orderId.
+ * @param orderId The order ID to check for.
+ * @returns A promise that resolves to an object with the event data if found, otherwise null.
+ */
+export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<{ orderId: `0x${string}` } | null> {
+  const params = new URLSearchParams({
+    module: 'logs',
+    action: 'getLogs',
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    topic0: MARK_REPAID_TOPIC,
+    topic1: orderId,
+    topic0_1_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  const url = `${SEPOLIA_BLOCKSCOUT_API_URL}?${params.toString()}`;
+  console.log("Polling Sepolia Blockscout with URL:", url);
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error("Sepolia Blockscout API request failed:", response.status, response.statusText);
+      return null; // Return null on failure
+    }
+
+    const data = await response.json();
+
+    if (data.message === 'OK' && Array.isArray(data.result) && data.result.length > 0) {
+      const log = data.result[0];
+      const foundOrderId = log.topics[1] as `0x${string}`;
+      console.log(`SUCCESS: Sepolia Blockscout found a matching MarkRepaid event for ${foundOrderId.slice(0,10)}...`);
+      // Return the found data instead of just 'true'
+      return { orderId: foundOrderId };
+    }
+
+    // Return null if the event is not found yet
+    return null;
+
+  } catch (error) {
+    console.error("Error fetching from Sepolia Blockscout API:", error);
+    return null; // Return null on error
+  }
 }

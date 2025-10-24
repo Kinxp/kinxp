@@ -1,6 +1,6 @@
 // src/config.ts
 
-import { parseAbi } from 'viem';
+import { parseAbi,keccak256,toHex } from 'viem';
 
 // Chain IDs
 export const ETH_CHAIN_ID = 11155111; // Sepolia
@@ -8,12 +8,16 @@ export const HEDERA_CHAIN_ID = 296; // Hedera Testnet
 
 // Blockscout API endpoint for Hedera Testnet
 export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
-
+// Sepolia Blockscout API endpoint
+export const SEPOLIA_BLOCKSCOUT_API_URL = '/sepolia-blockscout-api/api';
 // --- CONTRACT ADDRESSES ---
 export const ETH_COLLATERAL_OAPP_ADDR = '0x3692aF62148947126f1A1E4010f508892e586B96'; 
 export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006C85bb';
-export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603'; // From your original script log
+export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603'; 
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase();
+// Calculate the correct topic hash for the 'MarkRepaid' event
+export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
+
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx
@@ -37,6 +41,10 @@ export const ETH_COLLATERAL_ABI = parseAbi([
   "function nonces(address owner) view returns (uint96)",
   "function orders(bytes32) view returns (address owner, uint256 amountWei, bool funded, bool repaid, bool liquidated)",
   "event OrderCreated(bytes32 indexed orderId, address indexed owner)",
+  "event OrderFunded(bytes32 indexed orderId, address indexed user, uint256 amountWei)",
+  "event MarkRepaid(bytes32 indexed orderId)",
+  "event Withdrawn(bytes32 indexed orderId, address indexed user, uint256 amountWei)",
+  "event Liquidated(bytes32 indexed orderId, uint256 amountWei)",
 ]);
 
 export const HEDERA_CREDIT_ABI = parseAbi([

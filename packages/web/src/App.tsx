@@ -13,11 +13,8 @@ import {
   HUSD_TOKEN_ADDR, ERC20_ABI, PYTH_CONTRACT_ADDR, PYTH_ABI,
   BORROW_SAFETY_BPS, USD_CONTROLLER_ABI
 } from './config';
-import { pollForHederaOrderOpened,fetchAllUserOrders } from './services/blockscoutService';
+import { pollForHederaOrderOpened,fetchAllUserOrders,pollForSepoliaRepayEvent } from './services/blockscoutService';
 import { fetchPythUpdateData } from './services/pythService';
-// --- THIS IS THE FIX ---
-// Import the new polling service
-import { pollForEthRepaid } from './services/sepoliaService';
 
 // Components
 import Header from './components/Header';
@@ -230,17 +227,19 @@ function App() {
     }, 5000);
   }, [addLog, pollingStartBlock]);
   
-  // --- THIS IS THE FIX ---
-  // New polling function for the return trip to Ethereum
   const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
-    let attempts = 0; const maxAttempts = 60; // 5 minute timeout
+    let attempts = 0; const maxAttempts = 60;
     if (ethPollingRef.current) clearInterval(ethPollingRef.current);
     ethPollingRef.current = setInterval(async () => {
       attempts++; addLog(`[Polling Ethereum] Attempt ${attempts}/${maxAttempts}...`);
-      const found = await pollForEthRepaid(idToPoll);
-      if (found) {
-        addLog('✅ [Polling Ethereum] Success! Collateral is unlocked.');
+      
+      // Call the function directly from blockscoutService
+      const foundEvent = await pollForSepoliaRepayEvent(idToPoll);
+      
+      // Check if the result is not null (truthy)
+      if (foundEvent) {
+        addLog(`✅ [Polling Ethereum] Success! Collateral is unlocked for order ${foundEvent.orderId.slice(0,12)}...`);
         if(ethPollingRef.current) clearInterval(ethPollingRef.current);
         setAppState(AppState.READY_TO_WITHDRAW);
       } else if (attempts >= maxAttempts) {
