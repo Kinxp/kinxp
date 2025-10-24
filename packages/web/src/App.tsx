@@ -13,7 +13,7 @@ import {
   HUSD_TOKEN_ADDR, ERC20_ABI, PYTH_CONTRACT_ADDR, PYTH_ABI,
   BORROW_SAFETY_BPS, USD_CONTROLLER_ABI
 } from './config';
-import { pollForHederaOrderOpened } from './services/blockscoutService';
+import { pollForHederaOrderOpened,fetchAllUserOrders } from './services/blockscoutService';
 import { fetchPythUpdateData } from './services/pythService';
 // --- THIS IS THE FIX ---
 // Import the new polling service
@@ -28,9 +28,7 @@ import ProgressView from './components/ProgressView';
 import BorrowView from './components/BorrowView';
 import RepayView from './components/RepayView';
 import WithdrawView from './components/WithdrawView';
-import OrderList from './components/OrderList';
-import { fetchUserOrders } from './services/orderService';
-import { UserOrderSummary } from './types';
+import UserOrders from './components/UserOrders'; 
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
 
@@ -55,9 +53,14 @@ function App() {
   const [pollingStartBlock, setPollingStartBlock] = useState<number>(0);
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
-  const [userOrders, setUserOrders] = useState<UserOrderSummary[]>([]);
+  
+  
+  // 2. Add state to manage the list of orders
+  const [orders, setOrders] = useState<UserOrderSummary[]>([]);
   const [isOrdersLoading, setIsOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState<string | null>(null);
+
+
 
   // --- THIS IS THE FIX ---
   // Use two separate refs to avoid intervals interfering with each other
@@ -157,20 +160,16 @@ function App() {
     }
   }, [treasuryAddress, addLog]);
 
-  const loadOrders = useCallback(async () => {
-    if (!address) {
-      setUserOrders([]);
-      setOrdersError(null);
-      return;
-    }
+  const handleRefreshOrders = useCallback(async () => {
+    if (!address) return;
     setIsOrdersLoading(true);
+    setOrdersError(null);
     try {
-      const data = await fetchUserOrders(address);
-      setUserOrders(data);
-      setOrdersError(null);
-    } catch (err: any) {
-      console.error('Failed to load orders', err);
-      setOrdersError(err?.message ?? 'Unable to load orders');
+      const userOrders = await fetchAllUserOrders(address);
+      setOrders(userOrders);
+    } catch (e: any) {
+      console.error("Failed to fetch orders:", e);
+      setOrdersError('Could not retrieve order history.');
     } finally {
       setIsOrdersLoading(false);
     }
@@ -243,7 +242,6 @@ function App() {
       if (found) {
         addLog('✅ [Polling Ethereum] Success! Collateral is unlocked.');
         if(ethPollingRef.current) clearInterval(ethPollingRef.current);
-        void loadOrders();
         setAppState(AppState.READY_TO_WITHDRAW);
       } else if (attempts >= maxAttempts) {
         addLog('❌ [Polling Ethereum] Timed out.');
@@ -252,7 +250,7 @@ function App() {
         setAppState(AppState.ERROR);
       }
     }, 5000);
-  }, [addLog, loadOrders]);
+  }, [addLog]);
 
   const calculateBorrowAmount = useCallback(async () => {
     if (!address || !orderId) return null;
@@ -330,9 +328,8 @@ function App() {
                 setAppState(AppState.COMPLETED); 
                 break;
         }
-        await loadOrders();
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount, loadOrders]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -341,14 +338,6 @@ function App() {
     if (receipt) handleReceipt();
   }, [isWritePending, isConfirming, writeError, receipt, handleReceipt, addLog]);
 
-  useEffect(() => {
-    if (isConnected && address) {
-      loadOrders();
-    } else if (!isConnected) {
-      setUserOrders([]);
-      setOrdersError(null);
-    }
-  }, [isConnected, address, loadOrders]);
 
   useEffect(() => {
     if (appState === AppState.CROSSING_TO_HEDERA && orderId && pollingStartBlock > 0) {
@@ -384,7 +373,6 @@ function App() {
     setIsCalculating(false);
     setEthPrice(null);
     setPollingStartBlock(0);
-    void loadOrders();
   }
 
   const renderContent = () => {
@@ -409,14 +397,7 @@ function App() {
       <main className="container mx-auto p-4 sm:p-8">
         <div className="max-w-4xl mx-auto space-y-6">
           <div className="max-w-2xl mx-auto">{renderContent()}</div>
-          {isConnected && (
-            <OrderList
-              orders={userOrders}
-              isLoading={isOrdersLoading}
-              error={ordersError}
-              onRefresh={() => { void loadOrders(); }}
-            />
-          )}
+          <UserOrders />
         </div>
       </main>
     </div>

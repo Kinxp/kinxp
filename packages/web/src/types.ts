@@ -30,8 +30,7 @@ export interface OrderData {
   export interface UserOrderSummary {
     orderId: `0x${string}`;
     amountWei: bigint;
-    funded: boolean;
-    repaid: boolean;
-    liquidated: boolean;
     status: OrderStatus;
   }
+
+

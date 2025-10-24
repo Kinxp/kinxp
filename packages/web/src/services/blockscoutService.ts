@@ -1,7 +1,19 @@
 // src/services/blockscoutService.ts
+import { multicall } from 'wagmi/actions';
+// --- THIS IS THE FIX ---
+// Add 'pad' and 'toHex' to the import statement from viem
+import { decodeAbiParameters, pad, toHex } from 'viem';
+import { config as wagmiConfig } from '../wagmi';
+import { UserOrderSummary, OrderStatus } from '../types';
 
-import { HEDERA_BLOCKSCOUT_API_URL, HEDERA_CREDIT_OAPP_ADDR, HEDERA_ORDER_OPENED_TOPIC } from "../config";
-
+import {
+  ETH_CHAIN_ID,
+  ETH_COLLATERAL_ABI,
+  ETH_COLLATERAL_OAPP_ADDR,
+  HEDERA_BLOCKSCOUT_API_URL,
+  HEDERA_CREDIT_OAPP_ADDR,
+  HEDERA_ORDER_OPENED_TOPIC
+} from "../config";
 /**
  * Polls the Hedera Blockscout API using a highly specific query that has been proven to work.
  * @param orderId The order ID to check for (e.g., '0x...').
@@ -49,4 +61,103 @@ export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<
     console.error("Error fetching or parsing from Blockscout API:", error);
     return false;
   }
+}
+
+/**
+ * Fetches all orders associated with a user wallet.
+ * @param userAddress The EVM address of the user.
+ * @returns A promise that resolves to an array of UserOrderSummary objects.
+ */
+export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
+  
+  // This padding logic is correct and creates the URL you've confirmed works.
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  const params = new URLSearchParams({
+    module: 'logs',
+    action: 'getLogs',
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    topic0: HEDERA_ORDER_OPENED_TOPIC,
+    topic2: paddedUserAddress,
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  const url = `${HEDERA_BLOCKSCOUT_API_URL}?${params.toString()}`;
+  console.log("Fetching all orders from URL:", url);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Blockscout API request failed: ${response.statusText}`);
+  }
+  
+  const data = await response.json();
+
+  // ==============================================================================
+  // === THIS IS THE FIX ==========================================================
+  // ==============================================================================
+  // We now check for `data.message === 'OK'` and that the result array exists,
+  // which exactly matches the JSON response you provided.
+  if (data.message !== 'OK' || !Array.isArray(data.result) || data.result.length === 0) {
+    console.log("No orders found for this user or API error.");
+    return []; // Return an empty array if no logs are found, which is a valid result.
+  }
+  // ==============================================================================
+
+  // Step 2: Parse the raw log data (this logic is correct)
+  const hederaOrders = data.result.map((log: any) => {
+    // The amount is the non-indexed data
+    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'ethAmountWei' }], log.data);
+    // The orderId is the first indexed topic
+    return {
+      orderId: log.topics[1] as `0x${string}`,
+      amountWei: amountWei as bigint,
+    };
+  });
+
+  if (hederaOrders.length === 0) {
+    return [];
+  }
+
+  // Step 3: Use multicall to get status from Ethereum (this logic is correct)
+  const ethContractCalls = hederaOrders.map(order => ({
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    abi: ETH_COLLATERAL_ABI,
+    functionName: 'orders',
+    args: [order.orderId],
+  }));
+
+  const ethOrderStates = await multicall(wagmiConfig, {
+    chainId: ETH_CHAIN_ID,
+    contracts: ethContractCalls,
+  });
+
+  // Step 4: Combine the data (this logic is correct)
+  const combinedOrders: UserOrderSummary[] = hederaOrders.map((hOrder, index) => {
+    const ethState = ethOrderStates[index];
+    let status: OrderStatus = 'Created';
+
+    if (ethState.status === 'success') {
+      const ethData = ethState.result as { amount: bigint, owner: string, repaid: boolean, open: boolean };
+      
+      if (ethData.repaid && !ethData.open) {
+        status = 'Withdrawn';
+      } else if (ethData.repaid && ethData.open) {
+        status = 'ReadyToWithdraw';
+      } else if (!ethData.open && !ethData.repaid) {
+        status = 'Liquidated';
+      } else if (ethData.open) {
+        status = 'Funded';
+      }
+    }
+    
+    return {
+      orderId: hOrder.orderId,
+      amountWei: hOrder.amountWei,
+      status: status,
+    };
+  });
+  
+  return combinedOrders;
 }
