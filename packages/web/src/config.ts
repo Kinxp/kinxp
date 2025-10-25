@@ -14,9 +14,9 @@ export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 export const SEPOLIA_BLOCKSCOUT_API_URL = '/sepolia-blockscout-api/api';
 export const USE_MOCK_API = (import.meta.env.VITE_USE_MOCK_API ?? 'false') === 'true';
 // --- CONTRACT ADDRESSES ---
-export const ETH_COLLATERAL_OAPP_ADDR = '0x3692aF62148947126f1A1E4010f508892e586B96'; 
-export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006C85bb';
-export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006c8603'; 
+export const ETH_COLLATERAL_OAPP_ADDR = '0xc0C783B19833d30f72E522df552B1b629Ce73477'; 
+export const HEDERA_CREDIT_OAPP_ADDR = '0x00000000000000000000000000000000006ca0c3';
+export const HUSD_TOKEN_ADDR = '0x00000000000000000000000000000000006ca0cb'; 
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase();
 // Calculate the correct topic hash for the 'MarkRepaid' event
 export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
