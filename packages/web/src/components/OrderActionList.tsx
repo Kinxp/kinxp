@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { formatUnits } from 'viem';
-import { OrderStatus, UserOrderSummary } from '../types';
+import { AppState, OrderStatus, UserOrderSummary } from '../types';
+import { useAppContext } from '../context/AppContext';
 
-// We assume these services and configs exist from the second component
+// We assume these services and configs exist
 import { fetchOrderTransactions } from "../services/blockscoutService";
 import { explainTransaction } from "../services/api";
 import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
 
-// --- Props from your original OrderActionList ---
+// --- Props ---
 interface OrderActionListProps {
   title: string;
   orders: UserOrderSummary[];
@@ -16,7 +17,7 @@ interface OrderActionListProps {
   actionText: string;
 }
 
-// --- Types and constants from the second component ---
+// --- Types and constants ---
 interface ExplainItem {
   chainId: number;
   label: string;
@@ -34,6 +35,22 @@ interface ExplainState {
   items: ExplainItem[];
 }
 
+// ========== MODIFICATION START ==========
+// A set of all states that represent a pending on-chain or cross-chain action.
+// During these states, user actions on the list should be disabled.
+const BUSY_STATES = new Set([
+  AppState.ORDER_CREATING,
+  AppState.FUNDING_IN_PROGRESS,
+  AppState.BORROWING_IN_PROGRESS,
+  AppState.RETURNING_FUNDS,
+  AppState.REPAYING_IN_PROGRESS,
+  AppState.WITHDRAWING_IN_PROGRESS,
+  AppState.CROSSING_TO_HEDERA,
+  AppState.CROSSING_TO_ETHEREUM,
+]);
+// ========== MODIFICATION END ==========
+
+
 const statusStyles: Record<OrderStatus, string> = {
   Created: "bg-gray-700/40 text-gray-200 border-gray-600/60",
   Funded: "bg-blue-600/20 text-blue-300 border-blue-500/30",
@@ -42,7 +59,7 @@ const statusStyles: Record<OrderStatus, string> = {
   Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
 };
 
-// --- Helper functions from the second component ---
+// --- Helper functions ---
 function formatEth(amountWei: bigint): string {
   if (amountWei === 0n) return "0";
   const eth = parseFloat(formatUnits(amountWei, 18));
@@ -57,10 +74,18 @@ function shorten(id: string, chars = 6): string {
 }
 
 const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, selectedOrderId, onSelectOrder, actionText }) => {
-  // --- Internal state for the "Explain" feature ---
   const [explainState, setExplainState] = useState<Record<string, ExplainState>>({});
+  
+  // Get the global app state from the context
+  const { appState } = useAppContext();
+
+  // ========== MODIFICATION START ==========
+  // Check if the current app state is one of the busy states.
+  const isAppBusy = BUSY_STATES.has(appState);
+  // ========== MODIFICATION END ==========
 
   const handleExplain = async (orderId: `0x${string}`) => {
+    // ... (rest of the handleExplain function is unchanged)
     const current = explainState[orderId];
     if (current?.open && !current.loading) {
       setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], open: false } }));
@@ -76,7 +101,6 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
           return;
       }
 
-      // We separate supported (Ethereum) from unsupported (Hedera) for now
       const supportedTxs = txs.filter(tx => tx.chainId === ETH_CHAIN_ID);
       const unsupportedTxs = txs.filter(tx => tx.chainId !== ETH_CHAIN_ID);
 
@@ -114,7 +138,6 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
           return (
             <div key={order.orderId} className={`bg-gray-900/60 border rounded-xl px-4 py-3 space-y-3 transition-all ${isSelected ? 'border-cyan-500 ring-2 ring-cyan-500/50' : 'border-gray-700/40'}`}>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                {/* --- Order Info --- */}
                 <div>
                   <p className="font-mono text-sm text-gray-200">{shorten(order.orderId)}</p>
                   <p className="text-xs text-gray-400">{formatEth(order.amountWei)} ETH</p>
@@ -125,25 +148,29 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
                   </span>
                 </div>
                 
-                {/* --- MERGED BUTTONS --- */}
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleExplain(order.orderId)}
-                    disabled={explain?.loading}
+                    // ========== MODIFICATION START ==========
+                    disabled={explain?.loading || isAppBusy}
+                    // ========== MODIFICATION END ==========
                     className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-400 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
                   >
                     {explain?.loading ? "Analyzing..." : (explain?.open ? "Hide Explain" : "✦ Explain")}
                   </button>
                   <button
                     onClick={() => onSelectOrder(order.orderId)}
-                    className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-sm py-1.5 px-3 rounded-md"
+                    // ========== MODIFICATION START ==========
+                    disabled={isAppBusy}
+                    className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-sm py-1.5 px-3 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    // ========== MODIFICATION END ==========
                   >
                     {actionText}
                   </button>
                 </div>
               </div>
 
-              {/* --- Explanation Panel (from second component) --- */}
+              {/* ... (rest of the JSX is unchanged) ... */}
               {explain?.open && !explain.loading && (
                 <div className="text-xs space-y-2 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-3">
                   {explain.error && <p className="text-red-300">{explain.error}</p>}
