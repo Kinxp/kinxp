@@ -16,14 +16,16 @@ import {
   HEDERA_ORDER_OPENED_TOPIC,
   ORDER_FUNDED_TOPIC,
   HEDERA_REPAID_TOPIC,
+  HEDERA_CREDIT_ABI,
 } from '../config';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-function determineStatus(order: { funded: boolean; repaid: boolean; liquidated: boolean }): OrderStatus {
+function determineStatus(order: { funded: boolean; repaid: boolean; liquidated: boolean; borrowedUsd?: bigint }): OrderStatus {
   if (order.liquidated) return 'Liquidated';
   if (order.repaid && !order.funded) return 'Withdrawn';
   if (order.repaid && order.funded) return 'ReadyToWithdraw';
+  if (order.borrowedUsd && order.borrowedUsd > 0n) return 'Borrowed';
   if (order.funded) return 'Funded';
   return 'Created';
 }
@@ -69,28 +71,76 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
   return orderIds;
 }
 
+async function fetchCreatedOrdersFromSepolia(
+  userAddress: `0x${string}`,
+  existingOrderIds: Set<string>
+): Promise<UserOrderSummary[]> {
+  const paddedUserAddress = pad(userAddress, { size: 32 });
+
+  try {
+    const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: ORDER_CREATED_TOPIC,
+      topic2: paddedUserAddress,
+      topic0_2_opr: 'and',
+      fromBlock: '0',
+      toBlock: 'latest',
+    });
+
+    return logs
+      .map(log => log?.topics?.[1] as `0x${string}` | undefined)
+      .filter((id): id is `0x${string}` => Boolean(id) && !existingOrderIds.has((id as string).toLowerCase()))
+      .map(orderId => ({
+        orderId,
+        amountWei: 0n,
+        status: 'Created' as OrderStatus,
+        borrowedUsd: 0n,
+      }));
+  } catch (error) {
+    console.error('Error fetching created orders from Sepolia:', error);
+    return [];
+  }
+}
+
 async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderSummary[]> {
   if (orderIds.length === 0) return [];
 
-  const contracts = orderIds.map(orderId => ({
+  const ethContracts = orderIds.map(orderId => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
     abi: ETH_COLLATERAL_ABI,
     functionName: 'orders',
     args: [orderId],
   }));
 
-  const results = await multicall(wagmiConfig, {
-    chainId: ETH_CHAIN_ID,
-    contracts,
-    allowFailure: true,
-  });
+  const hederaContracts = orderIds.map(orderId => ({
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    abi: HEDERA_CREDIT_ABI,
+    functionName: 'horders',
+    args: [orderId],
+  }));
+
+  const [ethResults, hederaResults] = await Promise.all([
+    multicall(wagmiConfig, {
+      chainId: ETH_CHAIN_ID,
+      contracts: ethContracts,
+      allowFailure: true,
+    }),
+    multicall(wagmiConfig, {
+      chainId: HEDERA_CHAIN_ID,
+      contracts: hederaContracts,
+      allowFailure: true,
+    }),
+  ]);
 
   const summaries: UserOrderSummary[] = [];
 
-  results.forEach((callResult, index) => {
-    if (callResult.status !== 'success' || !callResult.result) return;
+  orderIds.forEach((orderId, index) => {
+    const ethState = ethResults[index];
+    if (ethState.status !== 'success' || !ethState.result) return;
 
-    const [owner, amountWei, funded, repaid, liquidated] = callResult.result as unknown as [
+    const [owner, amountWei, funded, repaid, liquidated] = ethState.result as unknown as [
       `0x${string}`,
       bigint,
       boolean,
@@ -100,10 +150,30 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
 
     if (!owner || owner.toLowerCase() === ZERO_ADDRESS) return;
 
+    let borrowedUsd: bigint | undefined;
+    const hederaState = hederaResults[index];
+    if (hederaState.status === 'success' && hederaState.result) {
+      const [, , hedBorrowedUsd, ] = hederaState.result as unknown as [
+        `0x${string}`,
+        bigint,
+        bigint,
+        boolean
+      ];
+      borrowedUsd = BigInt(hedBorrowedUsd);
+    }
+
+    const status = determineStatus({
+      funded,
+      repaid,
+      liquidated,
+      borrowedUsd,
+    });
+
     summaries.push({
-      orderId: orderIds[index],
+      orderId,
       amountWei,
-      status: determineStatus({ funded, repaid, liquidated }),
+      status,
+      borrowedUsd,
     });
   });
 
