@@ -16,14 +16,16 @@ import {
   HEDERA_ORDER_OPENED_TOPIC,
   ORDER_FUNDED_TOPIC,
   HEDERA_REPAID_TOPIC,
+  HEDERA_CREDIT_ABI,
 } from '../config';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-function determineStatus(order: { funded: boolean; repaid: boolean; liquidated: boolean }): OrderStatus {
+function determineStatus(order: { funded: boolean; repaid: boolean; liquidated: boolean; borrowedUsd?: bigint }): OrderStatus {
   if (order.liquidated) return 'Liquidated';
   if (order.repaid && !order.funded) return 'Withdrawn';
   if (order.repaid && order.funded) return 'ReadyToWithdraw';
+  if (order.borrowedUsd && order.borrowedUsd > 0n) return 'Borrowed';
   if (order.funded) return 'Funded';
   return 'Created';
 }
@@ -72,22 +74,42 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
 async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderSummary[]> {
   if (orderIds.length === 0) return [];
 
-  const contracts = orderIds.map(orderId => ({
+  // Ethereum (Sepolia): read orders(...) to get funded/repaid/liquidated
+  const ethContracts = orderIds.map(orderId => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
     abi: ETH_COLLATERAL_ABI,
     functionName: 'orders',
     args: [orderId],
   }));
 
-  const results = await multicall(wagmiConfig, {
+  const ethResults = await multicall(wagmiConfig, {
     chainId: ETH_CHAIN_ID,
-    contracts,
+    contracts: ethContracts,
     allowFailure: true,
   });
 
+  // Hedera: read horders(...) to get borrowedUsd (source of truth for borrow state)
+  const hederaContracts = orderIds.map(orderId => ({
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    abi: HEDERA_CREDIT_ABI,
+    functionName: 'horders',
+    args: [orderId],
+  }));
+
+  let hederaResults: Array<{ status: 'success' | 'failure'; result?: any }> = [];
+  try {
+    hederaResults = await multicall(wagmiConfig, {
+      chainId: HEDERA_CHAIN_ID,
+      contracts: hederaContracts,
+      allowFailure: true,
+    }) as any;
+  } catch {
+    hederaResults = [];
+  }
+
   const summaries: UserOrderSummary[] = [];
 
-  results.forEach((callResult, index) => {
+  ethResults.forEach((callResult, index) => {
     if (callResult.status !== 'success' || !callResult.result) return;
 
     const [owner, amountWei, funded, repaid, liquidated] = callResult.result as unknown as [
@@ -100,15 +122,36 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
 
     if (!owner || owner.toLowerCase() === ZERO_ADDRESS) return;
 
+    // Pull borrowedUsd from Hedera if available
+    let borrowedUsd: bigint | undefined;
+    const hedera = hederaResults[index];
+    if (hedera && hedera.status === 'success' && hedera.result) {
+      // struct HOrder { address borrower; uint256 ethAmountWei; uint64 borrowedUsd; bool open; }
+      // Access by name (preferred) or by index (fallback)
+      const _borrowed = hedera.result.borrowedUsd ?? hedera.result[2];
+      if (typeof _borrowed === 'bigint') borrowedUsd = _borrowed;
+      else if (typeof _borrowed === 'number') borrowedUsd = BigInt(_borrowed);
+    }
+
+    // Start from ETH-side state
+    let status = determineStatus({ funded, repaid, liquidated });
+    // If Hedera indicates any debt, upgrade to "Borrowed"
+    if (borrowedUsd && borrowedUsd > 0n && status === 'Funded') {
+      status = 'Borrowed';
+    }
+
     summaries.push({
       orderId: orderIds[index],
       amountWei,
-      status: determineStatus({ funded, repaid, liquidated }),
+      status,
+      ...(borrowedUsd !== undefined ? { borrowedUsd } : {}),
     });
   });
 
   return summaries;
 }
+
+
 
 export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
   const orderIds = await fetchOrderIdsForUser(userAddress);

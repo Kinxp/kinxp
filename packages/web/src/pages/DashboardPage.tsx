@@ -1,5 +1,6 @@
-﻿import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAccount } from 'wagmi';
+import { parseUnits } from 'viem';
 // Import our new service function
 import { fetchAllUserOrders } from '../services/blockscoutService';
 import { UserOrderSummary } from '../types';
@@ -12,7 +13,7 @@ import OrderInfoList from '../components/OrderInfoList';
 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();
-  const { selectedOrderId, setSelectedOrderId, appState } = useAppContext();
+  const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders } = useAppContext();
   
   const [allOrders, setAllOrders] = useState<UserOrderSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,12 +44,33 @@ const DashboardPage = () => {
     }
   }, [isConnected, address, appState]);
 
+  const decoratedOrders = useMemo(() => {
+    return allOrders.map(order => {
+      const cacheEntry = borrowedOrders[order.orderId.toLowerCase()];
+      if (!cacheEntry || order.status !== 'Funded') {
+        return order;
+      }
+
+      try {
+        return {
+          ...order,
+          status: 'Borrowed' as const,
+          borrowedUsd: parseUnits(cacheEntry.amount, 6),
+        };
+      } catch {
+        return {
+          ...order,
+          status: 'Borrowed' as const,
+        };
+      }
+    });
+  }, [allOrders, borrowedOrders]);
   const { fundableOrders, activeOrders, withdrawableOrders, closedOrders } = useMemo(() => {
     // This filtering logic is now correct because `allOrders` contains data from both sources.
-    const fundable = allOrders.filter(o => o.status === 'Created');
-    const active = allOrders.filter(o => o.status === 'Funded');
-    const withdrawable = allOrders.filter(o => o.status === 'ReadyToWithdraw');
-    const closed = allOrders.filter(o => o.status === 'Liquidated' || o.status === 'Withdrawn');
+    const fundable = decoratedOrders.filter(o => o.status === 'Created');
+    const active = decoratedOrders.filter(o => o.status === 'Funded' || o.status === 'Borrowed');
+    const withdrawable = decoratedOrders.filter(o => o.status === 'ReadyToWithdraw');
+    const closed = decoratedOrders.filter(o => o.status === 'Liquidated' || o.status === 'Withdrawn');
 
     return { 
       fundableOrders: fundable,
@@ -56,7 +78,7 @@ const DashboardPage = () => {
       withdrawableOrders: withdrawable,
       closedOrders: closed
     };
-  }, [allOrders]);
+  }, [decoratedOrders]);
 
   const handleSelectOrder = (orderId: `0x${string}`) => {
     setSelectedOrderId(prev => (prev === orderId ? null : orderId));
@@ -69,7 +91,7 @@ const DashboardPage = () => {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
       <div className="bg-gray-800 rounded-2xl p-6">
-        <ActionPanel allOrders={allOrders} />
+        <ActionPanel allOrders={decoratedOrders} />
       </div>
       <div className="space-y-6">
         {isLoading ? (

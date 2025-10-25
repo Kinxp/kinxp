@@ -17,6 +17,33 @@ import { fetchPythUpdateData } from '../services/pythService';
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
 
+type BorrowedOrderMap = Record<string, { amount: string }>;
+
+const BORROWED_ORDERS_STORAGE_KEY = 'borrowedOrders';
+
+function readBorrowedOrdersFromStorage(): BorrowedOrderMap {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(BORROWED_ORDERS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+
+    return Object.entries(parsed as Record<string, unknown>).reduce<BorrowedOrderMap>((acc, [key, value]) => {
+      if (value && typeof value === 'object' && typeof (value as { amount?: unknown }).amount === 'string') {
+        acc[key] = { amount: (value as { amount: string }).amount };
+      }
+      return acc;
+    }, {});
+  } catch (err) {
+    console.warn('Failed to parse borrowed orders cache', err);
+    return {};
+  }
+}
+
 // Define the shape (interface) of our global context
 interface AppContextType {
   appState: AppState;
@@ -35,6 +62,7 @@ interface AppContextType {
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
   setSelectedOrderId: (orderId: `0x${string}` | null) => void;
+  borrowedOrders: BorrowedOrderMap;
 }
 
 // Create the actual React Context
@@ -53,6 +81,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [pollingStartBlock, setPollingStartBlock] = useState<number>(0);
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
+  const [borrowedOrders, setBorrowedOrders] = useState<BorrowedOrderMap>(() => readBorrowedOrdersFromStorage());
 
   const hederaPollingRef = useRef<NodeJS.Timeout | null>(null);
   const ethPollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -68,6 +97,38 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const activeOrderId = orderId || selectedOrderId;
 
   const addLog = useCallback((log: string) => setLogs(prev => [...prev, log]), []);
+
+  const persistBorrowedOrders = useCallback((next: BorrowedOrderMap) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(BORROWED_ORDERS_STORAGE_KEY, JSON.stringify(next));
+    } catch (err) {
+      console.warn('Failed to persist borrowed orders cache', err);
+    }
+  }, []);
+
+  const markOrderBorrowed = useCallback((id: `0x${string}`, amount: string | null) => {
+    if (!id || !amount) return;
+    setBorrowedOrders(prev => {
+      const key = id.toLowerCase();
+      const existing = prev[key];
+      if (existing?.amount === amount) return prev;
+      const next: BorrowedOrderMap = { ...prev, [key]: { amount } };
+      persistBorrowedOrders(next);
+      return next;
+    });
+  }, [persistBorrowedOrders]);
+
+  const clearBorrowedOrder = useCallback((id: `0x${string}`) => {
+    if (!id) return;
+    setBorrowedOrders(prev => {
+      const key = id.toLowerCase();
+      if (!prev[key]) return prev;
+      const { [key]: _removed, ...rest } = prev;
+      persistBorrowedOrders(rest);
+      return rest;
+    });
+  }, [persistBorrowedOrders]);
 
   const sendTxOnChain = useCallback((chainIdToSwitch: number, config: any) => {
     const send = () => writeContract(config);
@@ -208,6 +269,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (foundEvent) {
         addLog(`✅ [Polling Ethereum] Success! Collateral is unlocked for order ${foundEvent.orderId.slice(0, 12)}...`);
         if (ethPollingRef.current) clearInterval(ethPollingRef.current);
+        clearBorrowedOrder(idToPoll);
         setAppState(AppState.READY_TO_WITHDRAW);
       } else if (attempts >= maxAttempts) {
         addLog('❌ [Polling Ethereum] Timed out.');
@@ -216,30 +278,65 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setAppState(AppState.ERROR);
       }
     }, 5000);
-  }, [addLog]);
+  }, [addLog, clearBorrowedOrder]);
 
   const calculateBorrowAmount = useCallback(async () => {
     if (!address || !activeOrderId) return null;
     addLog('▶ Calculating max borrow amount...');
     try {
+      // 1) Price
       const { scaledPrice } = await fetchPythUpdateData();
       const formattedPrice = Number(formatUnits(scaledPrice, 18)).toFixed(2);
       addLog(`✓ Current ETH Price: $${formattedPrice}`);
-      const hOrder = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'horders', args: [activeOrderId], chainId: HEDERA_CHAIN_ID }) as { ethAmountWei: bigint; };
+  
+      // 2) Hedera state (includes already-borrowed amount)
+      const hOrder = await readContract(
+        wagmiConfig,
+        {
+          address: HEDERA_CREDIT_OAPP_ADDR,
+          abi: HEDERA_CREDIT_ABI,
+          functionName: 'horders',
+          args: [activeOrderId],
+          chainId: HEDERA_CHAIN_ID,
+        }
+      ) as { ethAmountWei: bigint; borrowedUsd: bigint };
+  
       const depositWei = hOrder.ethAmountWei;
+      const alreadyBorrowed6 = hOrder.borrowedUsd ?? 0n; // 6 decimals on-chain
       if (depositWei === 0n) throw new Error("Collateral amount on Hedera is zero.");
       addLog(`✓ Collateral confirmed: ${formatUnits(depositWei, 18)} ETH`);
-      const ltvBps = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'ltvBps', chainId: HEDERA_CHAIN_ID }) as number;
+  
+      // 3) LTV + safety
+      const ltvBps = await readContract(wagmiConfig, {
+        address: HEDERA_CREDIT_OAPP_ADDR,
+        abi: HEDERA_CREDIT_ABI,
+        functionName: 'ltvBps',
+        chainId: HEDERA_CHAIN_ID
+      }) as number;
       addLog(`✓ LTV read: ${ltvBps / 100}%`);
+  
       const collateralUsd18 = (depositWei * scaledPrice) / parseEther("1");
       const maxBorrow18 = (collateralUsd18 * BigInt(ltvBps)) / 10_000n;
       const borrowTarget18 = (maxBorrow18 * BigInt(BORROW_SAFETY_BPS)) / 10_000n;
-      const finalBorrowAmount = borrowTarget18 / 10n ** 12n;
-      const formattedBorrowAmount = formatUnits(finalBorrowAmount, 6);
-      addLog(`✓ Calculated max borrow: ${formattedBorrowAmount} hUSD`);
+  
+      // 4) Subtract what’s already borrowed (convert 6dp -> 18dp)
+      const currentBorrowed18 = alreadyBorrowed6 * (10n ** 12n);
+      const remaining18 = borrowTarget18 > currentBorrowed18 ? (borrowTarget18 - currentBorrowed18) : 0n;
+  
+      // 5) Return remaining (in 6 decimals)
+      const remaining6 = remaining18 / (10n ** 12n);
+      const formattedBorrowAmount = formatUnits(remaining6, 6);
+      addLog(`✓ Remaining borrow capacity: ${formattedBorrowAmount} hUSD`);
+  
       return { amount: formattedBorrowAmount, price: formattedPrice };
-    } catch (e: any) { addLog(`❌ Calc failed: ${e.message}`); setError(`Calc failed: ${e.message}`); setAppState(AppState.ERROR); return null; }
+    } catch (e: any) {
+      addLog(`❌ Calc failed: ${e.message}`);
+      setError(`Calc failed: ${e.message}`);
+      setAppState(AppState.ERROR);
+      return null;
+    }
   }, [activeOrderId, address, addLog]);
+  
 
   const resetFlow = () => {
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
@@ -291,6 +388,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         case AppState.BORROWING_IN_PROGRESS:
           setBorrowAmount(userBorrowAmount);
+          if (activeOrderId && userBorrowAmount) {
+            markOrderBorrowed(activeOrderId, userBorrowAmount);
+          }
           addLog(`✅ Successfully borrowed ${userBorrowAmount} hUSD!`);
           setAppState(AppState.LOAN_ACTIVE);
           break;
@@ -309,7 +409,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           break;
       }
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount, activeOrderId, markOrderBorrowed]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -335,6 +435,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [appState, treasuryAddress, resolveTreasuryAddress, addLog]);
 
+  useEffect(() => {
+    if (!activeOrderId) return;
+    const stored = borrowedOrders[activeOrderId.toLowerCase()];
+    if (stored?.amount) {
+      setBorrowAmount(stored.amount);
+    } else {
+      setBorrowAmount(null);
+    }
+  }, [activeOrderId, borrowedOrders]);
+
   const value = {
     appState,
     logs,
@@ -352,6 +462,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     calculateBorrowAmount,
     resetFlow,
     setSelectedOrderId,
+    borrowedOrders,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

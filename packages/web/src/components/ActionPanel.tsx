@@ -37,6 +37,10 @@ const ActionPanel: React.FC<ActionPanelProps> = ({ allOrders }) => {
 
   // Find the full data for the currently selected order from the dashboard lists
   const selectedOrder = allOrders.find(o => o.orderId === selectedOrderId);
+  const collateralEth = selectedOrder ? formatUnits(selectedOrder.amountWei, 18) : null;
+  const borrowAmountForRepay = selectedOrder?.borrowedUsd
+    ? formatUnits(selectedOrder.borrowedUsd, 6)
+    : borrowAmount;
 
   // --- RENDER LOGIC ---
 
@@ -88,18 +92,27 @@ const ActionPanel: React.FC<ActionPanelProps> = ({ allOrders }) => {
         // A 'Funded' order can be used for Borrowing or Repaying.
         // --- THIS IS THE FIX ---
         // We get the collateral amount from the selected order object and format it.
-        const collateralEth = formatUnits(selectedOrder.amountWei, 18);
         return (
           <div>
              <BorrowView orderId={selectedOrder.orderId} onBorrow={handleBorrow} calculateBorrowAmount={calculateBorrowAmount} />
              <div className="my-4 border-t border-gray-700"></div>
              <RepayView 
                 orderId={selectedOrder.orderId} 
-                borrowAmount={borrowAmount} // This comes from the context after a successful borrow
+                borrowAmount={borrowAmountForRepay} // This comes from the context or cached state after a successful borrow
                 collateralEth={collateralEth} // Pass the collateral amount here
                 onRepay={handleRepay} 
              />
           </div>
+        );
+      
+      case 'Borrowed':
+        return (
+          <RepayView
+            orderId={selectedOrder.orderId}
+            borrowAmount={borrowAmountForRepay}
+            collateralEth={collateralEth}
+            onRepay={handleRepay}
+          />
         );
       
       case 'ReadyToWithdraw':
