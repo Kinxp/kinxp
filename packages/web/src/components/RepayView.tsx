@@ -174,7 +174,7 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
             <span className="relative group inline-flex items-center justify-center w-5 h-5 text-xs font-semibold rounded-full bg-gray-700 text-gray-200 cursor-help select-none">
               ?
               <span className="absolute left-1/2 top-full mt-2 w-64 -translate-x-1/2 rounded-md bg-gray-900 text-xs text-gray-200 border border-gray-700/80 px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
-                {riskResult?.aiAnalysis || riskResult?.summary || 'Ollama AI combines Pyth pricing, your collateral and on-chain stress metrics to score liquidation risk.'}
+                {riskResult?.aiAnalysis || riskResult?.summary || 'AI combines Pyth pricing, your collateral and on-chain stress metrics to score liquidation risk.'}
               </span>
             </span>
           </span>
@@ -213,7 +213,7 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
             {riskResult.detailLine && <p className="text-xs text-gray-300">{riskResult.detailLine}</p>}
             {riskResult.explanation && <p className="text-xs text-gray-400 italic">{riskResult.explanation}</p>}
             {(riskResult.aiAnalysis || riskResult.summary || riskResult.explanation) && (
-              <p className="text-xs text-indigo-200">✦ Ollama AI: {riskResult.aiAnalysis ?? riskResult.summary ?? riskResult.explanation}</p>
+              <p className="text-xs text-indigo-200">✦  AI: {riskResult.aiAnalysis ?? riskResult.summary ?? riskResult.explanation}</p>
             )}
           </div>
         )}

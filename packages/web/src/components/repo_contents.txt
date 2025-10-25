@@ -1,0 +1,1981 @@
+===== repo_contents.txt =====
+===== repo_contents.txt =====
+===== ActionPanel.tsx =====
+import React from 'react';
+import { useAppContext } from '../context/AppContext';
+import { UserOrderSummary, AppState } from '../types';
+import { formatUnits } from 'viem';
+
+import CreateOrderView from './CreateOrderView';
+import FundOrderView from './FundOrderView';
+import BorrowView from './BorrowView';
+import RepayView from './RepayView';
+import WithdrawView from './WithdrawView';
+import ProgressView from './ProgressView';
+
+interface ActionPanelProps {
+  allOrders: UserOrderSummary[];
+}
+
+const ActionPanel: React.FC<ActionPanelProps> = ({ allOrders }) => {
+  const {
+    appState,
+    selectedOrderId,
+    orderId: newlyCreatedOrderId,
+    ethAmount,
+    borrowAmount,
+    logs,
+    lzTxHash,
+    error,
+    handleCreateOrder,
+    handleFundOrder,
+    handleBorrow,
+    calculateBorrowAmount,
+    handleRepay,
+    handleWithdraw,
+    resetFlow,
+  } = useAppContext();
+
+  const selectedOrder = allOrders.find(o => o.orderId === selectedOrderId);
+  const collateralEth = selectedOrder ? formatUnits(selectedOrder.amountWei, 18) : null;
+  const borrowAmountForRepay = selectedOrder?.borrowedUsd
+    ? formatUnits(selectedOrder.borrowedUsd, 6)
+    : borrowAmount;
+
+  const repayable = !!borrowAmountForRepay && Number(borrowAmountForRepay) > 0;
+
+  // In-progress / terminal states take priority
+  if (appState !== AppState.IDLE && appState !== AppState.LOAN_ACTIVE) {
+    switch (appState) {
+      case AppState.ORDER_CREATING:
+      case AppState.FUNDING_IN_PROGRESS:
+      case AppState.CROSSING_TO_HEDERA:
+      case AppState.BORROWING_IN_PROGRESS:
+      case AppState.RETURNING_FUNDS:
+      case AppState.REPAYING_IN_PROGRESS:
+      case AppState.CROSSING_TO_ETHEREUM:
+      case AppState.WITHDRAWING_IN_PROGRESS:
+        return <ProgressView logs={logs} lzTxHash={lzTxHash} />;
+
+      case AppState.ORDER_CREATED:
+        return <FundOrderView orderId={newlyCreatedOrderId!} ethAmount={ethAmount} onFund={handleFundOrder} />;
+
+      case AppState.COMPLETED:
+        return (
+          <div className="text-center space-y-4">
+            <h3 className="text-2xl font-bold text-green-400">✅ Success!</h3>
+            <p>The last action was completed successfully.</p>
+            <button onClick={resetFlow} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg">Start Over</button>
+          </div>
+        );
+
+      case AppState.ERROR:
+        return (
+          <div className="text-center space-y-4">
+            <h3 className="text-2xl font-bold text-red-400">❌ Error</h3>
+            <p className="text-sm text-gray-400 mt-2">{error}</p>
+            <button onClick={resetFlow} className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg">Try Again</button>
+          </div>
+        );
+    }
+  }
+
+  // When a row is selected, show relevant actions for that order
+  if (selectedOrder) {
+    switch (selectedOrder.status) {
+      case 'Created':
+        return <FundOrderView orderId={selectedOrder.orderId} ethAmount={ethAmount} onFund={handleFundOrder} />;
+
+      case 'Funded':
+        return (
+          <div className="space-y-4">
+            <BorrowView orderId={selectedOrder.orderId} onBorrow={handleBorrow} calculateBorrowAmount={calculateBorrowAmount} />
+            {repayable && (
+              <>
+                <div className="my-4 border-t border-gray-700" />
+                <RepayView
+                  orderId={selectedOrder.orderId}
+                  borrowAmount={borrowAmountForRepay}
+                  collateralEth={collateralEth}
+                  onRepay={handleRepay}
+                />
+              </>
+            )}
+          </div>
+        );
+
+      case 'Borrowed':
+        return repayable ? (
+          <RepayView
+            orderId={selectedOrder.orderId}
+            borrowAmount={borrowAmountForRepay}
+            collateralEth={collateralEth}
+            onRepay={handleRepay}
+          />
+        ) : (
+          <div className="text-center text-gray-400 p-4">No outstanding debt to repay.</div>
+        );
+
+      case 'ReadyToWithdraw':
+        return <WithdrawView orderId={selectedOrder.orderId} onWithdraw={handleWithdraw} />;
+
+      default:
+        return (
+          <div className="text-center text-gray-400 p-4">
+            <p>This order is in a final state (<span className="font-semibold">{selectedOrder.status}</span>).</p>
+          </div>
+        );
+    }
+  }
+
+  // No selection: show a lightweight hint (Create panel is always rendered above)
+  return (
+    <div className="bg-gray-800/50 rounded-xl p-6 text-center text-gray-400">
+      Select an order from the right to manage it.
+    </div>
+  );
+};
+
+export default ActionPanel;
+===== BorrowView.tsx =====
+import React, { useState, useEffect } from 'react';
+import { SpinnerIcon } from './Icons';
+
+interface BorrowViewProps {
+  orderId: string;
+  onBorrow: (amountToBorrow: string) => void;
+  calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
+}
+
+const BorrowView: React.FC<BorrowViewProps> = ({ orderId: _orderId, onBorrow, calculateBorrowAmount }) => {
+  const [isCalculating, setIsCalculating] = useState(true);
+  const [calculatedAmount, setCalculatedAmount] = useState<string | null>(null);
+  const [ethPrice, setEthPrice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const performCalculation = async () => {
+      setIsCalculating(true);
+      const result = await calculateBorrowAmount();
+      if (result) {
+        setCalculatedAmount(result.amount);
+        setEthPrice(result.price);
+      }
+      setIsCalculating(false);
+    };
+    performCalculation();
+  }, [calculateBorrowAmount]);
+
+  const handleBorrowClick = () => {
+    if (calculatedAmount) {
+      onBorrow(calculatedAmount);
+    }
+  };
+
+  const isZero = calculatedAmount === '0' || calculatedAmount === '0.0' || calculatedAmount === '0.00';
+
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
+      <h3 className="text-xl font-bold">Borrow hUSD</h3>
+      <p className="text-gray-400">Your collateral is confirmed. We are calculating your borrow amount...</p>
+
+      {isCalculating ? (
+        <div className="flex items-center justify-center gap-2 py-4 text-gray-400">
+          <SpinnerIcon />
+          <span>Calculating...</span>
+        </div>
+      ) : (
+        <>
+          <div className="bg-gray-900/50 p-3 rounded-lg text-left">
+            <div className="flex justify-between items-center text-xs text-gray-400">
+              <span>Max Borrow Amount (remaining)</span>
+              <span>Based on ETH Price: ${ethPrice ?? '...'}</span>
+            </div>
+            <div className="text-lg font-mono text-cyan-400">
+              {calculatedAmount ?? 'Calculation Failed'} hUSD
+            </div>
+            {isZero && (
+              <div className="mt-2 text-xs text-yellow-300">
+                Already at your safe borrow limit.
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleBorrowClick}
+            disabled={!calculatedAmount || isZero}
+            className="w-full bg-cyan-600 hover:bg-cyan-700 font-bold py-3 px-4 rounded-lg disabled:opacity-50"
+          >
+            Borrow {calculatedAmount || ''} hUSD
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
+export default BorrowView;
+===== CreateOrder.tsx =====
+import React, { useState } from 'react';
+
+// Define the props this component expects
+interface CreateOrderProps {
+  onCreateOrder: (ethAmount: number) => void;
+}
+
+const CreateOrder: React.FC<CreateOrderProps> = ({ onCreateOrder }) => {
+  const [ethAmount, setEthAmount] = useState<string>('');
+  const estimatedUsd = ethAmount ? (parseFloat(ethAmount) * 3267.17).toFixed(2) : '0.00';
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (ethAmount && parseFloat(ethAmount) > 0) {
+      onCreateOrder(parseFloat(ethAmount));
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold text-gray-300 mb-4 border-l-4 border-cyan-400 pl-3">Step 1: Create New Exchange Order</h2>
+      <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-4">
+        {/* ... (rest of the JSX is the same as the JavaScript version) ... */}
+        <h3 className="text-lg font-bold">Bridge ETH to USD on Hedera</h3>
+        <p className="text-sm text-gray-400">Lock your Ethereum (ETH) to receive US Dollars (H-USD) on the Hedera network.</p>
+        
+        <form onSubmit={handleSubmit}>
+          <div>
+            <label htmlFor="eth-amount" className="block text-sm font-medium text-gray-300">Amount of ETH to lock</label>
+            <div className="mt-1 relative rounded-md shadow-sm">
+              <input 
+                type="number" 
+                step="0.01"
+                min="0"
+                name="eth-amount" 
+                id="eth-amount" 
+                className="block w-full bg-gray-900 border-gray-600 rounded-md p-3 focus:ring-cyan-500 focus:border-cyan-500" 
+                placeholder="1.5"
+                value={ethAmount}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEthAmount(e.target.value)}
+              />
+              <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                <span className="text-gray-400 sm:text-sm">ETH</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-900/50 p-3 rounded-lg text-center mt-4">
+            <p className="text-sm text-gray-400">You will be able to withdraw approx.</p>
+            <p className="text-2xl font-bold text-cyan-400">${estimatedUsd} H-USD</p>
+            <p className="text-xs text-gray-500">Based on current Pyth oracle price: 1 ETH = $3267.17</p>
+          </div>
+          
+          <button type="submit" className="w-full mt-4 bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg disabled:bg-gray-500 disabled:cursor-not-allowed" disabled={!ethAmount || parseFloat(ethAmount) <= 0}>
+            Create Order on Ethereum
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default CreateOrder;===== CreateOrderView.tsx =====
+import React, { useState } from 'react';
+
+interface CreateOrderViewProps { onSubmit: (amount: string) => void; }
+
+const CreateOrderView: React.FC<CreateOrderViewProps> = ({ onSubmit }) => {
+  const [amount, setAmount] = useState('0.001');
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4">
+      <h3 className="text-xl font-bold">Start Cross-Chain Loan</h3>
+      <p className="text-gray-400">Enter the amount of Sepolia ETH to use as collateral.</p>
+      <input 
+        type="text" 
+        value={amount} 
+        onChange={(e) => setAmount(e.target.value)} 
+        className="w-full bg-gray-900 border-gray-600 rounded-md p-3 text-center"
+      />
+    <button onClick={() => onSubmit(amount)} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg">
+        Create Order
+      </button>
+    </div>
+  );
+};
+
+export default CreateOrderView;===== FundOrder.tsx =====
+import React, { useState } from 'react';
+import { OrderData } from '../App'; // Import the shared type
+import { CopyIcon, SpinnerIcon } from './Icons';
+
+interface FundOrderProps {
+  orderData: OrderData;
+  onPaymentVerified: () => void;
+}
+
+const FundOrder: React.FC<FundOrderProps> = ({ orderData, onPaymentVerified }) => {
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
+
+  const handleVerify = () => {
+    setIsVerifying(true);
+    setTimeout(() => {
+      onPaymentVerified();
+    }, 2500);
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold text-gray-300 mb-4 border-l-4 border-yellow-400 pl-3">Step 2: Fund Your Order</h2>
+      <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-4">
+        {/* ... (rest of the JSX is the same) ... */}
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold">Your Order is Created</h3>
+          <span className="bg-yellow-500/20 text-yellow-300 text-xs font-medium px-2.5 py-1 rounded-full">Pending Payment</span>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300">Your unique Order ID</label>
+          <div className="mt-1 flex items-center bg-gray-900 border border-gray-600 rounded-md p-3">
+            <span className="font-mono text-gray-300 flex-grow">{orderData.ethOrderId}</span>
+            <CopyIcon />
+          </div>
+        </div>
+        <div className="text-sm text-gray-300">
+          <p>To proceed, send exactly <strong className="text-white">{orderData.ethAmount} ETH</strong> to the smart contract.</p>
+        </div>
+        <button onClick={handleVerify} disabled={isVerifying} className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+          {isVerifying ? (<><SpinnerIcon /> Verifying Payment...</>) : ('I Have Paid, Verify Now')}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default FundOrder;===== FundOrderView.tsx =====
+import React from 'react';
+
+interface FundOrderViewProps {
+  orderId: string;
+  ethAmount: string;
+  onFund: (amountToFund: string) => void;
+}
+
+const FundOrderView: React.FC<FundOrderViewProps> = ({ orderId, ethAmount, onFund }) => {
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
+      <h3 className="text-xl font-bold">Fund Your Order</h3>
+      <p className="text-gray-400">Your order has been created on Ethereum. Now, fund it with your collateral to proceed.</p>
+
+      <div className="bg-gray-900/50 p-3 rounded-lg text-left text-sm space-y-2">
+        <div>
+          <span className="text-gray-500">Amount to Fund:</span>
+          <span className="font-bold text-white ml-2">{ethAmount} ETH</span>
+        </div>
+        <div>
+          <span className="text-gray-500">Order ID:</span>
+          <code className="text-cyan-300 ml-2 text-xs">{orderId}</code>
+        </div>
+      </div>
+
+      <button onClick={() => onFund(ethAmount)} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg">
+        Fund Order & Cross to Hedera
+      </button>
+    </div>
+  );
+};
+
+export default FundOrderView;
+===== Header.tsx =====
+// src/components/Header.tsx
+import React from 'react';
+import { useAccount, useConnect, useDisconnect } from 'wagmi';
+
+const Header: React.FC = () => {
+  const { address, isConnected } = useAccount();
+  const { connectors, connect } = useConnect();
+  const { disconnect } = useDisconnect();
+
+  return (
+    <nav className="bg-gray-800/50 backdrop-blur-sm border-b border-gray-700 p-4 sticky top-0 z-10">
+      <div className="container mx-auto flex justify-between items-center">
+        <h1 className="text-2xl font-bold text-cyan-400">KINXP</h1>
+        {isConnected ? (
+          <div className="flex items-center gap-4">
+            <div className="bg-gray-700 text-sm text-cyan-300 font-mono py-2 px-4 rounded-lg">
+              {`${address?.slice(0, 6)}...${address?.slice(-4)}`}
+            </div>
+            <button
+              onClick={() => disconnect()}
+              className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"
+            >
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => connect({ connector: connectors[0] })} // Connects with the first available wallet (usually MetaMask)
+            className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded-lg"
+          >
+            Connect Wallet
+          </button>
+        )}
+      </div>
+    </nav>
+  );
+};
+
+export default Header;===== HederaNetworkPrompt.tsx =====
+// src/components/HederaNetworkPrompt.tsx
+import React from 'react';
+import { useSwitchChain } from 'wagmi';
+import { HEDERA_CHAIN_ID } from '../config';
+
+interface HederaNetworkPromptProps {
+  onNetworkAdded: () => void;
+}
+
+const HederaNetworkPrompt: React.FC<HederaNetworkPromptProps> = ({ onNetworkAdded }) => {
+  const { switchChain, isPending, error } = useSwitchChain();
+
+  const handleSwitch = () => {
+    // We simply ask Wagmi to switch to the desired chain ID.
+    // Wagmi will handle the logic of trying to switch first,
+    // and if the network doesn't exist in the user's wallet,
+    // it will then attempt to add it using the configuration from your wagmi.ts file.
+    switchChain({ chainId: HEDERA_CHAIN_ID }, {
+      // This callback will run only if the switch (or subsequent add) is successful.
+      onSuccess: onNetworkAdded,
+      onError: (err) => {
+        // This provides more specific feedback if the switch fails.
+        console.error("Failed to switch to Hedera Testnet:", err);
+      }
+    });
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
+      <h3 className="text-xl font-bold text-yellow-300">Action Required</h3>
+      <p className="text-gray-400">
+        To check the status on Hedera, your wallet needs to be connected to the Hedera Testnet.
+      </p>
+      <p className="text-xs text-gray-500">
+        If the network is not in your wallet, MetaMask will prompt you to add it.
+      </p>
+      <button 
+        onClick={handleSwitch}
+        disabled={isPending}
+        className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-wait"
+      >
+        {isPending ? 'Check Your Wallet...' : 'Switch to Hedera Testnet'}
+      </button>
+      {error && (
+        <p className="text-red-400 text-sm mt-2">
+          Error: {error.shortMessage || error.message}. Please try adding the network manually.
+        </p>
+      )}
+    </div>
+  );
+};
+
+export default HederaNetworkPrompt;===== HomePage.tsx =====
+// src/components/HomePage.tsx
+
+import React from 'react';
+import { useConnect } from 'wagmi';
+
+const HomePage: React.FC = () => {
+  const { connectors, connect, isPending } = useConnect();
+
+  const handleConnect = () => {
+    // We connect to the first available connector, which is typically MetaMask's injected provider
+    if (connectors.length > 0) {
+      connect({ connector: connectors[0] });
+    } else {
+        alert("No wallet connector found. Please install MetaMask.");
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-2xl shadow-2xl p-8 text-center animate-fade-in">
+      <h2 className="text-4xl font-bold text-cyan-400 mb-4">Welcome to KINXP</h2>
+      <p className="text-lg text-gray-300 mb-8">
+        The simplest way to swap your Ethereum (ETH) for US Dollars (USD) on the Hedera network.
+      </p>
+      
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10 text-left">
+        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+          <h3 className="font-bold text-white mb-2">Secure Collateral</h3>
+          <p className="text-sm text-gray-400">Lock your ETH in a secure smart contract on the Ethereum network.</p>
+        </div>
+        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+          <h3 className="font-bold text-white mb-2">Fast Liquidity</h3>
+          <p className="text-sm text-gray-400">Instantly borrow HTS-backed USD on Hedera's high-speed network.</p>
+        </div>
+        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+          <h3 className="font-bold text-white mb-2">Cross-Chain</h3>
+          <p className="text-sm text-gray-400">Powered by LayerZero for seamless and trustless communication.</p>
+        </div>
+      </div>
+
+      <button
+        onClick={handleConnect}
+        disabled={isPending}
+        className="w-full max-w-xs mx-auto bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-4 px-6 rounded-lg text-xl transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-wait flex items-center justify-center gap-3"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+        </svg>
+        {isPending ? 'Connecting...' : 'Connect Wallet to Get Started'}
+      </button>
+    </div>
+  );
+};
+
+export default HomePage;===== Icons.tsx =====
+import React from 'react';
+
+export const CopyIcon: React.FC = () => (
+  <svg className="w-5 h-5 text-gray-400 cursor-pointer hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+);
+
+export const SpinnerIcon: React.FC = () => (
+  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+  </svg>
+);
+
+export const CheckIcon: React.FC = () => (
+  <svg className="h-6 w-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+);
+
+export const WarningIcon: React.FC = () => (
+  <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+);===== OrderActionList.tsx =====
+﻿import React, { useState } from 'react';
+import { formatUnits } from 'viem';
+import { AppState, OrderStatus, UserOrderSummary } from '../types';
+import { useAppContext } from '../context/AppContext';
+import { fetchOrderTransactions } from "../services/blockscoutService";
+import { explainTransaction, TxExplanation } from "../services/api";
+import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
+
+interface OrderActionListProps {
+  title: string;
+  orders: UserOrderSummary[];
+  selectedOrderId: `0x${string}` | null;
+  onSelectOrder: (orderId: `0x${string}`) => void;
+}
+
+type TokenXfer = NonNullable<TxExplanation["tokenTransfers"]>[number];
+interface ExplainItem {
+  chainId: number;
+  label: string;
+  txHash: `0x${string}`;
+  timestamp?: string;
+  method?: string;
+  from?: string;
+  to?: string;
+  valueEther?: string;
+  tokenTransfers?: TokenXfer[];
+  feeEther?: string;
+  links?: string[];
+}
+
+interface ExplainState {
+  open: boolean;
+  loading: boolean;
+  error: string | null;
+  items: ExplainItem[];
+}
+
+const BUSY_STATES = new Set([
+  AppState.ORDER_CREATING,
+  AppState.FUNDING_IN_PROGRESS,
+  AppState.BORROWING_IN_PROGRESS,
+  AppState.RETURNING_FUNDS,
+  AppState.REPAYING_IN_PROGRESS,
+  AppState.WITHDRAWING_IN_PROGRESS,
+  AppState.CROSSING_TO_HEDERA,
+  AppState.CROSSING_TO_ETHEREUM,
+]);
+
+const statusStyles: Record<OrderStatus, string> = {
+  Created: "bg-gray-700/40 text-gray-200 border-gray-600/60",
+  Funded: "bg-blue-600/20 text-blue-300 border-blue-500/30",
+  ReadyToWithdraw: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  Withdrawn: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
+  Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
+  Borrowed: "bg-indigo-600/20 text-indigo-300 border-indigo-500/30",
+};
+
+function formatEth(amountWei: bigint): string {
+  if (amountWei === 0n) return "0";
+  const eth = parseFloat(formatUnits(amountWei, 18));
+  if (Number.isNaN(eth)) return "0";
+  if (eth >= 1) return eth.toFixed(4).replace(/\.0+$/, "").replace(/\.([1-9]*?)0+$/, ".$1");
+  return eth.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+function shorten(id: string, chars = 6): string {
+  if (id.length <= chars * 2) return id;
+  return `${id.slice(0, chars + 2)}…${id.slice(-chars)}`;
+}
+function explorerUrl(chainId: number, txHash: string) {
+  const base = CHAIN_EXPLORERS[chainId];
+  return base ? `${base}${txHash}` : undefined;
+}
+function toNum(x?: string) {
+  const n = x ? Number(x) : NaN;
+  return Number.isFinite(n) ? n : undefined;
+}
+function oneLiner(it: ExplainItem): string {
+  const l = it.label.toLowerCase();
+  const method = (it.method || "").toLowerCase();
+  const x = it.tokenTransfers?.[0];
+  const amtEth = x?.symbol?.toUpperCase() === "ETH" ? x.amount : it.valueEther;
+  const gas = toNum(it.feeEther);
+
+  if (l.includes("withdrawn")) {
+    return "Withdrew collateral on Ethereum (order closed).";
+  }
+  if (l.includes("liquidated")) {
+    return "Order was liquidated on Ethereum; collateral sold to cover debt.";
+  }
+  if (l.includes("funded") || method.includes("fundorder")) {
+    return `Funded collateral${amtEth ? `: ${amtEth} ETH` : ""}${gas ? ` (gas ~${gas} ETH)` : ""}.`;
+  }
+  if (l.includes("mark repaid")) {
+    return "Repay confirmed on Ethereum; collateral unlocked.";
+  }
+  if (l.includes("hedera") && l.includes("opened")) {
+    return "Order mirrored to Hedera (ready to borrow).";
+  }
+  if (l.includes("hedera") && l.includes("repaid")) {
+    return "Debt repaid on Hedera.";
+  }
+  if (x?.symbol) return `Transferred ${x.amount} ${x.symbol}.`;
+  if (amtEth) return `Sent ${amtEth} ETH${gas ? ` (gas ~${gas} ETH)` : ""}.`;
+  if (it.method) return `${it.method} executed.`;
+  return "Transaction executed.";
+}
+function buildSummary(items: ExplainItem[]): string[] {
+  const sorted = [...items].sort((a, b) => {
+    const ta = a.timestamp ? Number(a.timestamp) : 0;
+    const tb = b.timestamp ? Number(b.timestamp) : 0;
+    return ta - tb;
+  });
+
+  const out: string[] = [];
+  let funded = false;
+  let opened = false;
+  let repaidHedera = false;
+  let unlockedEth = false;
+  let withdrawn = false;
+  let liquidated = false;
+  let fundedAmt: string | undefined;
+
+  for (const it of sorted) {
+    const l = it.label.toLowerCase();
+    if (!funded && l.includes("funded")) {
+      funded = true;
+      const xfer = it.tokenTransfers?.find((t) => t.symbol?.toUpperCase() === "ETH");
+      fundedAmt = xfer?.amount || it.valueEther;
+      out.push(`You funded the order on Ethereum${fundedAmt ? ` with ${fundedAmt} ETH` : ""}.`);
+    }
+    if (!opened && l.includes("hedera") && l.includes("opened")) {
+      opened = true;
+      out.push("The order was mirrored to Hedera (bridge complete).");
+    }
+    if (!repaidHedera && l.includes("hedera") && l.includes("repaid")) {
+      repaidHedera = true;
+      out.push("You repaid your debt on Hedera.");
+    }
+    if (!unlockedEth && l.includes("mark repaid")) {
+      unlockedEth = true;
+      out.push("Ethereum marked the order repaid and unlocked your collateral.");
+    }
+    if (!withdrawn && l.includes("withdrawn")) {
+      withdrawn = true;
+      out.push("You withdrew your ETH on Ethereum (order closed).");
+    }
+    if (!liquidated && l.includes("liquidated")) {
+      liquidated = true;
+      out.push("The position was liquidated on Ethereum (order closed).");
+    }
+  }
+
+  if (out.length === 0) out.push("We found related activity for this order on the explorer.");
+  return out;
+}
+
+const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, selectedOrderId, onSelectOrder }) => {
+  const [explainState, setExplainState] = useState<Record<string, ExplainState>>({});
+  const { appState } = useAppContext();
+  const isAppBusy = BUSY_STATES.has(appState);
+
+  const handleExplain = async (orderId: `0x${string}`) => {
+    const current = explainState[orderId];
+    if (current?.open && !current.loading) {
+      setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], open: false } }));
+      return;
+    }
+
+    setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: true, error: null, items: prev[orderId]?.items ?? [] } }));
+
+    try {
+      const txs = await fetchOrderTransactions(orderId);
+      if (!txs.length) {
+        setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: false, error: null, items: [] } }));
+        return;
+      }
+
+      const ethTxs = txs.filter(tx => tx.chainId === ETH_CHAIN_ID);
+      const otherTxs = txs.filter(tx => tx.chainId !== ETH_CHAIN_ID);
+
+      const explainedEth = await Promise.all(
+        ethTxs.map(async tx => {
+          try {
+            const ex = await explainTransaction(tx.chainId, tx.txHash);
+            return { ...tx, ...ex } as ExplainItem;
+          } catch {
+            return { ...tx } as ExplainItem;
+          }
+        })
+      );
+
+      const items: ExplainItem[] = [...explainedEth, ...otherTxs];
+      setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: false, error: null, items } }));
+    } catch (err: any) {
+      setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: false, error: err?.message ?? "Could not fetch transactions.", items: [] } }));
+    }
+  };
+
+  if (orders.length === 0) return null;
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
+      <h3 className="text-md font-semibold text-gray-300 mb-3">{title}</h3>
+      <div className="space-y-3">
+        {orders.map(order => {
+          const explain = explainState[order.orderId];
+          const isSelected = selectedOrderId === order.orderId;
+          const rowDisabled = isAppBusy;
+
+          return (
+            <div
+              key={order.orderId}
+              className={`bg-gray-900/60 border rounded-xl px-4 py-3 space-y-3 transition-all ${isSelected ? 'border-cyan-500 ring-2 ring-cyan-500/50' : 'border-gray-700/40'} ${rowDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-900'}`}
+              onClick={() => !rowDisabled && onSelectOrder(order.orderId)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (!rowDisabled && (e.key === 'Enter' || e.key === ' ')) onSelectOrder(order.orderId);
+              }}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <p className="font-mono text-sm text-gray-200">{shorten(order.orderId)}</p>
+                  <p className="text-xs text-gray-400">{formatEth(order.amountWei)} ETH</p>
+                </div>
+                <div>
+                  <span className={`inline-block text-xs font-medium px-3 py-1 rounded-full border ${statusStyles[order.status]}`}>
+                    {order.status.replace(/([A-Z])/g, ' $1').trim()}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleExplain(order.orderId); }}
+                    disabled={explain?.loading || isAppBusy}
+                    className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-400 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
+                  >
+                    {explain?.loading ? "Analyzing..." : (explain?.open ? "Hide Explain" : "Explain")}
+                  </button>
+                </div>
+              </div>
+
+              {explain?.open && (
+                <div className="text-xs space-y-3 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-3">
+                  {explain.error && <p className="text-red-300">{explain.error}</p>}
+                  {!explain.error && (
+                    <>
+                      {/* Transactions */}
+                      <div className="space-y-2">
+                        <p className="text-gray-300 font-semibold">Transactions</p>
+                        {[...explain.items]
+                          .sort((a, b) => {
+                            const ta = a.timestamp ? Number(a.timestamp) : 0;
+                            const tb = b.timestamp ? Number(b.timestamp) : 0;
+                            return ta - tb;
+                          })
+                          .map(item => {
+                            const url = explorerUrl(item.chainId, item.txHash);
+                            const chainLabel =
+                              item.chainId === ETH_CHAIN_ID ? "Ethereum · Sepolia"
+                              : item.chainId === HEDERA_CHAIN_ID ? "Hedera · Testnet"
+                              : `Chain ${item.chainId}`;
+
+                            return (
+                              <div key={item.txHash} className="space-y-1 border border-gray-700/40 rounded-md px-3 py-2">
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                                  <span className="font-semibold text-gray-100">{item.label}</span>
+                                  <div className="flex items-center gap-2 text-gray-400">
+                                    <span>{chainLabel}</span>
+                                    {url && (
+                                      <a href={url} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200">View Tx</a>
+                                    )}
+                                  </div>
+                                </div>
+                                <p className="text-gray-200">{oneLiner(item)}</p>
+                              </div>
+                            );
+                          })}
+                      </div>
+
+                      {/* Summary */}
+                      <div className="border-t border-gray-700/50 my-2" />
+                      <div className="space-y-1">
+                        <p className="text-gray-300 font-semibold">Summary</p>
+                        <ul className="list-disc list-inside space-y-1 text-gray-200">
+                          {buildSummary(explain.items).map((s, i) => <li key={i}>{s}</li>)}
+                        </ul>
+                      </div>
+
+                      {/* Links */}
+                      <div className="space-y-1">
+                        <p className="text-gray-300 font-semibold">Links</p>
+                        <ul className="list-disc list-inside space-y-1 text-indigo-300">
+                          {[...new Set(explain.items.map(i => explorerUrl(i.chainId, i.txHash)).filter(Boolean) as string[])]
+                            .map(href => (
+                              <li key={href}>
+                                <a href={href} target="_blank" rel="noreferrer" className="hover:text-indigo-200">{href}</a>
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+export default OrderActionList;
+===== OrderInfoList.tsx =====
+import React, { useState } from 'react';
+import { UserOrderSummary } from '../types';
+import { formatUnits } from 'viem';
+
+// NEW: bring in the same services/config used by the other lists
+import { fetchOrderTransactions } from "../services/blockscoutService";
+import { explainTransaction } from "../services/api";
+import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
+
+interface OrderInfoListProps {
+  title: string;
+  orders: UserOrderSummary[];
+}
+
+// --- Helpers ---
+function formatEth(amountWei: bigint) {
+  if (!amountWei) return '0';
+  const eth = parseFloat(formatUnits(amountWei, 18));
+  return eth >= 1 ? eth.toFixed(4) : eth.toFixed(6);
+}
+
+function shorten(id: string) {
+  if (!id) return '';
+  return `${id.slice(0, 10)}…${id.slice(-4)}`;
+}
+
+// --- Types used for Explain panel (aligned with other lists) ---
+type ExplainItem = {
+  chainId: number;
+  label: string;
+  txHash: `0x${string}`;
+  summary?: string;
+  aiAnalysis?: string;
+  explanation?: string;
+  timestamp?: string;
+};
+
+type ExplainState = {
+  open: boolean;
+  loading: boolean;
+  error: string | null;
+  items: ExplainItem[];
+};
+
+const statusStyles: Record<UserOrderSummary['status'], string> = {
+  Created: "bg-gray-700/40 text-gray-200 border-gray-600/60",
+  Funded: "bg-blue-600/20 text-blue-300 border-blue-500/30",
+  ReadyToWithdraw: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  Withdrawn: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
+  Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
+  Borrowed: "bg-indigo-600/20 text-indigo-300 border-indigo-500/30",
+};
+
+const OrderInfoList: React.FC<OrderInfoListProps> = ({ title, orders }) => {
+  const [explainState, setExplainState] = useState<Record<string, ExplainState>>({});
+
+  if (orders.length === 0) {
+    return null;
+  }
+
+  // Toggle + fetch explain data per order (same behavior as other lists)
+  const handleExplain = async (orderId: `0x${string}`) => {
+    const current = explainState[orderId];
+
+    // simple toggle to close
+    if (current?.open && !current.loading) {
+      setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], open: false } }));
+      return;
+    }
+
+    // open + start loading
+    setExplainState(prev => ({
+      ...prev,
+      [orderId]: { open: true, loading: true, error: null, items: prev[orderId]?.items ?? [] },
+    }));
+
+    try {
+      const txs = await fetchOrderTransactions(orderId);
+
+      if (!txs.length) {
+        setExplainState(prev => ({
+          ...prev,
+          [orderId]: { open: true, loading: false, error: null, items: [] },
+        }));
+        return;
+      }
+
+      const supportedTxs = txs.filter(tx => tx.chainId === ETH_CHAIN_ID);
+      const unsupportedTxs = txs.filter(tx => tx.chainId !== ETH_CHAIN_ID);
+
+      const supportedExplanations = await Promise.all(
+        supportedTxs.map(async tx => {
+          try {
+            const explanation = await explainTransaction(tx.chainId, tx.txHash);
+            return {
+              chainId: tx.chainId,
+              label: tx.label,
+              txHash: tx.txHash,
+              timestamp: tx.timestamp,
+              summary: explanation.summary,
+              aiAnalysis: explanation.aiAnalysis,
+              explanation: explanation.explanation,
+            } as ExplainItem;
+          } catch (err: any) {
+            return {
+              chainId: tx.chainId,
+              label: tx.label,
+              txHash: tx.txHash,
+              timestamp: tx.timestamp,
+              explanation: err?.message ?? "Unable to generate explanation.",
+            } as ExplainItem;
+          }
+        })
+      );
+
+      const placeholderExplanations = unsupportedTxs.map(tx => ({
+        chainId: tx.chainId,
+        label: tx.label,
+        txHash: tx.txHash,
+        timestamp: tx.timestamp,
+        explanation:
+          tx.chainId === HEDERA_CHAIN_ID
+            ? "Hedera explanations are temporarily unavailable; mirroring Ethereum activity instead."
+            : "AI explanations are not available for this chain yet.",
+      } as ExplainItem));
+
+      setExplainState(prev => ({
+        ...prev,
+        [orderId]: {
+          open: true,
+          loading: false,
+          error: null,
+          items: [...supportedExplanations, ...placeholderExplanations],
+        },
+      }));
+    } catch (err: any) {
+      setExplainState(prev => ({
+        ...prev,
+        [orderId]: { open: true, loading: false, error: err?.message ?? "Could not fetch transactions.", items: [] },
+      }));
+    }
+  };
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
+      <h3 className="text-md font-semibold text-gray-300 mb-3">{title}</h3>
+      <div className="space-y-2">
+        {orders.map(order => {
+          const explain = explainState[order.orderId];
+
+          return (
+            <div
+              key={order.orderId}
+              className="bg-gray-900/70 border border-gray-700/60 rounded-lg p-3 space-y-3"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <p className="font-mono text-sm text-gray-400">{shorten(order.orderId)}</p>
+                  <p className="text-xs text-gray-500">{formatEth(order.amountWei)} ETH</p>
+                </div>
+
+                <span className={`text-xs font-medium px-3 py-1 rounded-full border ${statusStyles[order.status]}`}>
+                  {order.status}
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleExplain(order.orderId)}
+                    disabled={explain?.loading}
+                    className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-400 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
+                  >
+                    {explain?.loading ? "Analyzing..." : (explain?.open ? "Hide Explain" : "✦ Explain")}
+                  </button>
+                </div>
+              </div>
+
+              {explain?.open && (
+                <div className="text-xs space-y-2 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-3">
+                  {explain.error && <p className="text-red-300">{explain.error}</p>}
+                  {!explain.loading && !explain.error && explain.items.length === 0 && (
+                    <p className="text-gray-400">No related transactions found for this order.</p>
+                  )}
+                  {explain.items.map(item => {
+                    const explorerBase = CHAIN_EXPLORERS[item.chainId];
+                    const explorerUrl = explorerBase ? `${explorerBase}${item.txHash}` : undefined;
+                    const chainLabel =
+                      item.chainId === ETH_CHAIN_ID
+                        ? "Ethereum · Sepolia"
+                        : item.chainId === HEDERA_CHAIN_ID
+                        ? "Hedera · Testnet"
+                        : `Chain ${item.chainId}`;
+
+                    const narrative = item.aiAnalysis ?? item.summary ?? item.explanation;
+
+                    return (
+                      <div key={`${item.txHash}-${item.label}`} className="space-y-1 border border-gray-700/40 rounded-md px-3 py-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                          <span className="font-semibold text-gray-100">{item.label}</span>
+                          <div className="flex items-center gap-2 text-gray-400">
+                            <span>{chainLabel}</span>
+                            {explorerUrl && (
+                              <a
+                                href={explorerUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-indigo-300 hover:text-indigo-200"
+                              >
+                                View Tx
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                        {narrative && <p className="text-indigo-200">✦ Ollama AI: <span className="italic text-gray-300">{narrative}</span></p>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+export default OrderInfoList;
+===== OrderList.tsx =====
+﻿import React, { useState } from "react";
+import { formatUnits } from "viem";
+import { OrderStatus, UserOrderSummary } from "../types";
+import { fetchOrderTransactions } from "../services/blockscoutService";
+import { explainTransaction } from "../services/api";
+import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
+
+interface OrderListProps {
+  orders: UserOrderSummary[];
+  isLoading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}
+
+const statusStyles: Record<OrderStatus, string> = {
+  Created: "bg-gray-700/40 text-gray-200 border-gray-600/60",
+  Funded: "bg-blue-600/20 text-blue-300 border-blue-500/30",
+  ReadyToWithdraw: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  Withdrawn: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
+  Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
+};
+
+function formatEth(amountWei: bigint): string {
+  if (amountWei === 0n) return "0";
+  const eth = parseFloat(formatUnits(amountWei, 18));
+  if (Number.isNaN(eth)) return "0";
+  if (eth >= 1) return eth.toFixed(4).replace(/\.0+$/, "").replace(/\.([1-9]*?)0+$/, ".$1");
+  return eth.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function shorten(id: string, chars = 6): string {
+  if (id.length <= chars * 2) return id;
+  return `${id.slice(0, chars + 2)}…${id.slice(-chars)}`;
+}
+
+interface ExplainItem {
+  chainId: number;
+  label: string;
+  txHash: `0x${string}`;
+  summary?: string;
+  aiAnalysis?: string;
+  explanation?: string;
+  timestamp?: string;
+}
+
+interface ExplainState {
+  open: boolean;
+  loading: boolean;
+  error: string | null;
+  items: ExplainItem[];
+}
+
+const OrderList: React.FC<OrderListProps> = ({ orders, isLoading, error, onRefresh }) => {
+  const [explainState, setExplainState] = useState<Record<string, ExplainState>>({});
+
+  const handleExplain = async (orderId: `0x${string}`) => {
+    const current = explainState[orderId];
+
+    if (current && current.open && !current.loading) {
+      setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], open: false } }));
+      return;
+    }
+
+    setExplainState(prev => ({
+      ...prev,
+      [orderId]: { open: true, loading: true, error: null, items: prev[orderId]?.items ?? [] },
+    }));
+
+    try {
+      const txs = await fetchOrderTransactions(orderId);
+      if (!txs.length) {
+        setExplainState(prev => ({
+          ...prev,
+          [orderId]: { open: true, loading: false, error: null, items: [] },
+        }));
+        return;
+      }
+
+      const supportedTxs = txs.filter(tx => tx.chainId === ETH_CHAIN_ID);
+      const unsupportedTxs = txs.filter(tx => tx.chainId !== ETH_CHAIN_ID);
+
+      const supportedExplanations = await Promise.all(
+        supportedTxs.map(async tx => {
+          try {
+            const explanation = await explainTransaction(tx.chainId, tx.txHash);
+            return {
+              chainId: tx.chainId,
+              label: tx.label,
+              txHash: tx.txHash,
+              timestamp: tx.timestamp,
+              summary: explanation.summary,
+              aiAnalysis: explanation.aiAnalysis,
+              explanation: explanation.explanation,
+            } as ExplainItem;
+          } catch (err: any) {
+            console.error(`Failed to explain ${tx.txHash}`, err);
+            return {
+              chainId: tx.chainId,
+              label: tx.label,
+              txHash: tx.txHash,
+              timestamp: tx.timestamp,
+              explanation: err?.message ?? "Unable to generate explanation.",
+            } as ExplainItem;
+          }
+        })
+      );
+
+      const placeholderExplanations = unsupportedTxs.map(tx => ({
+        chainId: tx.chainId,
+        label: tx.label,
+        txHash: tx.txHash,
+        timestamp: tx.timestamp,
+        explanation: "Hedera explanations are temporarily unavailable; mirroring Ethereum activity instead.",
+      } as ExplainItem));
+
+      const explanations = [...supportedExplanations, ...placeholderExplanations];
+      setExplainState(prev => ({
+        ...prev,
+        [orderId]: { open: true, loading: false, error: null, items: explanations },
+      }));
+    } catch (err: any) {
+      console.error("Failed to fetch order transactions", err);
+      setExplainState(prev => ({
+        ...prev,
+        [orderId]: { open: true, loading: false, error: err?.message ?? "Could not fetch transactions.", items: [] },
+      }));
+    }
+  };
+
+  return (
+    <section className="bg-gray-800/70 border border-gray-700/50 rounded-2xl p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-gray-100">Your Orders</h3>
+        <button
+          onClick={onRefresh}
+          className="text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+          disabled={isLoading}
+        >
+          {isLoading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {orders.length === 0 && !isLoading ? (
+        <p className="text-sm text-gray-400">
+          No orders found for this wallet yet. Open a position to see it listed here.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {orders.map(order => {
+            const explain = explainState[order.orderId];
+            return (
+              <div key={order.orderId} className="bg-gray-900/60 border border-gray-700/40 rounded-xl px-4 py-3 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wide">Order ID</p>
+                    <p className="font-mono text-sm text-gray-200">{shorten(order.orderId)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wide">Collateral</p>
+                    <p className="text-sm text-gray-100">{formatEth(order.amountWei)} ETH</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wide">Status</p>
+                    <span className={`inline-block text-xs font-medium px-3 py-1 rounded-full border ${statusStyles[order.status]}`}>
+                      {order.status.replace(/([A-Z])/g, ' $1').trim()}
+                    </span>
+                  </div>
+                  <div className="flex flex-col items-start gap-2">
+                    <button
+                      onClick={() => handleExplain(order.orderId)}
+                      disabled={explain?.loading}
+                      className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-400 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
+                    >
+                      {explain?.open ? "Hide Explain" : "✦ Explain Tx"}
+                    </button>
+                    {explain?.loading && <span className="text-xs text-gray-400">Analyzing…</span>}
+                  </div>
+                </div>
+
+                {explain?.open && (
+                  <div className="text-xs space-y-2 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-3">
+                    {explain.error && <p className="text-red-300">{explain.error}</p>}
+                    {!explain.loading && !explain.error && explain.items.length === 0 && (
+                      <p className="text-gray-400">No related transactions found yet. Try again soon.</p>
+                    )}
+                    {explain.items.map(item => {
+                      const explorerBase = CHAIN_EXPLORERS[item.chainId];
+                      const explorerUrl = explorerBase ? `${explorerBase}${item.txHash}` : undefined;
+                      const chainLabel =
+                        item.chainId === ETH_CHAIN_ID
+                          ? "Ethereum · Sepolia"
+                          : item.chainId === HEDERA_CHAIN_ID
+                          ? "Hedera · Testnet"
+                          : `Chain ${item.chainId}`;
+
+                      return (
+                        <div key={`${item.txHash}-${item.label}`} className="space-y-1 border border-gray-700/40 rounded-md px-3 py-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                            <span className="font-semibold text-gray-100">{item.label}</span>
+                            <div className="flex items-center gap-2 text-gray-400">
+                              <span>{chainLabel}</span>
+                              {explorerUrl && (
+                                <a
+                                  href={explorerUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-indigo-300 hover:text-indigo-200"
+                                >
+                                  View Tx
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                          {item.summary && <p className="text-gray-200">{item.summary}</p>}
+                          {item.aiAnalysis && <p className="text-gray-400 italic">{item.aiAnalysis}</p>}
+                          {item.explanation && item.explanation !== item.aiAnalysis && (
+                            <p className="text-gray-400 italic">{item.explanation}</p>
+                          )}
+                          {(() => {
+                            const narrative = item.aiAnalysis ?? item.summary ?? item.explanation;
+                            return narrative ? (
+                              <p className="text-indigo-200 text-xs">
+                                ✦ Ollama AI: {narrative}
+                              </p>
+                            ) : null;
+                          })()}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+};
+
+export default OrderList;
+===== PositionDashboard.tsx =====
+import React, { useState } from 'react';
+import { OrderData } from '../App';
+import { SpinnerIcon } from './Icons';
+// Import our new API service function and the response type
+import { fetchLiquidationRisk, LiquidationRiskResponse } from '../services/api';
+
+interface PositionDashboardProps {
+  orderData: OrderData;
+  onRepay: () => void;
+  onLiquidate: () => void;
+}
+
+const PositionDashboard: React.FC<PositionDashboardProps> = ({ orderData, onRepay, onLiquidate }) => {
+  // --- NEW STATES TO MANAGE THE RISK ANALYSIS API CALL ---
+  const [riskData, setRiskData] = useState<LiquidationRiskResponse | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  // --- EXISTING LOGIC ---
+  const currentEthPrice = 3267.17; // Example price for display
+  const healthFactor = (orderData.ethAmount * currentEthPrice) / parseFloat(orderData.usdValue);
+  const healthPercentage = Math.min(((healthFactor - 1) / 1) * 100, 100);
+
+  // --- FUNCTION TO HANDLE THE ANALYSIS BUTTON CLICK ---
+  const handleAnalyzeRisk = async () => {
+    setIsAnalyzing(true);
+    setRiskData(null); // Reset previous results
+    setAnalysisError(null); // Reset previous errors
+
+    try {
+      // Use the Hedera Order ID as the unique identifier for the borrow position
+      const data = await fetchLiquidationRisk(orderData.hederaOrderId);
+      setRiskData(data);
+    } catch (error) {
+      setAnalysisError("Failed to fetch risk analysis. Please try again later.");
+      console.error(error);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Helper function to get Tailwind classes based on the risk level
+  const getRiskColorClasses = (level: LiquidationRiskResponse['riskLevel']): string => {
+    switch (level) {
+      case 'Low': return 'bg-green-500/10 text-green-400 border-green-500/30';
+      case 'Medium': return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30';
+      case 'High': return 'bg-orange-500/10 text-orange-400 border-orange-500/30';
+      case 'Critical': return 'bg-red-500/10 text-red-400 border-red-500/30';
+      default: return 'bg-gray-700/20 text-gray-400 border-gray-600';
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold text-gray-300 mb-4 border-l-4 border-blue-400 pl-3">Active Position Dashboard</h2>
+      <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-5">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold">Your Position Details</h3>
+          <span className="bg-green-500/20 text-green-300 text-xs font-medium px-2.5 py-1 rounded-full">Healthy</span>
+        </div>
+
+        <div className="space-y-3 text-sm">
+          <div className="flex justify-between">
+            <span className="text-gray-400">ETH Collateral</span>
+            <span className="font-medium">{orderData.ethAmount} ETH (${(orderData.ethAmount * currentEthPrice).toFixed(2)})</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">USD Debt</span>
+            <span className="font-medium">{orderData.usdValue} H-USD</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Liquidation Price</span>
+            <span className="font-medium text-yellow-400">ETH &lt; ${orderData.liquidationPrice}</span>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-300">Health Factor</label>
+          <div className="w-full bg-gray-700 rounded-full h-2.5 mt-1">
+            <div className="bg-green-500 h-2.5 rounded-full" style={{ width: `${healthPercentage}%` }}></div>
+          </div>
+        </div>
+        
+        {/* --- NEW AI RISK ANALYSIS SECTION --- */}
+        <div className="pt-5 border-t border-gray-700/50 space-y-4">
+          <button
+            onClick={handleAnalyzeRisk}
+            disabled={isAnalyzing}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg flex items-center justify-center gap-2 disabled:bg-indigo-900/50 disabled:cursor-not-allowed"
+          >
+            {isAnalyzing ? (
+              <>
+                <SpinnerIcon /> Analyzing Risk...
+              </>
+            ) : (
+              "Analyze Liquidation Risk (AI)"
+            )}
+          </button>
+
+          {/* Render analysis error if it exists */}
+          {analysisError && (
+            <div className="text-center text-sm text-red-400 bg-red-500/10 p-3 rounded-lg">
+              {analysisError}
+            </div>
+          )}
+
+          {/* Render analysis results card if data is available */}
+          {riskData && (
+            <div className={`p-4 rounded-lg border ${getRiskColorClasses(riskData.riskLevel)} transition-all`}>
+              <h4 className="font-bold text-lg">AI Risk Analysis Result</h4>
+              <p className="text-sm mt-2">
+                <span className="font-semibold">Risk Level:</span> {riskData.riskLevel} ({riskData.riskScore} / 100)
+              </p>
+              <p className="text-sm mt-2">
+                <span className="font-semibold">Recommendation:</span> {riskData.recommendation}
+              </p>
+            </div>
+          )}
+        </div>
+        
+        {/* --- EXISTING ACTION BUTTONS --- */}
+        <div className="pt-5 border-t border-gray-700/50 space-y-3">
+          <button onClick={onRepay} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg">
+            Repay H-USD
+          </button>
+          <button onClick={onLiquidate} className="w-full bg-red-800/50 hover:bg-red-800 text-red-300 text-sm py-2 px-4 rounded-lg transition-colors">
+            Simulate Liquidation Event
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default PositionDashboard;===== PositionLiquidated.tsx =====
+import React from 'react';
+import { OrderData } from '../App';
+import { WarningIcon } from './Icons';
+
+interface PositionLiquidatedProps {
+  orderData: OrderData;
+  onReset: () => void;
+}
+
+const PositionLiquidated: React.FC<PositionLiquidatedProps> = ({ orderData, onReset }) => {
+  return (
+    <div>
+      <h2 className="text-xl font-semibold text-gray-300 mb-4 border-l-4 border-red-500 pl-3">Position Liquidated</h2>
+      <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-4 border border-red-500/50">
+        {/* ... (rest of the JSX is the same) ... */}
+        <div className="text-center">
+          <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-500/20">
+            <WarningIcon />
+          </div>
+          <h3 className="mt-2 text-lg font-bold text-red-400">Position Liquidated</h3>
+          <p className="text-sm text-gray-400">The value of your ETH collateral fell below the safe threshold.</p>
+        </div>
+        <div className="bg-gray-900/50 p-4 rounded-lg text-sm">
+          <p>Your <strong className="text-white">{orderData.ethAmount} ETH</strong> has been sold to cover your debt.</p>
+          <p className="mt-2 text-gray-400">The <strong className="text-white">${orderData.usdValue} H-USD</strong> is now yours to keep. This order is now closed.</p>
+        </div>
+        <button onClick={onReset} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg">
+          Start a New Order
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default PositionLiquidated;===== ProgressView.tsx =====
+// src/components/ProgressView.tsx
+import React, { useState } from 'react';
+import { SpinnerIcon } from './Icons';
+
+interface ProgressViewProps {
+  logs: string[];
+  showManualCheckButton?: boolean;
+  onManualCheck?: () => void;
+  isChecking?: boolean;
+  lzTxHash?: `0x${string}` | null;
+}
+
+const ProgressView: React.FC<ProgressViewProps> = ({
+  logs,
+  showManualCheckButton,
+  onManualCheck,
+  isChecking,
+  lzTxHash
+}) => {
+  // NEW: toggle to hide/show the debug "terminal"
+  const [showDebug, setShowDebug] = useState(true);
+
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <SpinnerIcon />
+          <h3 className="text-xl font-bold text-yellow-300">Transaction in Progress...</h3>
+        </div>
+
+        {/* NEW: Debug toggle button */}
+        <button
+          onClick={() => setShowDebug(v => !v)}
+          aria-expanded={showDebug}
+          className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
+        >
+          {showDebug ? 'Close Debug' : 'Open Debug'}
+        </button>
+      </div>
+
+      {/* LayerZero Scan link, unchanged */}
+      {lzTxHash && (
+        <div className="text-center bg-gray-900/50 p-3 rounded-lg">
+          <p className="text-sm text-gray-400">Your cross-chain message has been sent!</p>
+          <a
+            href={`https://testnet.layerzeroscan.com/tx/${lzTxHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-400 hover:text-cyan-300 underline text-xs font-mono break-all"
+          >
+            Track on LayerZero Scan
+          </a>
+        </div>
+      )}
+
+      {/* NEW: Collapsible debug "terminal" */}
+      {showDebug && (
+        <div className="bg-black/50 rounded-lg p-4 font-mono text-xs text-gray-300 h-64 overflow-y-auto whitespace-pre-wrap">
+          {logs?.length ? logs.join('\n') : 'No logs yet.'}
+        </div>
+      )}
+
+      {/* Manual check button (optional) */}
+      {showManualCheckButton && (
+        <div className="pt-4 border-t border-gray-700">
+          <p className="text-xs text-center text-gray-500 mb-2">
+            If this is taking too long, you can check the status on Hedera manually.
+          </p>
+          <button
+            onClick={onManualCheck}
+            disabled={isChecking}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50"
+          >
+            {isChecking ? 'Checking...' : 'Check Status on Hedera Manually'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ProgressView;
+===== RepayView.tsx =====
+import React, { useState } from 'react';
+import { parseEther, formatUnits } from 'viem';
+import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../config';
+import { fetchPythUpdateData } from '../services/pythService';
+
+interface RepayViewProps {
+  orderId: string;
+  borrowAmount: string | null;
+  collateralEth: string | null;
+  onRepay: () => void;
+}
+
+const LIMITS = {
+  targetLtv: 0.6,
+  maxLtv: 0.8,
+  liqLtv: 0.85,
+};
+
+type NormalizedRiskLevel = 'Low' | 'Medium' | 'High' | 'Critical';
+interface NormalizedRisk {
+  level: NormalizedRiskLevel;
+  score?: number;
+  recommendation: string;
+  detailLine?: string;
+  explanation?: string;
+  summary?: string;
+  aiAnalysis?: string;
+}
+
+const riskClassMap: Record<NormalizedRiskLevel, string> = {
+  Low: 'bg-green-500/10 text-green-300 border-green-500/30',
+  Medium: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30',
+  High: 'bg-orange-500/10 text-orange-300 border-orange-500/30',
+  Critical: 'bg-red-600/10 text-red-300 border-red-500/30',
+};
+
+function normalizeRiskResponse(raw: any): NormalizedRisk {
+  if (!raw) throw new Error('Empty risk response');
+
+  if (raw.ok === false) {
+    throw new Error(raw.error ?? 'Risk service returned an error');
+  }
+
+  if ('riskLevel' in raw) {
+    const level = String(raw.riskLevel) as NormalizedRiskLevel;
+    const score = typeof raw.riskScore === 'number' ? raw.riskScore : undefined;
+    const recommendation = raw.recommendation ?? 'No recommendation provided.';
+    const detailLine =
+      raw.details && typeof raw.details === 'object'
+        ? `ETH $${Number(raw.details.currentEthPrice ?? 0).toFixed(2)} | Liquidation $${Number(raw.details.liquidationPrice ?? 0).toFixed(2)}`
+        : undefined;
+    return {
+      level: ['Low', 'Medium', 'High', 'Critical'].includes(level) ? level : 'Medium',
+      score,
+      recommendation,
+      detailLine,
+      summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+      aiAnalysis: typeof raw.aiAnalysis === 'string' ? raw.aiAnalysis : undefined,
+      explanation: typeof raw.explanation === 'string' ? raw.explanation : undefined,
+    };
+  }
+
+  const advisory = raw.advisory ?? 'hold';
+  let level: NormalizedRiskLevel;
+  switch (advisory) {
+    case 'repay_or_hedge': level = 'Critical'; break;
+    case 'tighten': level = 'High'; break;
+    default: level = 'Low';
+  }
+
+  const stressScore = typeof raw.marketStress?.score === 'number' ? raw.marketStress.score : undefined;
+  const distance = typeof raw.distanceToLiquidationPct === 'number' ? raw.distanceToLiquidationPct : undefined;
+  const derivedScore =
+    stressScore ??
+    (distance !== undefined ? Math.max(0, Math.min(100, Math.round(100 - distance))) : undefined);
+  const recommendation =
+    raw.explanation ??
+    (advisory === 'repay_or_hedge'
+      ? 'High liquidation risk. Consider repaying or hedging immediately.'
+      : advisory === 'tighten'
+        ? 'Markets look shaky. Reduce exposure or add collateral.'
+        : 'Position appears healthy right now.');
+  const detailLine =
+    raw.priceEthUsd && raw.liquidationPriceEthUsd
+      ? `ETH $${Number(raw.priceEthUsd).toFixed(2)} | Liquidation $${Number(raw.liquidationPriceEthUsd).toFixed(2)}`
+      : undefined;
+
+  return {
+    level,
+    score: derivedScore,
+    recommendation,
+    detailLine,
+    explanation: typeof raw.explanation === 'string' ? raw.explanation : undefined,
+    summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+    aiAnalysis: typeof raw.aiAnalysis === 'string' ? raw.aiAnalysis : undefined,
+  };
+}
+
+const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateralEth, onRepay }) => {
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [riskResult, setRiskResult] = useState<NormalizedRisk | null>(null);
+  const [riskError, setRiskError] = useState<string | null>(null);
+
+  const handleAnalyzeRisk = async () => {
+    if (!borrowAmount || !collateralEth) {
+      setRiskError('Collateral and borrow information are required.');
+      return;
+    }
+
+    const debtUsd = Number(borrowAmount);
+    if (Number.isNaN(debtUsd)) {
+      setRiskError('Unable to parse the borrow amount.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setRiskError(null);
+    setRiskResult(null);
+
+    try {
+      const collateralWei = parseEther(collateralEth);
+      const { scaledPrice } = await fetchPythUpdateData();
+      const ethUsd = Number(formatUnits(scaledPrice, 18));
+
+      const payload = {
+        orderId,
+        eth: { chainId: ETH_CHAIN_ID, collateralWei: collateralWei.toString() },
+        hedera: { network: 'testnet', debtAmountUsd: debtUsd },
+        price: { ethUsd },
+        limits: LIMITS,
+      };
+
+      const response = await fetch(AI_LIQUIDATION_RISK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Risk service returned ${response.status}`);
+      }
+
+      const result = await response.json();
+      setRiskResult(normalizeRiskResponse(result));
+    } catch (error: any) {
+      console.error('Failed to analyze liquidation risk', error);
+      setRiskError(error?.message ?? 'Unexpected error while analyzing risk.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
+      <h3 className="text-xl font-bold">Repay Your Loan</h3>
+      <p className="text-gray-400">Repay the hUSD to unlock your ETH collateral on Ethereum.</p>
+
+      <div className="bg-gray-900/50 p-3 rounded-lg text-left text-sm space-y-2">
+        <div>
+          <span className="text-gray-500">Order ID:</span>
+          <code className="text-cyan-300 ml-2 text-xs">{orderId}</code>
+        </div>
+        <div>
+          <span className="text-gray-500">Amount to Repay:</span>
+          <code className="text-cyan-300 ml-2 font-mono">{borrowAmount ?? '...' } hUSD</code>
+        </div>
+      </div>
+
+      <div className="space-y-3 text-left text-sm bg-gray-900/40 border border-gray-700/60 rounded-lg p-4">
+        <div className="flex justify-between items-center">
+          <span className="font-medium text-gray-100 flex items-center gap-2">
+            ✶✦ Liquidation Risk (AI)
+            <span className="relative group inline-flex items-center justify-center w-5 h-5 text-xs font-semibold rounded-full bg-gray-700 text-gray-200 cursor-help select-none">
+              ?
+              <span className="absolute left-1/2 top-full mt-2 w-64 -translate-x-1/2 rounded-md bg-gray-900 text-xs text-gray-200 border border-gray-700/80 px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+                {riskResult?.aiAnalysis || riskResult?.summary || 'Ollama AI combines Pyth pricing, your collateral and on-chain stress metrics to score liquidation risk.'}
+              </span>
+            </span>
+          </span>
+          <button
+            onClick={handleAnalyzeRisk}
+            disabled={!borrowAmount || !collateralEth || isAnalyzing}
+            className="text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-900/70 disabled:text-indigo-200 text-white px-3 py-1.5 rounded-md transition-colors"
+          >
+            {isAnalyzing ? 'Analyzing…' : 'Run Analysis'}
+          </button>
+        </div>
+        <p className="text-xs text-gray-500">
+          Uses current Pyth price data and your collateral to simulate liquidation risk.
+        </p>
+
+        {riskError && (
+          <div className="text-xs text-red-300 bg-red-600/10 border border-red-500/30 rounded-md px-3 py-2">
+            {riskError}
+          </div>
+        )}
+
+        {riskResult && (
+          <div className={`rounded-md border px-3 py-3 space-y-2 ${riskClassMap[riskResult.level]}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold uppercase tracking-wide">
+                {riskResult.level} Risk
+              </span>
+              {riskResult.score !== undefined && (
+                <span className="text-xs font-mono">{riskResult.score}/100</span>
+              )}
+            </div>
+            <p className="text-xs">
+              <span className="font-semibold">Recommendation:</span> {riskResult.recommendation}
+            </p>
+            {riskResult.summary && <p className="text-xs text-gray-200">{riskResult.summary}</p>}
+            {riskResult.detailLine && <p className="text-xs text-gray-300">{riskResult.detailLine}</p>}
+            {riskResult.explanation && <p className="text-xs text-gray-400 italic">{riskResult.explanation}</p>}
+            {(riskResult.aiAnalysis || riskResult.summary || riskResult.explanation) && (
+              <p className="text-xs text-indigo-200">✦ Ollama AI: {riskResult.aiAnalysis ?? riskResult.summary ?? riskResult.explanation}</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={onRepay}
+        disabled={!borrowAmount}
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        Return & Repay {borrowAmount ? `${borrowAmount} hUSD` : ''}
+      </button>
+      <p className="text-xs text-gray-500">
+        We'll return your hUSD to the treasury and then submit the repay transaction.
+      </p>
+    </div>
+  );
+};
+
+export default RepayView;
+===== UserOrders.tsx =====
+// src/components/UserOrders.tsx
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAccount } from 'wagmi';
+
+// Import the service function we created earlier
+import { fetchAllUserOrders } from '../services/blockscoutService';
+// Import the shared types for consistency
+import { UserOrderSummary } from '../types';
+// Import the presentational component that will display the data
+import OrderList from './OrderList';
+
+/**
+ * A self-contained component that fetches, manages, and displays a user's order history.
+ * It acts as a "container" for the OrderList component.
+ */
+const UserOrders: React.FC = () => {
+  // Get the connected wallet's information
+  const { address, isConnected } = useAccount();
+
+  // State management for the component's data, loading status, and errors
+  const [orders, setOrders] = useState<UserOrderSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * A memoized function to handle the fetching of orders.
+   * This can be called to manually refresh the list.
+   */
+  const handleRefresh = useCallback(async () => {
+    // Ensure an address is available before making a request
+    if (!address) return;
+
+    // Set the initial loading state and clear any previous errors
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Call our service function to get the data from Blockscout and Ethereum
+      const userOrders = await fetchAllUserOrders(address);
+      setOrders(userOrders);
+    } catch (e: any) {
+      // If an error occurs, store a user-friendly message
+      console.error("Failed to fetch user orders:", e);
+      setError('Could not retrieve order history. Please try again.');
+    } finally {
+      // Always ensure the loading state is turned off after the request completes
+      setIsLoading(false);
+    }
+  }, [address]); // This function depends only on the user's address
+
+  /**
+   * An effect that runs when the component is first mounted or when the user's
+   * connection status or address changes.
+   */
+  useEffect(() => {
+    if (isConnected && address) {
+      // If the user is connected, automatically fetch their orders
+      handleRefresh();
+    } else {
+      // If the user disconnects, clear the list of orders
+      setOrders([]);
+    }
+  }, [isConnected, address, handleRefresh]); // Dependencies for the effect
+
+  // Don't render anything if the user's wallet is not connected
+  if (!isConnected) {
+    return null; // Or you could return a "Please connect your wallet" message
+  }
+
+  // Render the presentational OrderList component, passing down the current
+  // state (orders, isLoading, error) and the refresh function as props.
+  return (
+    <OrderList
+      orders={orders}
+      isLoading={isLoading}
+      error={error}
+      onRefresh={handleRefresh}
+    />
+  );
+};
+
+export default UserOrders;===== WithdrawUsd.tsx =====
+import React from 'react';
+import { OrderData } from '../App';
+import { CheckIcon, CopyIcon } from './Icons';
+
+interface WithdrawUsdProps {
+  orderData: OrderData;
+  onWithdraw: () => void;
+}
+
+const WithdrawUsd: React.FC<WithdrawUsdProps> = ({ orderData, onWithdraw }) => {
+  return (
+    <div>
+      <h2 className="text-xl font-semibold text-gray-300 mb-4 border-l-4 border-green-400 pl-3">Step 3: Withdraw USD on Hedera</h2>
+      <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-4">
+         {/* ... (rest of the JSX is the same) ... */}
+         <div className="text-center">
+          <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-500/20">
+            <CheckIcon />
+          </div>
+          <h3 className="mt-2 text-lg font-bold">ETH Deposit Confirmed!</h3>
+          <p className="text-sm text-gray-400">Your Hedera withdrawal order is now ready.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-300">Hedera Order ID</label>
+          <div className="mt-1 flex items-center bg-gray-900 border border-gray-600 rounded-md p-3">
+            <span className="font-mono text-gray-300 flex-grow">{orderData.hederaOrderId}</span>
+            <CopyIcon />
+          </div>
+        </div>
+        <button onClick={onWithdraw} className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg">
+          Withdraw ${orderData.usdValue} H-USD
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default WithdrawUsd;===== WithdrawView.tsx =====
+import React from 'react';
+
+interface WithdrawViewProps {
+  orderId: string;
+  onWithdraw: () => void;
+}
+
+const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw }) => {
+  return (
+    <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
+      <h3 className="text-xl font-bold">Withdraw Your Collateral</h3>
+      <p className="text-gray-400">Your repayment has been confirmed on Ethereum. You can now withdraw your original ETH.</p>
+
+      <div className="bg-gray-900/50 p-3 rounded-lg text-left text-sm">
+        <div>
+          <span className="text-gray-500">Order ID:</span>
+          <code className="text-cyan-300 ml-2 text-xs">{orderId}</code>
+        </div>
+      </div>
+
+      <button onClick={onWithdraw} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">
+        Withdraw ETH
+      </button>
+    </div>
+  );
+};
+
+export default WithdrawView;

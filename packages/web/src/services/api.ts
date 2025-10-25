@@ -56,20 +56,53 @@ export interface TxExplanation {
   [key: string]: any;
 }
 
-export const explainTransaction = async (chainId: number, txHash: `0x${string}`): Promise<TxExplanation> => {
+// src/services/api.ts
+// ...keep other imports...
+import { API_BASE_URL, USE_MOCK_API } from '../config';
+
+// Extend to match the server's structured JSON (and keep old fields optional for backward-compat)
+export interface TxExplanation {
+  method?: string;
+  from?: string;
+  to?: string;
+  valueEther?: string;
+  tokenTransfers?: { symbol: string; amount: string; from: string; to: string }[];
+  feeEther?: string;
+  risks?: string[];
+  links?: string[];
+
+  // legacy fields (still accepted if server sends them)
+  summary?: string;
+  aiAnalysis?: string;
+  explanation?: string;
+
+  [key: string]: any;
+}
+
+export const explainTransaction = async (
+  chainId: number,
+  txHash: `0x${string}`
+): Promise<TxExplanation> => {
   if (!txHash) throw new Error('txHash is required');
 
   if (USE_MOCK_API) {
+    // Minimal human-ish structured mock
     return {
+      method: 'fundOrderWithNotify',
+      from: '0xMockFrom',
+      to: '0xMockTo',
+      valueEther: '0.001',
+      tokenTransfers: [{ symbol: 'ETH', amount: '0.001', from: '0xMockFrom', to: '0xMockTo' }],
+      feeEther: '0.00042',
+      risks: [],
+      links: [],
       summary: `Mock explanation for ${txHash.slice(0, 12)}…`,
-      aiAnalysis: 'Mocked analysis: no additional data in mock mode.',
-      explanation: 'Mock server response. Replace with real server call.',
     };
   }
 
   const response = await fetch(`${API_BASE_URL}/ai/explain-tx`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json','bypass-tunnel-reminder': 'true' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chainId, txHash }),
   });
 
@@ -78,6 +111,7 @@ export const explainTransaction = async (chainId: number, txHash: `0x${string}`)
     throw new Error(message || `Explain TX failed with status ${response.status}`);
   }
 
+  // Server returns strict JSON keys (method, from, to, valueEther, tokenTransfers, feeEther, risks, links, …)
   return (await response.json()) as TxExplanation;
 };
 

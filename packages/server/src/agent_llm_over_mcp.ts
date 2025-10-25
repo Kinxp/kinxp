@@ -1,65 +1,152 @@
 import { mcpRest as mcp } from "./mcp_rest.js";
-import { ollamaJson } from "./ollama.js";
 
-function explorerBase(chainId: number) {
-  const map: Record<number, string> = {
+// ---------- helpers ----------
+function explorerBase(chainId) {
+  const map = {
     1: "https://eth.blockscout.com",
     10: "https://optimism.blockscout.com",
     137: "https://polygon.blockscout.com",
     8453: "https://base.blockscout.com",
     42161: "https://arbitrum.blockscout.com",
+    11155111: "https://eth-sepolia.blockscout.com",
   };
   return (map[chainId] || "https://blockscout.com").replace(/\/$/, "");
 }
-
-function links(chainId: number, tx?: string, from?: string, to?: string) {
+function links(chainId, tx, from, to) {
   const base = explorerBase(chainId);
-  const out: string[] = [];
+  const out = [];
   if (tx) out.push(`${base}/tx/${tx}`);
   if (from) out.push(`${base}/address/${from}`);
   if (to) out.push(`${base}/address/${to}`);
   return out;
 }
+function toBI(v) {
+  if (v === null || v === undefined) return 0n;
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return BigInt(Math.trunc(v));
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s.startsWith("0x") || s.startsWith("0X")) return BigInt(s);
+    if (/^\d+$/.test(s)) return BigInt(s);
+  }
+  return 0n;
+}
+function formatEther(wei) {
+  try {
+    let w = toBI(wei);
+    const neg = w < 0n;
+    if (neg) w = -w;
+    const s = w.toString().padStart(19, "0");
+    const whole = s.slice(0, -18) || "0";
+    let frac = s.slice(-18).replace(/0+$/, "");
+    const out = (neg ? "-" : "") + whole + (frac ? "." + frac : "");
+    // clamp to readable precision
+    return out.includes(".")
+      ? out.split(".")[0] + "." + out.split(".")[1].slice(0, 8).replace(/0+$/, "").replace(/\.$/, "")
+      : out;
+  } catch {
+    return "0";
+  }
+}
 
-export async function explainTxLLM_MCP({ chainId, txHash }: { chainId: number; txHash: string; }) {
+// Extract decoded ERC20 transfers when Blockscout provides them.
+// We won’t use these to display the collateral amount for “Funded”;
+// that always comes from the order’s amount, not from logs.
+function extractTokenTransfers(logs) {
+  const out = [];
+  if (!Array.isArray(logs)) return out;
+  for (const l of logs) {
+    const name = l?.decoded?.name || l?.name;
+    if (name !== "Transfer") continue;
+    const params = l?.decoded?.params || l?.params || [];
+    const p = (k) => {
+      const f = params.find((x) => (x?.name || "").toLowerCase() === k);
+      return f?.value ?? null;
+    };
+    const vRaw = p("value");
+    // try to detect token metadata if blockscout includes it
+    const symbol =
+      l?.token?.symbol ||
+      l?.asset?.symbol ||
+      (l?.address && l.address.toLowerCase() === "0x0000000000000000000000000000000000000000" ? "ETH" : undefined) ||
+      "TOKEN";
+    const decimals =
+      Number(l?.token?.decimals ?? l?.asset?.decimals) || (symbol === "ETH" ? 18 : 18);
+
+    // scale value to human
+    let amount = "0";
+    try {
+      const v = toBI(vRaw);
+      const s = v.toString().padStart(decimals + 1, "0");
+      const whole = s.slice(0, -decimals) || "0";
+      let frac = s.slice(-decimals).replace(/0+$/, "");
+      amount = frac ? `${whole}.${frac}` : whole;
+    } catch {
+      amount = "0";
+    }
+    out.push({
+      symbol,
+      amount,
+      from: p("from") || undefined,
+      to: p("to") || undefined,
+    });
+  }
+  return out;
+}
+
+// ---------- public API (deterministic; no LLM used for numbers) ----------
+export async function explainTxLLM_MCP({ chainId, txHash }) {
   const [info, logs, summary] = await Promise.all([
     mcp.get_transaction_info(chainId, txHash, true),
     mcp.get_transaction_logs(chainId, txHash),
-    mcp.transaction_summary(chainId, txHash), 
+    mcp.transaction_summary(chainId, txHash),
   ]);
 
-  const prompt = `
-You are a blockchain analyst. Using these three JSON blobs from Blockscout MCP:
-INFO=${JSON.stringify(info)}
-LOGS=${JSON.stringify(logs)}
-SUMMARY=${JSON.stringify(summary)}
+  const from =
+    info?.from ||
+    summary?.from ||
+    info?.sender ||
+    (typeof info?.tx === "object" ? info.tx.from : undefined) ||
+    undefined;
+  const to =
+    info?.to ||
+    summary?.to ||
+    (typeof info?.tx === "object" ? info.tx.to : undefined) ||
+    undefined;
 
-Return STRICT JSON with keys:
-{
-  "method": string,
-  "from": string,
-  "to": string,
-  "valueEther": string,
-  "tokenTransfers": [{"symbol":string,"amount":string,"from":string,"to":string}],
-  "feeEther": string,
-  "risks": [string]
-}
-If data is missing, fill with safe defaults. Do not add extra keys.`;
+  const method =
+    info?.method ||
+    info?.method_id ||
+    info?.input_method ||
+    summary?.method ||
+    (typeof info?.tx === "object" ? info.tx?.method : undefined) ||
+    "";
 
-  const shaped: any = await ollamaJson(prompt);
-  const from = shaped?.from;
-  const to = shaped?.to;
+  const valueWei = toBI(info?.value ?? summary?.value);
+  const gasUsed = toBI(info?.gas_used ?? info?.gasUsed ?? summary?.gas_used);
+  const gasPrice =
+    toBI(info?.gas_price ?? info?.gasPrice ?? info?.effective_gas_price ?? summary?.gas_price);
+  const feeWei = gasUsed * gasPrice;
+
+  const tokenTransfers = extractTokenTransfers(logs);
 
   return {
-    ...shaped,
+    method: String(method || ""),
+    from: from || "",
+    to: to || "",
+    valueEther: formatEther(valueWei),
+    tokenTransfers,
+    feeEther: formatEther(feeWei),
+    risks: [],
     chainId,
     links: links(chainId, txHash, from, to),
-    raw: { summary, info, logs }
+    raw: { summary, info, logs },
   };
 }
 
-export async function riskScanLLM_MCP({ chainId, address }: { chainId: number; address: string; }) {
-  const now = new Date(); const to = now.toISOString();
+export async function riskScanLLM_MCP({ chainId, address }) {
+  const now = new Date();
+  const to = now.toISOString();
   const from = new Date(now.getTime() - 7 * 86400 * 1000).toISOString();
 
   const [txs, toks] = await Promise.all([
@@ -67,21 +154,18 @@ export async function riskScanLLM_MCP({ chainId, address }: { chainId: number; a
     mcp.get_tokens_by_address(chainId, address),
   ]);
 
-  const prompt = `
-You are a blockchain risk analyst. Analyze TRANSACTIONS and TOKENS for address ${address} on chain ${chainId}.
-Return STRICT JSON:
-{"bullets":[string],"links":[string]}
-TRANSACTIONS=${JSON.stringify(txs)}
-TOKENS=${JSON.stringify(toks)}
-`;
-
-  const shaped: any = await ollamaJson(prompt);
-  if (!Array.isArray(shaped?.links)) shaped.links = [];
-  shaped.links.push(`${explorerBase(chainId)}/address/${address}`);
-  return shaped;
+  // keep this endpoint simple & deterministic too
+  return {
+    bullets: [
+      `Scanned ${Array.isArray(txs) ? txs.length : 0} txs in the last 7d.`,
+      `Holding ${Array.isArray(toks) ? toks.length : 0} tokens.`,
+    ],
+    links: [`${explorerBase(chainId)}/address/${address}`],
+    raw: { txs, toks },
+  };
 }
 
-export async function verifyMilestoneLLM_MCP({ xCondition }: { xCondition: any; }) {
+export async function verifyMilestoneLLM_MCP({ xCondition }) {
   const chainId = Number(xCondition?.chainId);
   const txHash = String(xCondition?.transaction_hash || xCondition?.txHash || "");
   if (!chainId || !txHash) return { ok: false, reasons: ["chainId/transaction_hash required"], links: [] };
@@ -91,24 +175,16 @@ export async function verifyMilestoneLLM_MCP({ xCondition }: { xCondition: any; 
     mcp.get_transaction_logs(chainId, txHash),
   ]);
 
-  const prompt = `
-Validate milestone condition X against INFO and LOGS.
-X=${JSON.stringify(xCondition)}
-INFO=${JSON.stringify(info)}
-LOGS=${JSON.stringify(logs)}
+  // naive confirmation heuristic (no LLM)
+  const confirmations =
+    Number(info?.confirmations ?? info?.tx?.confirmations ?? 0) || 0;
+  const ok = confirmations >= 1;
 
-Return STRICT JSON:
-{"ok":boolean,"reasons":[string],"confs":number}
-`;
-
-  const shaped: any = await ollamaJson(prompt);
   return {
-    ok: !!shaped?.ok,
-    reasons: Array.isArray(shaped?.reasons) ? shaped.reasons : [],
-    confs: Number(shaped?.confs) || undefined,
-    links: [
-      `${explorerBase(chainId)}/tx/${txHash}`
-    ],
-    raw: { info, logs }
+    ok,
+    reasons: ok ? [] : ["not enough confirmations"],
+    confs: confirmations,
+    links: [`${explorerBase(chainId)}/tx/${txHash}`],
+    raw: { info, logs },
   };
 }

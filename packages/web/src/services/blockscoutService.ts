@@ -16,6 +16,8 @@ import {
   HEDERA_ORDER_OPENED_TOPIC,
   ORDER_FUNDED_TOPIC,
   HEDERA_REPAID_TOPIC,
+  WITHDRAWN_TOPIC,
+  LIQUIDATED_TOPIC,
   HEDERA_CREDIT_ABI,
 } from '../config';
 
@@ -184,6 +186,24 @@ export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<Or
       topic0: MARK_REPAID_TOPIC,
       extraParams: { topic1: orderId, topic0_1_opr: 'and' },
     },
+    // NEW: Withdrawn (closed by withdrawal)
+    {
+      chainId: ETH_CHAIN_ID,
+      label: 'Ethereum (Sepolia) - Withdrawn',
+      baseUrl: SEPOLIA_BLOCKSCOUT_API_URL,
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: WITHDRAWN_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
+    // NEW: Liquidated (closed by liquidation)
+    {
+      chainId: ETH_CHAIN_ID,
+      label: 'Ethereum (Sepolia) - Liquidated',
+      baseUrl: SEPOLIA_BLOCKSCOUT_API_URL,
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: LIQUIDATED_TOPIC,
+      extraParams: { topic1: orderId, topic0_1_opr: 'and' },
+    },
     {
       chainId: HEDERA_CHAIN_ID,
       label: 'Hedera Testnet - Order Opened',
@@ -221,9 +241,7 @@ export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<Or
       const logs = await fetchBlockscoutLogs(query.baseUrl, params);
       if (!logs.length) continue;
 
-      if (query.chainId === HEDERA_CHAIN_ID) {
-        hederaLogsFound = true;
-      }
+      if (query.chainId === HEDERA_CHAIN_ID) hederaLogsFound = true;
 
       for (const log of logs) {
         const txHash =
@@ -260,6 +278,7 @@ export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<Or
 
   return collected;
 }
+
 
 export async function pollForHederaOrderOpened(orderId: `0x${string}`): Promise<boolean> {
   try {

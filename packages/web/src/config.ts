@@ -23,6 +23,10 @@ export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
 export const ORDER_CREATED_TOPIC = keccak256(toHex('OrderCreated(bytes32,address)'));
 export const ORDER_FUNDED_TOPIC = keccak256(toHex('OrderFunded(bytes32,address,uint256)'));
 export const HEDERA_REPAID_TOPIC = keccak256(toHex('Repaid(bytes32,uint64,bool)'));
+// Add these two topic hashes
+export const WITHDRAWN_TOPIC = keccak256(toHex('Withdrawn(bytes32,address,uint256)'));
+export const LIQUIDATED_TOPIC = keccak256(toHex('Liquidated(bytes32,uint256)'));
+
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx
