@@ -170,6 +170,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [activeOrderId] });
   }, [activeOrderId, sendTxOnChain, addLog]);
 
+  // ========== MODIFICATION START ==========
   const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
     let attempts = 0; const maxAttempts = 60;
@@ -178,9 +179,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       attempts++; addLog(`[Polling Hedera] Attempt ${attempts}/${maxAttempts}...`);
       const found = await pollForHederaOrderOpened(idToPoll, pollingStartBlock);
       if (found) {
-        addLog('✅ [Polling Hedera] Success! Order is ready.');
+        addLog('✅ [Polling Hedera] Success! Your order is now funded on Hedera and ready for the next step.');
         if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
-        setAppState(AppState.READY_TO_BORROW);
+
+        // Transition from the creation flow to the "active order" management flow.
+        // This makes the newly bridged order the currently selected one.
+        setSelectedOrderId(idToPoll); 
+        setOrderId(null); // Clear the temporary linear flow ID
+        setAppState(AppState.READY_TO_BORROW); // Set the state that triggers the borrow UI
+        
       } else if (attempts >= maxAttempts) {
         addLog('❌ [Polling Hedera] Timed out.');
         setError('Polling for Hedera order timed out.');
@@ -189,6 +196,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }, 5000);
   }, [addLog, pollingStartBlock]);
+  // ========== MODIFICATION END ==========
 
   const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
@@ -268,7 +276,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           } catch (e: any) { addLog(`❌ Error parsing Order ID: ${e.message}`); setAppState(AppState.ERROR); }
           break;
         
-        // ========== MODIFICATION START ==========
         case AppState.FUNDING_IN_PROGRESS:
           addLog('▶ Crossing chains to Hedera via LayerZero...');
           setLzTxHash(receipt.transactionHash);
@@ -280,12 +287,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             setPollingStartBlock(0); 
           }
           setAppState(AppState.CROSSING_TO_HEDERA);
-          // The setTimeout that previously reset the state to IDLE has been removed.
-          // The application will now remain in the CROSSING_TO_HEDERA state,
-          // allowing the UI to show a waiting/bridging status. The useEffect hook
-          // will detect this state and trigger the background polling.
           break;
-        // ========== MODIFICATION END ==========
 
         case AppState.BORROWING_IN_PROGRESS:
           setBorrowAmount(userBorrowAmount);
