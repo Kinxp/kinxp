@@ -15,6 +15,7 @@ const defaultOrigins = [
   "http://localhost:5174",
   "https://localhost:5173",
   "https://localhost:5174",
+  "https://kinxp.vercel.app/"
 ];
 
 const rawCorsOrigins = process.env.WEB_ORIGIN || "";
