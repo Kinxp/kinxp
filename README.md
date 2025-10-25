@@ -6,7 +6,6 @@ Lock crypto (starting with ETH on Ethereum/Sepolia) as collateral and mint USD o
 
 * **Fast & predictable fees:** high throughput, low/consistent costs.
 * **HTS tokens with first-class ops:** native mint/burn/associate via precompile (`0x167`) with an ERC-20 facade for wallets.
-* **Great for settlement rails:** mint/burn semantics map cleanly to credit lines.
 
 ## Architecture
 
