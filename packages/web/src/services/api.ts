@@ -33,6 +33,7 @@ export const fetchLiquidationRisk = async (borrowId: string): Promise<Liquidatio
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({ borrowId }),
     });
@@ -68,7 +69,7 @@ export const explainTransaction = async (chainId: number, txHash: `0x${string}`)
 
   const response = await fetch(`${API_BASE_URL}/ai/explain-tx`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json','ngrok-skip-browser-warning': 'true' },
     body: JSON.stringify({ chainId, txHash }),
   });
 
