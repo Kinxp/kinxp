@@ -29,3 +29,4 @@ typechain-types
 
 #Env
 .env
+.vercel

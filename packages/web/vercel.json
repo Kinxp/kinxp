@@ -1,0 +1,16 @@
+{
+    "rewrites": [
+      {
+        "source": "/sepolia-blockscout-api/api",
+        "destination": "https://eth-sepolia.blockscout.com/api"
+      },
+      {
+        "source": "/blockscout-api/api",
+        "destination": "https://testnet.blockscout.com/api"
+      },
+      {
+        "source": "/ai-api/:path*",
+        "destination": "https://kinxp.loca.lt/:path*"
+      }
+    ]
+  }
