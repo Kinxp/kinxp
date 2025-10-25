@@ -115,7 +115,7 @@ const DashboardPage = () => {
               onSelectOrder={handleSelectOrder}
             />
             <OrderActionList
-              title="Active Orders (Borrow / Repay)"
+              title="Active Orders"
               orders={activeOrders}
               selectedOrderId={selectedOrderId}
               onSelectOrder={handleSelectOrder}
