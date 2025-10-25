@@ -6,11 +6,7 @@
       },
       {
         "source": "/blockscout-api/api",
-        "destination": "https://testnet.blockscout.com/api"
-      },
-      {
-        "source": "/ai-api/:path*",
-        "destination": "https://kinxp.loca.lt/:path*"
+        "destination": "https://hedera.cloud.blockscout.com/api"
       }
     ]
   }

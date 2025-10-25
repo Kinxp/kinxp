@@ -176,7 +176,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
     hederaPollingRef.current = setInterval(async () => {
       attempts++; addLog(`[Polling Hedera] Attempt ${attempts}/${maxAttempts}...`);
-      const found = await pollForHederaOrderOpened(idToPoll);
+      const found = await pollForHederaOrderOpened(idToPoll, pollingStartBlock);
       if (found) {
         addLog('✅ [Polling Hedera] Success! Order is ready.');
         if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
@@ -267,6 +267,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             } else { throw new Error("OrderCreated event not found."); }
           } catch (e: any) { addLog(`❌ Error parsing Order ID: ${e.message}`); setAppState(AppState.ERROR); }
           break;
+        
+        // ========== MODIFICATION START ==========
         case AppState.FUNDING_IN_PROGRESS:
           addLog('▶ Crossing chains to Hedera via LayerZero...');
           setLzTxHash(receipt.transactionHash);
@@ -274,15 +276,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             const hederaBlockNumber = await hederaPublicClient.getBlockNumber();
             addLog(`   (Polling from Hedera block ${hederaBlockNumber})...`);
             setPollingStartBlock(Number(hederaBlockNumber));
-          } else { setPollingStartBlock(0); }
+          } else { 
+            setPollingStartBlock(0); 
+          }
           setAppState(AppState.CROSSING_TO_HEDERA);
-          setTimeout(() => {
-              addLog('✓ Funding tx sent. Polling in background. You can perform other actions.');
-              setAppState(AppState.IDLE);
-              setSelectedOrderId(null);
-              setOrderId(null);
-          }, 100);
+          // The setTimeout that previously reset the state to IDLE has been removed.
+          // The application will now remain in the CROSSING_TO_HEDERA state,
+          // allowing the UI to show a waiting/bridging status. The useEffect hook
+          // will detect this state and trigger the background polling.
           break;
+        // ========== MODIFICATION END ==========
+
         case AppState.BORROWING_IN_PROGRESS:
           setBorrowAmount(userBorrowAmount);
           addLog(`✅ Successfully borrowed ${userBorrowAmount} hUSD!`);
