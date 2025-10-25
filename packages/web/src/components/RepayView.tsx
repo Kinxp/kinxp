@@ -1,5 +1,3 @@
-// src/components/RepayView.tsx
-
 import React, { useState } from 'react';
 import { parseEther, formatUnits } from 'viem';
 import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../config';
@@ -7,7 +5,6 @@ import { fetchPythUpdateData } from '../services/pythService';
 
 interface RepayViewProps {
   orderId: string;
-  // NEW: Accept the borrowed amount as a prop
   borrowAmount: string | null;
   collateralEth: string | null;
   onRepay: () => void;
@@ -66,14 +63,9 @@ function normalizeRiskResponse(raw: any): NormalizedRisk {
   const advisory = raw.advisory ?? 'hold';
   let level: NormalizedRiskLevel;
   switch (advisory) {
-    case 'repay_or_hedge':
-      level = 'Critical';
-      break;
-    case 'tighten':
-      level = 'High';
-      break;
-    default:
-      level = 'Low';
+    case 'repay_or_hedge': level = 'Critical'; break;
+    case 'tighten': level = 'High'; break;
+    default: level = 'Low';
   }
 
   const stressScore = typeof raw.marketStress?.score === 'number' ? raw.marketStress.score : undefined;
@@ -132,17 +124,9 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
 
       const payload = {
         orderId,
-        eth: {
-          chainId: ETH_CHAIN_ID,
-          collateralWei: collateralWei.toString(),
-        },
-        hedera: {
-          network: 'testnet',
-          debtAmountUsd: debtUsd,
-        },
-        price: {
-          ethUsd,
-        },
+        eth: { chainId: ETH_CHAIN_ID, collateralWei: collateralWei.toString() },
+        hedera: { network: 'testnet', debtAmountUsd: debtUsd },
+        price: { ethUsd },
         limits: LIMITS,
       };
 
@@ -169,18 +153,17 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
 
   return (
     <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
-      <h3 className="text-xl font-bold">Step 4: Repay Your Loan</h3>
+      <h3 className="text-xl font-bold">Repay Your Loan</h3>
       <p className="text-gray-400">Repay the hUSD to unlock your ETH collateral on Ethereum.</p>
-      
+
       <div className="bg-gray-900/50 p-3 rounded-lg text-left text-sm space-y-2">
         <div>
           <span className="text-gray-500">Order ID:</span>
           <code className="text-cyan-300 ml-2 text-xs">{orderId}</code>
         </div>
-        {/* NEW: Display the amount to repay */}
         <div>
           <span className="text-gray-500">Amount to Repay:</span>
-          <code className="text-cyan-300 ml-2 font-mono">{borrowAmount ?? '...'} hUSD</code>
+          <code className="text-cyan-300 ml-2 font-mono">{borrowAmount ?? '...' } hUSD</code>
         </div>
       </div>
 
@@ -226,15 +209,9 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
             <p className="text-xs">
               <span className="font-semibold">Recommendation:</span> {riskResult.recommendation}
             </p>
-            {riskResult.summary && (
-              <p className="text-xs text-gray-200">{riskResult.summary}</p>
-            )}
-            {riskResult.detailLine && (
-              <p className="text-xs text-gray-300">{riskResult.detailLine}</p>
-            )}
-            {riskResult.explanation && (
-              <p className="text-xs text-gray-400 italic">{riskResult.explanation}</p>
-            )}
+            {riskResult.summary && <p className="text-xs text-gray-200">{riskResult.summary}</p>}
+            {riskResult.detailLine && <p className="text-xs text-gray-300">{riskResult.detailLine}</p>}
+            {riskResult.explanation && <p className="text-xs text-gray-400 italic">{riskResult.explanation}</p>}
             {(riskResult.aiAnalysis || riskResult.summary || riskResult.explanation) && (
               <p className="text-xs text-indigo-200">✦ Ollama AI: {riskResult.aiAnalysis ?? riskResult.summary ?? riskResult.explanation}</p>
             )}
@@ -242,9 +219,8 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
         )}
       </div>
 
-      <button 
-        onClick={onRepay} 
-        // NEW: Disable the button if the amount isn't loaded yet
+      <button
+        onClick={onRepay}
         disabled={!borrowAmount}
         className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
       >

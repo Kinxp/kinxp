@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAccount } from 'wagmi';
 import { parseUnits } from 'viem';
-// Import our new service function
 import { fetchAllUserOrders } from '../services/blockscoutService';
 import { UserOrderSummary } from '../types';
 import { useAppContext } from '../context/AppContext';
@@ -10,11 +9,12 @@ import OrderActionList from '../components/OrderActionList';
 import ActionPanel from '../components/ActionPanel';
 import HomePage from '../components/HomePage';
 import OrderInfoList from '../components/OrderInfoList';
+import CreateOrderView from '../components/CreateOrderView';
 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();
-  const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders } = useAppContext();
-  
+  const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders, handleCreateOrder } = useAppContext();
+
   const [allOrders, setAllOrders] = useState<UserOrderSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,13 +22,12 @@ const DashboardPage = () => {
   useEffect(() => {
     const refreshOrders = async () => {
       if (!address) return;
-      
+
       setIsLoading(true);
       setError(null);
       try {
         const orders = await fetchAllUserOrders(address);
         setAllOrders(orders);
-
       } catch (err) {
         console.error("Failed to fetch orders:", err);
         setError("Could not load order history.");
@@ -46,35 +45,35 @@ const DashboardPage = () => {
 
   const decoratedOrders = useMemo(() => {
     return allOrders.map(order => {
-      const cacheEntry = borrowedOrders[order.orderId.toLowerCase()];
-      if (!cacheEntry || order.status !== 'Funded') {
-        return order;
-      }
+      // Prefer on-chain Hedera truth when present
+      if (order.borrowedUsd && order.borrowedUsd > 0n) return order;
 
-      try {
-        return {
-          ...order,
-          status: 'Borrowed' as const,
-          borrowedUsd: parseUnits(cacheEntry.amount, 6),
-        };
-      } catch {
-        return {
-          ...order,
-          status: 'Borrowed' as const,
-        };
+      // Fallback: local cache, only if ETH-side says "Funded"
+      const cacheEntry = borrowedOrders[order.orderId.toLowerCase()];
+      if (cacheEntry && order.status === 'Funded') {
+        try {
+          return {
+            ...order,
+            status: 'Borrowed' as const,
+            borrowedUsd: parseUnits(cacheEntry.amount, 6),
+          };
+        } catch {
+          return { ...order, status: 'Borrowed' as const };
+        }
       }
+      return order;
     });
   }, [allOrders, borrowedOrders]);
+
   const { fundableOrders, activeOrders, withdrawableOrders, closedOrders } = useMemo(() => {
-    // This filtering logic is now correct because `allOrders` contains data from both sources.
     const fundable = decoratedOrders.filter(o => o.status === 'Created');
     const active = decoratedOrders.filter(o => o.status === 'Funded' || o.status === 'Borrowed');
     const withdrawable = decoratedOrders.filter(o => o.status === 'ReadyToWithdraw');
     const closed = decoratedOrders.filter(o => o.status === 'Liquidated' || o.status === 'Withdrawn');
 
-    return { 
+    return {
       fundableOrders: fundable,
-      activeOrders: active, 
+      activeOrders: active,
       withdrawableOrders: withdrawable,
       closedOrders: closed
     };
@@ -83,21 +82,30 @@ const DashboardPage = () => {
   const handleSelectOrder = (orderId: `0x${string}`) => {
     setSelectedOrderId(prev => (prev === orderId ? null : orderId));
   };
-  
+
   if (!isConnected) {
     return <HomePage />;
   }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      <div className="bg-gray-800 rounded-2xl p-6">
-        <ActionPanel allOrders={decoratedOrders} />
+      {/* LEFT: Create Order always on top + dynamic action panel below */}
+      <div className="space-y-6">
+        <div className="bg-gray-800 rounded-2xl p-6">
+          <CreateOrderView onSubmit={handleCreateOrder} />
+        </div>
+
+        <div className="bg-gray-800 rounded-2xl p-6">
+          <ActionPanel allOrders={decoratedOrders} />
+        </div>
       </div>
+
+      {/* RIGHT: Lists */}
       <div className="space-y-6">
         {isLoading ? (
           <div className="text-center text-gray-400 p-4">Loading your orders...</div>
         ) : error ? (
-           <div className="text-center text-red-400 p-4">{error}</div>
+          <div className="text-center text-red-400 p-4">{error}</div>
         ) : (
           <>
             <OrderActionList
@@ -105,21 +113,18 @@ const DashboardPage = () => {
               orders={fundableOrders}
               selectedOrderId={selectedOrderId}
               onSelectOrder={handleSelectOrder}
-              actionText="Fund"
             />
-            <OrderActionList 
+            <OrderActionList
               title="Active Orders (Borrow / Repay)"
               orders={activeOrders}
               selectedOrderId={selectedOrderId}
               onSelectOrder={handleSelectOrder}
-              actionText="Manage"
             />
-            <OrderActionList 
+            <OrderActionList
               title="Ready to Withdraw on Sepolia"
               orders={withdrawableOrders}
               selectedOrderId={selectedOrderId}
               onSelectOrder={handleSelectOrder}
-              actionText="Withdraw"
             />
             <OrderInfoList
               title="Closed Orders"

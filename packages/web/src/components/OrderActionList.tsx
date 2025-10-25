@@ -3,21 +3,17 @@ import { formatUnits } from 'viem';
 import { AppState, OrderStatus, UserOrderSummary } from '../types';
 import { useAppContext } from '../context/AppContext';
 
-// We assume these services and configs exist
 import { fetchOrderTransactions } from "../services/blockscoutService";
 import { explainTransaction } from "../services/api";
 import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
 
-// --- Props ---
 interface OrderActionListProps {
   title: string;
   orders: UserOrderSummary[];
   selectedOrderId: `0x${string}` | null;
   onSelectOrder: (orderId: `0x${string}`) => void;
-  actionText: string;
 }
 
-// --- Types and constants ---
 interface ExplainItem {
   chainId: number;
   label: string;
@@ -27,7 +23,6 @@ interface ExplainItem {
   explanation?: string;
   timestamp?: string;
 }
-
 interface ExplainState {
   open: boolean;
   loading: boolean;
@@ -35,9 +30,6 @@ interface ExplainState {
   items: ExplainItem[];
 }
 
-// ========== MODIFICATION START ==========
-// A set of all states that represent a pending on-chain or cross-chain action.
-// During these states, user actions on the list should be disabled.
 const BUSY_STATES = new Set([
   AppState.ORDER_CREATING,
   AppState.FUNDING_IN_PROGRESS,
@@ -48,8 +40,6 @@ const BUSY_STATES = new Set([
   AppState.CROSSING_TO_HEDERA,
   AppState.CROSSING_TO_ETHEREUM,
 ]);
-// ========== MODIFICATION END ==========
-
 
 const statusStyles: Record<OrderStatus, string> = {
   Created: "bg-gray-700/40 text-gray-200 border-gray-600/60",
@@ -57,9 +47,9 @@ const statusStyles: Record<OrderStatus, string> = {
   ReadyToWithdraw: "bg-amber-500/20 text-amber-300 border-amber-500/30",
   Withdrawn: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
   Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
+  Borrowed: "bg-indigo-600/20 text-indigo-300 border-indigo-500/30",
 };
 
-// --- Helper functions ---
 function formatEth(amountWei: bigint): string {
   if (amountWei === 0n) return "0";
   const eth = parseFloat(formatUnits(amountWei, 18));
@@ -67,25 +57,17 @@ function formatEth(amountWei: bigint): string {
   if (eth >= 1) return eth.toFixed(4).replace(/\.0+$/, "").replace(/\.([1-9]*?)0+$/, ".$1");
   return eth.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
-
 function shorten(id: string, chars = 6): string {
   if (id.length <= chars * 2) return id;
   return `${id.slice(0, chars + 2)}…${id.slice(-chars)}`;
 }
 
-const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, selectedOrderId, onSelectOrder, actionText }) => {
+const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, selectedOrderId, onSelectOrder }) => {
   const [explainState, setExplainState] = useState<Record<string, ExplainState>>({});
-  
-  // Get the global app state from the context
   const { appState } = useAppContext();
-
-  // ========== MODIFICATION START ==========
-  // Check if the current app state is one of the busy states.
   const isAppBusy = BUSY_STATES.has(appState);
-  // ========== MODIFICATION END ==========
 
   const handleExplain = async (orderId: `0x${string}`) => {
-    // ... (rest of the handleExplain function is unchanged)
     const current = explainState[orderId];
     if (current?.open && !current.loading) {
       setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], open: false } }));
@@ -97,8 +79,8 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
     try {
       const txs = await fetchOrderTransactions(orderId);
       if (!txs.length) {
-          setExplainState(prev => ({ ...prev, [orderId]: { ...prev[orderId], loading: false, items: [] } }));
-          return;
+        setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: false, error: null, items: [] } }));
+        return;
       }
 
       const supportedTxs = txs.filter(tx => tx.chainId === ETH_CHAIN_ID);
@@ -114,8 +96,13 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
           }
         })
       );
-      
-      const placeholderExplanations = unsupportedTxs.map(tx => ({ ...tx, explanation: "AI explanations for Hedera are not yet available." } as ExplainItem));
+
+      const placeholderExplanations = unsupportedTxs.map(tx => ({
+        ...tx,
+        explanation: tx.chainId === HEDERA_CHAIN_ID
+          ? "Hedera explanations are temporarily unavailable; mirroring Ethereum activity instead."
+          : "AI explanations are not available for this chain yet."
+      } as ExplainItem));
 
       setExplainState(prev => ({ ...prev, [orderId]: { open: true, loading: false, error: null, items: [...supportedExplanations, ...placeholderExplanations] } }));
     } catch (err: any) {
@@ -134,9 +121,19 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
         {orders.map(order => {
           const explain = explainState[order.orderId];
           const isSelected = selectedOrderId === order.orderId;
+          const rowDisabled = isAppBusy;
 
           return (
-            <div key={order.orderId} className={`bg-gray-900/60 border rounded-xl px-4 py-3 space-y-3 transition-all ${isSelected ? 'border-cyan-500 ring-2 ring-cyan-500/50' : 'border-gray-700/40'}`}>
+            <div
+              key={order.orderId}
+              className={`bg-gray-900/60 border rounded-xl px-4 py-3 space-y-3 transition-all ${isSelected ? 'border-cyan-500 ring-2 ring-cyan-500/50' : 'border-gray-700/40'} ${rowDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-900'}`}
+              onClick={() => !rowDisabled && onSelectOrder(order.orderId)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (!rowDisabled && (e.key === 'Enter' || e.key === ' ')) onSelectOrder(order.orderId);
+              }}
+            >
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <p className="font-mono text-sm text-gray-200">{shorten(order.orderId)}</p>
@@ -147,37 +144,28 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
                     {order.status.replace(/([A-Z])/g, ' $1').trim()}
                   </span>
                 </div>
-                
+
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handleExplain(order.orderId)}
-                    // ========== MODIFICATION START ==========
+                    onClick={(e) => { e.stopPropagation(); handleExplain(order.orderId); }}
                     disabled={explain?.loading || isAppBusy}
-                    // ========== MODIFICATION END ==========
                     className="text-xs font-semibold bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-400 text-gray-100 px-3 py-1.5 rounded-md transition-colors"
                   >
                     {explain?.loading ? "Analyzing..." : (explain?.open ? "Hide Explain" : "✦ Explain")}
                   </button>
-                  <button
-                    onClick={() => onSelectOrder(order.orderId)}
-                    // ========== MODIFICATION START ==========
-                    disabled={isAppBusy}
-                    className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-sm py-1.5 px-3 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    // ========== MODIFICATION END ==========
-                  >
-                    {actionText}
-                  </button>
                 </div>
               </div>
 
-              {/* ... (rest of the JSX is unchanged) ... */}
               {explain?.open && !explain.loading && (
                 <div className="text-xs space-y-2 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-3">
                   {explain.error && <p className="text-red-300">{explain.error}</p>}
                   {explain.items.length === 0 && !explain.error && <p className="text-gray-400">No related transactions found for this order yet.</p>}
                   {explain.items.map(item => {
                     const explorerUrl = CHAIN_EXPLORERS[item.chainId] ? `${CHAIN_EXPLORERS[item.chainId]}${item.txHash}` : undefined;
-                    const chainLabel = item.chainId === ETH_CHAIN_ID ? "Sepolia" : "Hedera";
+                    const chainLabel =
+                      item.chainId === ETH_CHAIN_ID ? "Sepolia" :
+                      item.chainId === HEDERA_CHAIN_ID ? "Hedera" :
+                      `Chain ${item.chainId}`;
                     const narrative = item.aiAnalysis ?? item.summary ?? item.explanation;
 
                     return (

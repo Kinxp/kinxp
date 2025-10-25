@@ -1,5 +1,3 @@
-// src/components/WithdrawView.tsx
-
 import React from 'react';
 
 interface WithdrawViewProps {
@@ -10,9 +8,9 @@ interface WithdrawViewProps {
 const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw }) => {
   return (
     <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
-      <h3 className="text-xl font-bold">Step 5: Withdraw Your Collateral</h3>
+      <h3 className="text-xl font-bold">Withdraw Your Collateral</h3>
       <p className="text-gray-400">Your repayment has been confirmed on Ethereum. You can now withdraw your original ETH.</p>
-      
+
       <div className="bg-gray-900/50 p-3 rounded-lg text-left text-sm">
         <div>
           <span className="text-gray-500">Order ID:</span>

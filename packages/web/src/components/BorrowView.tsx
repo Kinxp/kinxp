@@ -1,11 +1,9 @@
-// src/components/BorrowView.tsx
 import React, { useState, useEffect } from 'react';
 import { SpinnerIcon } from './Icons';
 
 interface BorrowViewProps {
   orderId: string;
   onBorrow: (amountToBorrow: string) => void;
-  // Pass the calculation function down as a prop
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
 }
 
@@ -14,7 +12,6 @@ const BorrowView: React.FC<BorrowViewProps> = ({ orderId: _orderId, onBorrow, ca
   const [calculatedAmount, setCalculatedAmount] = useState<string | null>(null);
   const [ethPrice, setEthPrice] = useState<string | null>(null);
 
-  // Trigger the calculation when the component first loads
   useEffect(() => {
     const performCalculation = async () => {
       setIsCalculating(true);
@@ -23,11 +20,10 @@ const BorrowView: React.FC<BorrowViewProps> = ({ orderId: _orderId, onBorrow, ca
         setCalculatedAmount(result.amount);
         setEthPrice(result.price);
       }
-      // If result is null, an error was already logged in context
       setIsCalculating(false);
     };
     performCalculation();
-  }, [calculateBorrowAmount]); // Dependency on the function prop
+  }, [calculateBorrowAmount]);
 
   const handleBorrowClick = () => {
     if (calculatedAmount) {
@@ -39,7 +35,7 @@ const BorrowView: React.FC<BorrowViewProps> = ({ orderId: _orderId, onBorrow, ca
 
   return (
     <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
-      <h3 className="text-xl font-bold">Step 3: Borrow hUSD</h3>
+      <h3 className="text-xl font-bold">Borrow hUSD</h3>
       <p className="text-gray-400">Your collateral is confirmed. We are calculating your borrow amount...</p>
 
       {isCalculating ? (
