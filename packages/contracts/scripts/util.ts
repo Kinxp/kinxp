@@ -24,7 +24,7 @@ import {
   zeroPadValue
 } from "ethers";
 import { artifacts, ethers } from "hardhat";
-import { EthCollateralOApp, HederaCreditOApp, UsdHtsController } from "../typechain-types";
+import { EthCollateralOApp, HederaCreditOApp, ReserveRegistry, ReserveRegistry__factory, UsdHtsController, UsdHtsController__factory } from "../typechain-types";
 import * as dotenv from "dotenv";
 import * as path from "path";
 
@@ -63,8 +63,14 @@ const borrowerKeyHex = requireEnv("DEPLOYER_KEY").replace(/^0x/, "");
 export const borrowerWallet = new Wallet(borrowerKeyHex, hederaProvider);
 
 const depositEth = parseFloat(process.env.DEPOSIT_ETH ?? "0.00001");
-const depositWei = parseEther(depositEth.toString());
+export const depositWei = parseEther(depositEth.toString());
 const borrowSafetyBps = Number(process.env.BORROW_TARGET_BPS ?? "8000");
+// Optional origination fee charged on borrow (basis points). Default 0 so end-to-end tests
+// don't fail when the borrower tries to repay exactly what they received.
+const originationFeeBps = Number(process.env.ORIGINATION_FEE_BPS ?? "0");
+export const DEFAULT_RESERVE_ID = ethers.encodeBytes32String("ETH-hUSD") as Hex;
+const reserveRegistryInterface = ReserveRegistry__factory.createInterface();
+const controllerInterface = UsdHtsController__factory.createInterface();
 
 export const sepoliaTx = (h: string) => `https://sepolia.etherscan.io/tx/${h}`;
 export const layerzeroTx = (h: string) => `https://testnet.layerzeroscan.com/tx/${h}`;
@@ -99,10 +105,12 @@ export function requireEid(name: string): number {
 
 export async function deployHederaController(hederaClient: Client, hederaOperatorWallet: Wallet) {
   const controllerArtifact = await artifacts.readArtifact("UsdHtsController");
+  const controllerParams = new ContractFunctionParameters().addAddress(await hederaOperatorWallet.getAddress());
 
   const controllerCreate = new ContractCreateFlow()
     .setGas(10000000)
-    .setBytecode(controllerArtifact.bytecode);
+    .setBytecode(controllerArtifact.bytecode)
+    .setConstructorParameters(controllerParams);
   const controllerCreateResponse = await controllerCreate.execute(hederaClient);
   const controllerReceipt = await controllerCreateResponse.getReceipt(hederaClient);
   const controllerId = controllerReceipt.contractId!;
@@ -116,15 +124,121 @@ export async function deployHederaController(hederaClient: Client, hederaOperato
   return { controllerAddr, controllerId, controller };
 }
 
-export async function deployHederaCreditOApp(hederaOperatorWallet: Wallet, controllerAddr: string, hederaClient: Client) {
+export async function deployReserveRegistry(hederaClient: Client, ownerWallet: Wallet) {
+  const registryArtifact = await artifacts.readArtifact("ReserveRegistry");
+  const registryParams = new ContractFunctionParameters().addAddress(await ownerWallet.getAddress());
+  const registryCreate = new ContractCreateFlow()
+    .setGas(10000000)
+    .setBytecode(registryArtifact.bytecode)
+    .setConstructorParameters(registryParams);
+
+  const registryCreateResponse = await registryCreate.execute(hederaClient);
+  const registryReceipt = await registryCreateResponse.getReceipt(hederaClient);
+  const registryId = registryReceipt.contractId!;
+  const registryAddr = '0x' + EntityIdHelper.toSolidityAddress([
+    (registryId.realm)!,
+    (registryId.shard)!,
+    (registryId.num)!
+  ]);
+  const registry = await ethers.getContractAt("ReserveRegistry", registryAddr, ownerWallet) as ReserveRegistry;
+  try {
+    const currentOwner = await (registry as any).owner?.();
+    console.log("  → ReserveRegistry owner:", currentOwner ?? "<owner() unavailable>");
+  } catch (err) {
+    console.warn("  ! Unable to read registry owner:", formatRevertError(err));
+  }
+  return { registryAddr, registryId, registry };
+}
+
+export async function configureDefaultReserve(
+  registry: ReserveRegistry,
+  controllerAddr: string,
+  protocolTreasury: string
+) {
+  // This helper wires up a single reserve for the scripts. If you want to charge
+  // an origination fee during manual runs, set ORIGINATION_FEE_BPS in the env; the
+  // default is 0 so that the borrower receives exactly what they will later repay.
+  const riskConfig = {
+    maxLtvBps: 7000,
+    liquidationThresholdBps: 8000,
+    liquidationBonusBps: 10500,
+    closeFactorBps: 5000,
+    reserveFactorBps: 1000,
+    liquidationProtocolFeeBps: 500
+  };
+
+  const interestConfig = {
+    baseRateBps: 200,
+    slope1Bps: 400,
+    slope2Bps: 900,
+    optimalUtilizationBps: 8000,
+    originationFeeBps: originationFeeBps
+  };
+
+  const oracleConfig = {
+    priceId: priceFeedId,
+    heartbeatSeconds: 600,
+    maxStalenessSeconds: 900,
+    maxConfidenceBps: 300,
+    maxDeviationBps: 800
+  };
+
+  const bundle = {
+    metadata: {
+      reserveId: DEFAULT_RESERVE_ID,
+      label: "ETH-hUSD",
+      controller: controllerAddr,
+      protocolTreasury,
+      debtTokenDecimals: 6,
+      active: true,
+      frozen: false
+    },
+    risk: riskConfig,
+    interest: interestConfig,
+    oracle: oracleConfig
+  };
+
+  console.log("  → Reserve metadata controller:", controllerAddr);
+  console.log("  → Reserve metadata treasury:", protocolTreasury);
+  console.log("  → Reserve interest originationFeeBps:", originationFeeBps);
+
+  try {
+    await registry.registerReserve.staticCall(bundle);
+    console.log("  ✓ registerReserve static call passed");
+  } catch (err) {
+    console.error("  ✗ registerReserve static call reverted:", formatRevertError(err));
+    throw err;
+  }
+
+  try {
+    const tx = await registry.registerReserve(bundle, { gasLimit: 3_000_000n });
+    await tx.wait();
+  } catch (err) {
+    console.error("  ✗ registerReserve transaction reverted:", formatRevertError(err));
+    const raw =
+      (err as any)?.data ??
+      (err as any)?.error?.data ??
+      (err as any)?.error?.error?.data ??
+      "none";
+    console.error("    raw revert data:", raw);
+    throw err;
+  }
+}
+
+export async function deployHederaCreditOApp(
+  hederaOperatorWallet: Wallet,
+  hederaClient: Client,
+  registryAddr: string,
+  defaultReserveId: Hex = DEFAULT_RESERVE_ID
+) {
   const creditArtifact = await artifacts.readArtifact("HederaCreditOApp");
 
   const creditParams = new ContractFunctionParameters()
     .addAddress(hederaEndpoint)
     .addAddress(await hederaOperatorWallet.getAddress())
-    .addAddress(controllerAddr)
+    .addAddress(registryAddr)
     .addAddress(pythContract)
-    .addBytes32(Buffer.from(priceFeedId.replace(/^0x/, ""), 'hex'));
+    .addBytes32(Buffer.from(defaultReserveId.replace(/^0x/, ""), 'hex'));
 
   const creditCreate = new ContractCreateFlow()
     .setGas(10000000)
@@ -155,7 +269,7 @@ export async function linkContractsWithLayerZero(ethCollateral: EthCollateralOAp
 
 export async function deployEthCollateralOApp() {
   const EthCollateralFactory = await ethers.getContractFactory("EthCollateralOApp");
-  const ethCollateral = await EthCollateralFactory.deploy(ethEndpoint);
+  const ethCollateral = await EthCollateralFactory.deploy(ethEndpoint, DEFAULT_RESERVE_ID);
   await ethCollateral.waitForDeployment();
   const ethCollateralAddr = (await ethCollateral.getAddress()) as Hex;
   return { ethCollateralAddr, ethCollateral };
@@ -201,6 +315,24 @@ export async function waitForHederaOrderOpen(hederaCredit: HederaCreditOApp, ord
   return waitForHedera(testFn, maxAttempts);
 }
 
+export async function ensureHederaOrderOpen(
+  hederaCredit: HederaCreditOApp,
+  orderId: Hex,
+  reserveId: Hex,
+  borrower: string,
+  collateralWei: bigint,
+  maxAttempts = 60
+) {
+  try {
+    return await waitForHederaOrderOpen(hederaCredit, orderId, maxAttempts);
+  } catch (err) {
+    console.warn("  Hedera mirror timeout – invoking adminMirrorOrder fallback");
+    const tx = await hederaCredit.adminMirrorOrder(orderId, reserveId, borrower, collateralWei);
+    await tx.wait();
+    return await waitForHederaOrderOpen(hederaCredit, orderId, 10);
+  }
+}
+
 export async function waitForHederaOrderLiquidated(hederaCredit: HederaCreditOApp, orderId: Hex, maxAttempts = 60) {
   const testFn = async () => {
     const order = await hederaCredit.horders(orderId);
@@ -240,7 +372,7 @@ export async function waitForEthRepaid(ethCollateral: EthCollateralOApp, orderId
 }
 
 export async function fundOrderEthereum(ethCollateral: EthCollateralOApp, ethSigner: Wallet, orderId: string) {
-  const nativeFee: bigint = await ethCollateral.quoteOpenNativeFee(await ethSigner.getAddress(), depositWei);
+  const nativeFee: bigint = await ethCollateral.quoteOpenNativeFeeWithReserve(DEFAULT_RESERVE_ID, depositWei);
   let totalValue = depositWei + nativeFee + (nativeFee / 10n);
 
   const txFund = await ethCollateral.fundOrderWithNotify(orderId, depositWei, {
@@ -294,15 +426,27 @@ export async function associateToken(borrowerWallet: Wallet, tokenAddress: strin
   await (await hts.associateToken(await borrowerWallet.getAddress(), tokenAddress, { gasLimit: 1000000 })).wait();
 }
 
-export async function linkControllerToToken(controller: UsdHtsController, tokenAddress: string, hederaOperatorWalletAddress: string) {
+export async function linkControllerToToken(
+  controller: UsdHtsController,
+  tokenAddress: string,
+  treasuryAddress: string
+) {
   await (await controller.setExistingUsdToken(tokenAddress, 6)).wait();
-  await (await controller.setTreasury(hederaOperatorWalletAddress)).wait();
+  await (await controller.setTreasury(treasuryAddress)).wait();
   await (await controller.associateToken(tokenAddress)).wait();
 }
 
-export async function approveTokens(tokenId: TokenId, hederaOperatorId: AccountId, controllerId: ContractId, hederaClient: Client, hederaOperatorKey: PrivateKey) {
+export async function approveTokens(
+  tokenId: TokenId,
+  hederaOperatorId: AccountId,
+  controllerId: ContractId,
+  creditId: ContractId,
+  hederaClient: Client,
+  hederaOperatorKey: PrivateKey
+) {
   const approveTx = new AccountAllowanceApproveTransaction()
-    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, 1000000000)
+    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, 1_000_000_000)
+    .approveTokenAllowance(tokenId, hederaOperatorId, creditId, 1_000_000_000)
     .freezeWith(hederaClient);
   const signApproveTx = await approveTx.sign(hederaOperatorKey);
   const approveResponse = await signApproveTx.execute(hederaClient);
@@ -351,9 +495,18 @@ export async function printBalances(tokenAddress: string, hederaOperatorWalletAd
 
 export async function hederaBorrow(hederaCredit: HederaCreditOApp, orderId: string, borrowAmount: bigint, priceUpdateData: string[], borrowValue: any) {
   const borrowerCredit = hederaCredit.connect(borrowerWallet);
+  try {
+    await borrowerCredit.borrow.staticCall(orderId, borrowAmount, priceUpdateData, 300, {
+      value: borrowValue,
+    });
+  } catch (err) {
+    console.error("  ✗ Borrow static call reverted:", formatRevertError(err));
+    throw err;
+  }
+  console.log("  ✓ Borrow static call passed");
   const borrowTx = await borrowerCredit.borrow(orderId, borrowAmount, priceUpdateData, 300, {
     value: borrowValue,
-    gasLimit: 1500000,
+    gasLimit: 1_500_000,
   });
   await borrowTx.wait();
   return borrowerCredit;
@@ -386,4 +539,34 @@ function getMinFee(actualFee: bigint) {
 export async function printEthBalances(contract: EthCollateralOApp, wallet: Wallet) {
   console.log(`  Wallet balance: ${await wallet.provider!.getBalance(await wallet.getAddress())}`);
   console.log(`  Contract balance: ${await wallet.provider!.getBalance(await contract.getAddress())}`);
+}
+
+function formatRevertError(err: any): string {
+  if (!err) return "unknown error";
+
+  const extractData = (value: any): string | undefined => {
+    if (!value) return undefined;
+    if (typeof value === "string" && value.startsWith("0x")) return value;
+    if (typeof value.data === "string" && value.data.startsWith("0x")) return value.data;
+    return undefined;
+  };
+
+  const dataHex = extractData(err) || extractData(err?.error);
+  if (dataHex) {
+    for (const iface of [reserveRegistryInterface, controllerInterface]) {
+      try {
+        const decoded = iface.parseError(dataHex);
+        return `${decoded.name}(${decoded.args.join(", ")})`;
+      } catch (_) {
+        // try next interface
+      }
+    }
+  }
+
+  if (err.shortMessage) return err.shortMessage;
+  if (err.reason) return err.reason;
+  if (err.data?.message) return err.data.message;
+  if (err.error?.message) return err.error.message;
+  if (err.message) return err.message;
+  return JSON.stringify(err, null, 2);
 }

@@ -126,6 +126,12 @@ pnpm --filter @kinxp/web dev
 # (optional) Contracts build
 pnpm --filter @kinxp/contracts build
 ```
+
+### Useful env knobs (contracts scripts)
+
+- `BORROW_TARGET_BPS` (default `8000` = 80%) — how aggressively the helper script borrows vs. the max LTV.
+- `ORIGINATION_FEE_BPS` (default `0`) — origination fee in basis points. Leave at zero for local testing so the borrower can repay exactly what they received; set a fee when you want to skim protocol revenue.
+
 ## Status & scope
 
 Testnets: Sepolia ↔ Hedera Testnet.

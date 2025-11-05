@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity ^0.8.24;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-// === LayerZero v2 (optional, pure messaging — no bridging) ===
-// If you do not want cross-chain messages yet, set OAPP_DISABLED = true.
 bool constant OAPP_DISABLED = false;
+
 import {
     OApp,
     MessagingFee,
@@ -21,29 +19,14 @@ import {
 
 import {MessageTypes} from "../MessageTypes.sol";
 
-/**
- * @title EthCollateralOApp
- * @notice Locks ETH against an order id and optionally coordinates with Hedera via LayerZero.
- */
+/// @title EthCollateralOApp
+/// @notice Locks ETH collateral per order and coordinates cross-chain repayment signals.
 contract EthCollateralOApp is OApp, ReentrancyGuard {
     using OptionsBuilder for bytes;
 
-    event OrderCreated(bytes32 indexed orderId, address indexed user);
-    event OrderFunded(
-        bytes32 indexed orderId,
-        address indexed user,
-        uint256 amountWei
-    );
-    event MarkRepaid(bytes32 indexed orderId);
-    event Withdrawn(
-        bytes32 indexed orderId,
-        address indexed user,
-        uint256 amountWei
-    );
-    event Liquidated(bytes32 indexed orderId, uint256 amountWei);
-
     struct Order {
         address owner;
+        bytes32 reserveId;
         uint256 amountWei;
         bool funded;
         bool repaid;
@@ -51,98 +34,79 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     }
 
     mapping(bytes32 => Order) public orders;
-    mapping(address => uint96) public nonces; // user-scoped nonce for deterministic IDs
+    mapping(address => uint96) public nonces; // deterministic ids per borrower
 
-    // ===== LayerZero config (optional) =====
-    // local endpoint address is injected via constructor; remote Hedera eid is set post-deploy
+    bytes32 public defaultReserveId;
     uint32 public hederaEid;
 
-    constructor(address lzEndpoint) OApp(lzEndpoint, msg.sender) {}
+    event OrderCreated(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user);
+    event OrderFunded(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user, uint256 amountWei);
+    event OrderReserveUpdated(bytes32 indexed orderId, bytes32 indexed newReserveId);
+    event MarkRepaid(bytes32 indexed orderId, bytes32 indexed reserveId);
+    event Withdrawn(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user, uint256 amountWei);
+    event Liquidated(bytes32 indexed orderId, bytes32 indexed reserveId, uint256 amountWei);
 
-    /// @notice Deterministic per-user order id. User funds later with fundOrder().
-    function createOrderId() external returns (bytes32 orderId) {
-        uint96 n = ++nonces[msg.sender];
-        orderId = keccak256(abi.encode(msg.sender, n, block.chainid));
-        orders[orderId] = Order({
-            owner: msg.sender,
-            amountWei: 0,
-            funded: false,
-            repaid: false,
-            liquidated: false
-        });
-        emit OrderCreated(orderId, msg.sender);
+    constructor(address lzEndpoint, bytes32 defaultReserveId_) OApp(lzEndpoint, msg.sender) {
+        defaultReserveId = defaultReserveId_;
     }
 
-    /// @notice Fund ETH for an existing id. Emits events the UI can check on Blockscout.
-    function fundOrder(bytes32 orderId) external payable nonReentrant {
+    /// @notice Creates an order tied to the default reserve.
+    function createOrderId() external returns (bytes32 orderId) {
+        return _createOrder(msg.sender, defaultReserveId);
+    }
+
+    /// @notice Creates an order bound to a specific reserve.
+    function createOrderIdWithReserve(bytes32 reserveId) external returns (bytes32 orderId) {
+        require(reserveId != bytes32(0), "reserve=0");
+        return _createOrder(msg.sender, reserveId);
+    }
+
+    /// @notice Allows borrower to change the reserve prior to funding.
+    function setOrderReserve(bytes32 orderId, bytes32 reserveId) external {
         Order storage o = orders[orderId];
         require(o.owner == msg.sender, "not owner");
         require(!o.funded, "already funded");
-        require(msg.value > 0, "no ETH");
-
-        o.amountWei = msg.value;
-        o.funded = true;
-        emit OrderFunded(orderId, msg.sender, msg.value);
-
-        if (!OAPP_DISABLED && hederaEid != 0) {
-            bytes memory payload = abi.encode(
-                MessageTypes.FUNDED,
-                orderId,
-                msg.sender,
-                msg.value
-            );
-            bytes memory opts = OptionsBuilder
-                .newOptions()
-                .addExecutorLzReceiveOption(200_000, 0);
-
-            _sendLzMessage(hederaEid, payload, opts, 0, msg.sender);
-        }
+        require(reserveId != bytes32(0), "reserve=0");
+        o.reserveId = reserveId;
+        emit OrderReserveUpdated(orderId, reserveId);
     }
 
-    /// @notice Quote the LayerZero native fee the sender must include to notify Hedera of an OPEN.
-    function quoteOpenNativeFee(address borrower, uint256 depositAmountWei)
+    /// @notice Funds collateral without notifying Hedera.
+    function fundOrder(bytes32 orderId) external payable nonReentrant {
+        _fund(orderId, msg.sender, msg.value);
+    }
+
+    /// @notice Funds collateral and notifies Hedera via LayerZero.
+    function fundOrderWithNotify(bytes32 orderId, uint256 depositAmountWei)
+        external
+        payable
+        nonReentrant
+    {
+        require(hederaEid != 0, "eid unset");
+        _fundWithNotify(orderId, msg.sender, depositAmountWei);
+    }
+
+    /// @notice Quotes the LayerZero fee required to send a FUNDED message.
+    function quoteOpenNativeFee(address /* borrower */, uint256 depositAmountWei)
         external
         view
         returns (uint256 nativeFee)
     {
-        require(hederaEid != 0, "eid unset");
-        bytes memory payload = abi.encode(
-            MessageTypes.FUNDED,
-            bytes32(0),
-            borrower,
-            depositAmountWei
-        );
-        bytes memory opts = OptionsBuilder
-            .newOptions()
-            .addExecutorLzReceiveOption(200_000, 0);
-        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
-        return q.nativeFee;
+        return _quoteOpenFee(defaultReserveId, depositAmountWei);
     }
 
-    /// @notice Admins should rely on LayerZero message for marking orders repaid.
+    function quoteOpenNativeFeeWithReserve(bytes32 reserveId, uint256 depositAmountWei)
+        external
+        view
+        returns (uint256 nativeFee)
+    {
+        return _quoteOpenFee(reserveId, depositAmountWei);
+    }
+
     function markRepaid(bytes32) external pure {
         revert("use LayerZero message");
     }
 
-    /// @dev LayerZero receive hook: Hedera sends msgType 2=REPAID once USD is fully repaid.
-    function _lzReceive(
-        Origin calldata,
-        bytes32,
-        bytes calldata message,
-        address,
-        bytes calldata
-    ) internal override {
-        (uint8 msgType, bytes32 orderId) = abi.decode(
-            message,
-            (uint8, bytes32)
-        );
-        if (msgType == MessageTypes.REPAID) {
-            orders[orderId].repaid = true;
-            emit MarkRepaid(orderId);
-        }
-    }
-
-    /// @notice Withdraw ETH after Hedera confirms full repayment.
     function withdraw(bytes32 orderId) external nonReentrant {
         Order storage o = orders[orderId];
         require(o.owner == msg.sender, "not owner");
@@ -156,55 +120,16 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         (bool ok, ) = msg.sender.call{value: amt}("");
         require(ok, "eth send fail");
 
-        emit Withdrawn(orderId, msg.sender, amt);
+        emit Withdrawn(orderId, o.reserveId, msg.sender, amt);
     }
 
-    /**
-     * @notice Fund and notify Hedera in one tx. Send msg.value = deposit + LZ fee (excess refunded).
-     * @param orderId previously created with createOrderId()
-     * @param depositAmountWei how much ETH you want locked as collateral
-     */
-    function fundOrderWithNotify(bytes32 orderId, uint256 depositAmountWei)
+    function adminLiquidate(bytes32 orderId, address payout)
         external
         payable
         nonReentrant
+        onlyOwner
     {
         require(hederaEid != 0, "eid unset");
-        Order storage o = orders[orderId];
-        require(o.owner == msg.sender, "not owner");
-        require(!o.funded, "already funded");
-        require(depositAmountWei > 0, "no ETH");
-
-        bytes memory payload = abi.encode(
-            MessageTypes.FUNDED,
-            orderId,
-            msg.sender,
-            depositAmountWei
-        );
-        bytes memory opts = OptionsBuilder
-            .newOptions()
-            .addExecutorLzReceiveOption(200_000, 0);
-
-        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
-        require(msg.value >= depositAmountWei, "insufficient msg.value");
-        uint256 feeProvided = msg.value - depositAmountWei;
-        require(feeProvided >= q.nativeFee, "insufficient msg.value");
-
-        o.amountWei = depositAmountWei;
-        o.funded = true;
-        emit OrderFunded(orderId, msg.sender, depositAmountWei);
-
-        _sendLzMessage(hederaEid, payload, opts, q.nativeFee, msg.sender);
-
-        uint256 refund = feeProvided - q.nativeFee;
-        if (refund > 0) {
-            (bool ok, ) = payable(msg.sender).call{value: refund}("");
-            require(ok, "refund fail");
-        }
-    }
-
-    /// @notice Owner safety valve: liquidate funds if repayment fails.
-    function adminLiquidate(bytes32 orderId, address payout) payable external nonReentrant onlyOwner {
         Order storage o = orders[orderId];
         require(o.funded && !o.repaid, "nothing to liquidate");
         o.liquidated = true;
@@ -215,32 +140,131 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         (bool ok, ) = payout.call{value: amt}("");
         require(ok, "send fail");
 
-        bytes memory payload = _getLiquidationMessage(orderId);
+        bytes memory payload = abi.encode(MessageTypes.LIQUIDATED, orderId, o.reserveId);
         bytes memory opts = _getMessageOptions();
-
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
-        uint256 feeProvided = msg.value;
-        require(feeProvided >= q.nativeFee, "insufficient msg.value");
+        require(msg.value >= q.nativeFee, "insufficient msg.value");
 
         _sendLzMessage(hederaEid, payload, opts, q.nativeFee, msg.sender);
 
-        emit Liquidated(orderId, amt);
+        emit Liquidated(orderId, o.reserveId, amt);
+
+        uint256 refund = msg.value - q.nativeFee;
+        if (refund > 0) {
+            (bool refundOk, ) = msg.sender.call{value: refund}("");
+            require(refundOk, "refund fail");
+        }
     }
 
-    /**
-     * @notice Quote the LayerZero native fee the sender must include to notify Hedera of a LIQUIDATION.
-     * @param orderId The orderId being liquidated.
-     */
     function quoteLiquidationFee(bytes32 orderId) external view returns (uint256 nativeFee) {
         require(hederaEid != 0, "eid unset");
-        bytes memory payload = _getLiquidationMessage(orderId);
+        Order storage o = orders[orderId];
+        bytes memory payload = abi.encode(MessageTypes.LIQUIDATED, orderId, o.reserveId);
         bytes memory opts = _getMessageOptions();
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
         return q.nativeFee;
     }
 
+    function setDefaultReserve(bytes32 newDefault) external onlyOwner {
+        defaultReserveId = newDefault;
+    }
+
     function setHederaEid(uint32 _eid) external onlyOwner {
         hederaEid = _eid;
+    }
+
+    /// ---------------------------------------------------------------------
+    /// LayerZero Receive
+    /// ---------------------------------------------------------------------
+
+    function _lzReceive(
+        Origin calldata,
+        bytes32,
+        bytes calldata message,
+        address,
+        bytes calldata
+    ) internal override {
+        uint8 msgType = uint8(message[0]);
+        if (msgType == MessageTypes.REPAID) {
+            (, bytes32 orderId, bytes32 reserveId) = abi.decode(
+                message,
+                (uint8, bytes32, bytes32)
+            );
+            Order storage o = orders[orderId];
+            if (o.reserveId == reserveId) {
+                o.repaid = true;
+                emit MarkRepaid(orderId, reserveId);
+            }
+        }
+    }
+
+    /// ---------------------------------------------------------------------
+    /// Internal helpers
+    /// ---------------------------------------------------------------------
+
+    function _createOrder(address user, bytes32 reserveId) internal returns (bytes32 orderId) {
+        uint96 n = ++nonces[user];
+        orderId = keccak256(abi.encode(user, n, block.chainid, reserveId));
+        orders[orderId] = Order({
+            owner: user,
+            reserveId: reserveId,
+            amountWei: 0,
+            funded: false,
+            repaid: false,
+            liquidated: false
+        });
+        emit OrderCreated(orderId, reserveId, user);
+    }
+
+    function _fund(bytes32 orderId, address sender, uint256 value) internal {
+        require(value > 0, "no ETH");
+        Order storage o = orders[orderId];
+        require(o.owner == sender, "not owner");
+        require(!o.funded, "already funded");
+        require(o.reserveId != bytes32(0), "reserve unset");
+
+        o.amountWei = value;
+        o.funded = true;
+
+        emit OrderFunded(orderId, o.reserveId, sender, value);
+    }
+
+    function _fundWithNotify(
+        bytes32 orderId,
+        address sender,
+        uint256 depositAmountWei
+    ) internal {
+        Order storage o = orders[orderId];
+        require(o.owner == sender, "not owner");
+        require(!o.funded, "already funded");
+        require(o.reserveId != bytes32(0), "reserve unset");
+        require(depositAmountWei > 0, "no ETH");
+        require(msg.value >= depositAmountWei, "insufficient msg.value");
+
+        bytes memory payload = abi.encode(
+            MessageTypes.FUNDED,
+            orderId,
+            o.reserveId,
+            sender,
+            depositAmountWei
+        );
+        bytes memory opts = _getMessageOptions();
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+
+        uint256 feeProvided = msg.value - depositAmountWei;
+        require(feeProvided >= q.nativeFee, "insufficient msg.value");
+
+        o.amountWei = depositAmountWei;
+        o.funded = true;
+        emit OrderFunded(orderId, o.reserveId, sender, depositAmountWei);
+
+        _sendLzMessage(hederaEid, payload, opts, q.nativeFee, sender);
+
+        uint256 refund = feeProvided - q.nativeFee;
+        if (refund > 0) {
+            (bool ok, ) = payable(sender).call{value: refund}("");
+            require(ok, "refund fail");
+        }
     }
 
     function _sendLzMessage(
@@ -262,18 +286,23 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         );
     }
 
-    function _getLiquidationMessage(bytes32 orderId) private pure returns (bytes memory liquidationMessage) {
-        return abi.encode(
-            MessageTypes.LIQUIDATED,
-            orderId,
-            address(0),
-            uint256(0)
-        );
-    }
-
     function _getMessageOptions() private pure returns (bytes memory messageOptions) {
         return OptionsBuilder
             .newOptions()
             .addExecutorLzReceiveOption(200_000, 0);
+    }
+
+    function _quoteOpenFee(bytes32 reserveId, uint256 depositAmountWei) internal view returns (uint256 nativeFee) {
+        require(hederaEid != 0, "eid unset");
+        bytes memory payload = abi.encode(
+            MessageTypes.FUNDED,
+            bytes32(0),
+            reserveId,
+            address(0),
+            depositAmountWei
+        );
+        bytes memory opts = _getMessageOptions();
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        return q.nativeFee;
     }
 }

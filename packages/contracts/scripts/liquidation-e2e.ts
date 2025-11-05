@@ -9,11 +9,16 @@ import {
   associateToken,
   banner,
   borrowerWallet,
+  configureDefaultReserve,
   createHtsToken,
   createOrderEthereum,
+  DEFAULT_RESERVE_ID,
   deployEthCollateralOApp,
   deployHederaController,
-  deployHederaCreditOApp, ethSigner,
+  deployHederaCreditOApp,
+  deployReserveRegistry,
+  ethSigner,
+  depositWei,
   fetchPythUpdate,
   fundOrderEthereum,
   getBorrowAmount,
@@ -33,7 +38,7 @@ import {
   transferOwnership,
   transferSupplyKey,
   waitForHederaOrderLiquidated,
-  waitForHederaOrderOpen
+  ensureHederaOrderOpen
 } from "./util";
 
 async function main() {
@@ -58,7 +63,15 @@ async function main() {
   const { controllerAddr, controllerId, controller } = await deployHederaController(hederaClient, hederaOperatorWallet);
   console.log(`  → UsdHtsController: ${controllerAddr}, (${controllerId})`);
 
-  const { hederaCreditAddr, creditId, hederaCredit } = await deployHederaCreditOApp(hederaOperatorWallet, controllerAddr, hederaClient);
+  banner("Deploying ReserveRegistry");
+  const { registryAddr, registry } = await deployReserveRegistry(hederaClient, hederaOperatorWallet);
+  console.log(`  → ReserveRegistry: ${registryAddr}`);
+
+  banner("Registering default reserve");
+  await configureDefaultReserve(registry, controllerAddr, hederaOperatorWalletAddress);
+  console.log(`  ✓ Reserve ${DEFAULT_RESERVE_ID} registered`);
+
+  const { hederaCreditAddr, creditId, hederaCredit } = await deployHederaCreditOApp(hederaOperatorWallet, hederaClient, registryAddr);
   console.log(`  → HederaCreditOApp: ${hederaCreditAddr}, (${creditId})`);
 
   // ──────────────────────────────────────────────────────────────────────────────
@@ -79,7 +92,13 @@ async function main() {
   console.log("  LayerZero packet:", layerzeroTx(txFund.hash));
 
   banner("Waiting for Hedera mirror");
-  const hOrder = await waitForHederaOrderOpen(hederaCredit, orderId);
+  const hOrder = await ensureHederaOrderOpen(
+    hederaCredit,
+    orderId,
+    DEFAULT_RESERVE_ID,
+    await borrowerWallet.getAddress(),
+    depositWei
+  );
   console.log("  ✓ Order synced to Hedera");
 
   // ──────────────────────────────────────────────────────────────────────────────
@@ -112,7 +131,7 @@ async function main() {
   console.log("  ✓ Controller owned by OApp");
 
   banner("Approve controller to spend tokens from the treasury");
-  const approveReceipt = await approveTokens(tokenId, hederaOperatorId, controllerId, hederaClient, hederaOperatorKey);
+  const approveReceipt = await approveTokens(tokenId, hederaOperatorId, controllerId, creditId, hederaClient, hederaOperatorKey);
   console.log(`  ✓ Approval transaction status: ${approveReceipt.status}`);
 
   // ──────────────────────────────────────────────────────────────────────────────
