@@ -131,6 +131,7 @@ pnpm --filter @kinxp/contracts build
 
 - `BORROW_TARGET_BPS` (default `8000` = 80%) — how aggressively the helper script borrows vs. the max LTV.
 - `ORIGINATION_FEE_BPS` (default `0`) — origination fee in basis points. Leave at zero for local testing so the borrower can repay exactly what they received; set a fee when you want to skim protocol revenue.
+- `SKIP_LAYERZERO` (default `false`) — set to `true` in local tests to bypass LayerZero polling and mirror/mark repayments manually when the Hedera executor is offline.
 
 ## Status & scope
 

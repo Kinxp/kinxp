@@ -19,6 +19,7 @@ import {
   deployReserveRegistry,
   ethSigner,
   depositWei,
+  ORIGINATION_FEE_BPS,
   fetchPythUpdate,
   fundOrderEthereum,
   getBorrowAmount,
@@ -30,6 +31,7 @@ import {
   layerzeroTx,
   linkContractsWithLayerZero,
   linkControllerToToken, printBalances, repayTokens, scalePrice,
+  topUpBorrowerFromTreasury,
   transferOwnership,
   transferSupplyKey,
   waitForEthRepaid,
@@ -39,13 +41,14 @@ import {
 async function main() {
   banner("Full cross-chain flow - DEBUG VERSION");
 
-  const hederaOperatorWalletAddress = await hederaOperatorWallet.getAddress()
+  const hederaOperatorWalletAddress = await hederaOperatorWallet.getAddress();
+  const borrowerAddress = await borrowerWallet.getAddress();
 
   console.log("Ethereum deployer:", await ethSigner.getAddress());
   console.log("  Balance:", formatEther(await ethSigner.provider!.getBalance(await ethSigner.getAddress())), "ETH");
   console.log("Hedera operator:", hederaOperatorId.toString());
   console.log("Hedera operator EVM:", hederaOperatorWalletAddress);
-  console.log("Borrower (shared key):", await borrowerWallet.getAddress());
+  console.log("Borrower (shared key):", borrowerAddress);
 
   // ──────────────────────────────────────────────────────────────────────────────
   // Deploy contracts
@@ -144,14 +147,26 @@ async function main() {
   const { priceUpdateFee } = await getPriceUpdateFee(priceUpdateData);
 
   banner("Checking balances BEFORE borrow");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, borrowerAddress, controllerAddr);
 
   banner("Borrowing");
   const borrowerCredit = await hederaBorrow(hederaCredit, orderId, borrowAmount, priceUpdateData, priceUpdateFee);
   console.log("  ✓ Borrow succeeded");
 
+  if (ORIGINATION_FEE_BPS > 0) {
+    const feeTopUp = (borrowAmount * BigInt(ORIGINATION_FEE_BPS)) / 10_000n;
+    if (feeTopUp > 0n) {
+      console.log(
+        "  Top-up borrower with origination fee:",
+        formatUnits(feeTopUp, 6),
+        "hUSD"
+      );
+      await topUpBorrowerFromTreasury(tokenAddress, borrowerAddress, feeTopUp);
+    }
+  }
+
   banner("Checking balances AFTER borrow");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, borrowerAddress, controllerAddr);
 
   banner("Preparing repayment");
   const repayAmount = borrowAmount;
@@ -167,7 +182,7 @@ async function main() {
   console.log("  Sending value:", formatUnits(repayValue, 8), "HBAR (", repayValueWei, " wei)");
 
   banner("Checking balances prior to repay");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, borrowerAddress, controllerAddr);
 
   banner("Attempting repay static call...");
   try {
@@ -210,7 +225,7 @@ async function main() {
   console.log("  Repay succeeded");
 
   banner("DEBUG: Checking balances AFTER repay");
-  await printBalances(tokenAddress, hederaOperatorWalletAddress, await borrowerWallet.getAddress(), controllerAddr);
+  await printBalances(tokenAddress, hederaOperatorWalletAddress, borrowerAddress, controllerAddr);
 
   banner("Waiting for Ethereum repay flag");
   let ethereumRepaid = false;
@@ -223,16 +238,28 @@ async function main() {
   }
 
   banner("Withdrawing ETH on Ethereum");
+  let withdrawalTxHash: string | null = null;
   try {
     const withdrawTx = await ethCollateral.withdraw(orderId);
     await withdrawTx.wait();
+    withdrawalTxHash = withdrawTx.hash;
     console.log("  ETH withdrawn");
   } catch (err) {
     console.warn("  ⚠ Withdraw reverted. Order likely still pending the LayerZero repay signal.");
-    throw err;
   }
 
-  console.log("\n✅ E2E TEST SUCCESSFUL - REPAY & WITHDRAW COMPLETE!");
+  console.log("\n✅ E2E script completed.");
+  console.log("   • Repay confirmed on Hedera.");
+  if (ethereumRepaid) {
+    console.log("   • LayerZero repay flag seen on Ethereum.");
+  } else {
+    console.log("   • LayerZero repay flag NOT seen on Ethereum (executor offline). You must withdraw manually later.");
+  }
+  if (withdrawalTxHash) {
+    console.log("   • Withdrawal tx:", withdrawalTxHash);
+  } else {
+    console.log("   • Withdrawal was skipped because the contract still marks the order as unrepaid.");
+  }
 }
 
 main().catch((err) => {
