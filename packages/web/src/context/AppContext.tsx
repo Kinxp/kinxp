@@ -65,6 +65,10 @@ interface AppContextType {
   resetFlow: () => void;
   setSelectedOrderId: (orderId: `0x${string}` | null) => void;
   borrowedOrders: BorrowedOrderMap;
+  startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
+  startPollingForEthRepay: (orderId: `0x${string}`) => void;
+  address: `0x${string}` | undefined; 
+  setLzTxHash: (hash: `0x${string}` | null) => void; 
 }
 
 // Create the actual React Context
@@ -233,7 +237,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [activeOrderId] });
   }, [activeOrderId, sendTxOnChain, addLog]);
 
-  const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`) => {
+  const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`, txHash?: `0x${string}` | null) => {
+    if (txHash) {
+      setLzTxHash(txHash);
+    }
+    setAppState(AppState.CROSSING_TO_HEDERA);
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
     let attempts = 0; const maxAttempts = 60;
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
@@ -260,6 +268,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [addLog, pollingStartBlock]);
 
   const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
+    setAppState(AppState.CROSSING_TO_ETHEREUM);
     addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
     let attempts = 0; const maxAttempts = 60;
     if (ethPollingRef.current) clearInterval(ethPollingRef.current);
@@ -376,6 +385,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         case AppState.FUNDING_IN_PROGRESS:
           addLog('▶ Crossing chains to Hedera via LayerZero...');
           setLzTxHash(receipt.transactionHash);
+          if (activeOrderId) {
+            try {
+              localStorage.setItem(`lzTxHash_${activeOrderId}`, receipt.transactionHash);
+              addLog('✓ Cross-chain transaction hash saved.');
+            } catch (e) {
+              console.warn('Failed to save lzTxHash to localStorage', e);
+            }
+          }
           if (hederaPublicClient) {
             const hederaBlockNumber = await hederaPublicClient.getBlockNumber();
             addLog(`   (Polling from Hedera block ${hederaBlockNumber})...`);
@@ -492,6 +509,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     resetFlow,
     setSelectedOrderId,
     borrowedOrders,
+    startPollingForHederaOrder,
+    startPollingForEthRepay,
+    address, 
+    setLzTxHash,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
