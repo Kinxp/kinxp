@@ -3,6 +3,8 @@ import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionRece
 import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
 import { parseEther, parseUnits, formatUnits } from 'viem';
+import toast from 'react-hot-toast';
+
 import { AppState } from '../types';
 
 // Import all configs and services
@@ -231,7 +233,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [activeOrderId] });
   }, [activeOrderId, sendTxOnChain, addLog]);
 
-  // ========== MODIFICATION START ==========
   const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
     let attempts = 0; const maxAttempts = 60;
@@ -257,7 +258,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }, 5000);
   }, [addLog, pollingStartBlock]);
-  // ========== MODIFICATION END ==========
 
   const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
     addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
@@ -444,6 +444,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setBorrowAmount(null);
     }
   }, [activeOrderId, borrowedOrders]);
+
+  useEffect(() => {
+
+    let toastId: string | undefined;
+
+    if (isConfirming) {
+        toastId = toast.loading('⏳ Confirming transaction...');
+    }
+    if (isWritePending) {
+        toast('✍️ Please approve the transaction in your wallet...');
+    }
+    if (receipt) {
+        toast.dismiss(toastId);
+        toast.success('✓ Transaction Confirmed!');
+    }
+    if (writeError) {
+        toast.dismiss(toastId);
+        toast.error(`❌ Error: ${writeError.shortMessage || 'Transaction failed.'}`);
+        setError(writeError.shortMessage || 'Transaction failed.');
+        setAppState(AppState.ERROR);
+    }
+
+    // Cleanup toast on component unmount
+    return () => {
+        if (toastId) {
+            toast.dismiss(toastId);
+        }
+    };
+}, [isConfirming, isWritePending, receipt, writeError, addLog]);
 
   const value = {
     appState,
