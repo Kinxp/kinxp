@@ -68,6 +68,8 @@ const borrowSafetyBps = Number(process.env.BORROW_TARGET_BPS ?? "8000");
 // Optional origination fee charged on borrow (basis points). Default 0 so end-to-end tests
 // don't fail when the borrower tries to repay exactly what they received.
 const originationFeeBps = Number(process.env.ORIGINATION_FEE_BPS ?? "0");
+export const SKIP_LAYERZERO = (process.env.SKIP_LAYERZERO ?? "false").toLowerCase() === "true";
+export const ORIGINATION_FEE_BPS = originationFeeBps;
 export const DEFAULT_RESERVE_ID = ethers.encodeBytes32String("ETH-hUSD") as Hex;
 const reserveRegistryInterface = ReserveRegistry__factory.createInterface();
 const controllerInterface = UsdHtsController__factory.createInterface();
@@ -323,6 +325,12 @@ export async function ensureHederaOrderOpen(
   collateralWei: bigint,
   maxAttempts = 60
 ) {
+  if (SKIP_LAYERZERO) {
+    console.warn("  LayerZero skipped (SKIP_LAYERZERO=true): simulating Hedera mirror via adminMirrorOrder");
+    const tx = await hederaCredit.adminMirrorOrder(orderId, reserveId, borrower, collateralWei);
+    await tx.wait();
+    return positionsAwaitable(hederaCredit, orderId);
+  }
   try {
     return await waitForHederaOrderOpen(hederaCredit, orderId, maxAttempts);
   } catch (err) {
@@ -331,6 +339,14 @@ export async function ensureHederaOrderOpen(
     await tx.wait();
     return await waitForHederaOrderOpen(hederaCredit, orderId, 10);
   }
+}
+
+async function positionsAwaitable(hederaCredit: HederaCreditOApp, orderId: Hex) {
+  const order = await hederaCredit.horders(orderId);
+  if (!order || !order.open) {
+    throw new Error("failed to mirror order even with SKIP_LAYERZERO");
+  }
+  return order;
 }
 
 export async function waitForHederaOrderLiquidated(hederaCredit: HederaCreditOApp, orderId: Hex, maxAttempts = 60) {
@@ -358,6 +374,10 @@ async function waitForHedera<T>(testFn: () => Promise<T | undefined>, maxAttempt
 }
 
 export async function waitForEthRepaid(ethCollateral: EthCollateralOApp, orderId: Hex, maxAttempts = 40) {
+  if (SKIP_LAYERZERO) {
+    console.warn("  LayerZero skipped (SKIP_LAYERZERO=true): assuming Ethereum repay flag eventually arrives");
+    return { } as any;
+  }
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const order = await ethCollateral.orders(orderId);
@@ -444,9 +464,10 @@ export async function approveTokens(
   hederaClient: Client,
   hederaOperatorKey: PrivateKey
 ) {
+  const allowanceAmount = 1_000_000_000_000; // 1e12 token units (~1M tokens w/ 6 decimals)
   const approveTx = new AccountAllowanceApproveTransaction()
-    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, 1_000_000_000)
-    .approveTokenAllowance(tokenId, hederaOperatorId, creditId, 1_000_000_000)
+    .approveTokenAllowance(tokenId, hederaOperatorId, controllerId, allowanceAmount)
+    .approveTokenAllowance(tokenId, hederaOperatorId, creditId, allowanceAmount)
     .freezeWith(hederaClient);
   const signApproveTx = await approveTx.sign(hederaOperatorKey);
   const approveResponse = await signApproveTx.execute(hederaClient);
@@ -516,6 +537,13 @@ export async function repayTokens(tokenAddress: string, treasuryAddress: string,
   const token = new Contract(tokenAddress, ERC20_ABI, borrowerWallet);
   const repayTransferTx = await token.transfer(treasuryAddress, repayAmount, { gasLimit: 1000000 });
   await repayTransferTx.wait();
+}
+
+export async function topUpBorrowerFromTreasury(tokenAddress: string, borrowerAddress: string, amount: bigint) {
+  if (amount === 0n) return;
+  const token = new Contract(tokenAddress, ERC20_ABI, hederaOperatorWallet);
+  const tx = await token.transfer(borrowerAddress, amount, { gasLimit: 1_000_000 });
+  await tx.wait();
 }
 
 export async function getLayerZeroRepayFee(hederaCredit: HederaCreditOApp, orderId: string) {
