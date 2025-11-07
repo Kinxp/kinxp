@@ -1,5 +1,5 @@
 ﻿import { multicall } from 'wagmi/actions';
-import { pad } from 'viem';
+import { decodeAbiParameters,pad } from 'viem';
 import { config as wagmiConfig } from '../wagmi';
 import { UserOrderSummary, OrderStatus } from '../types';
 
@@ -19,6 +19,7 @@ import {
   WITHDRAWN_TOPIC,
   LIQUIDATED_TOPIC,
   HEDERA_CREDIT_ABI,
+  HEDERA_BORROWED_TOPIC
 } from '../config';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -324,3 +325,78 @@ export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<
   }
 }
 
+export interface FundingEvent {
+  amountWei: bigint;
+  timestamp: number; // Unix timestamp
+}
+
+/**
+ * Fetches all historical OrderFunded events for a specific user from the Sepolia network.
+ * @param userAddress The user's wallet address.
+ * @returns A promise that resolves to an array of funding events.
+ */
+export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promise<FundingEvent[]> {
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    topic0: ORDER_FUNDED_TOPIC,
+    topic2: paddedUserAddress, // `user` is the second indexed topic in the OrderFunded event
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  // Parse the raw logs into a clean array of events
+  const fundingEvents: FundingEvent[] = logs.map(log => {
+    // The `amountWei` is the first non-indexed value in the log's data field
+    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+    return {
+      amountWei: amountWei as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  // Sort by date, oldest first, which is important for accumulation
+  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export interface BorrowEvent {
+  amountUsd: bigint; // This will be a bigint with 6 decimals
+  timestamp: number; // Unix timestamp
+}
+
+/**
+ * Fetches all historical Borrowed events for a specific user from the Hedera network.
+ * @param userAddress The user's wallet address.
+ * @returns A promise that resolves to an array of borrow events.
+ */
+export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promise<BorrowEvent[]> {
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  const logs = await fetchBlockscoutLogs(HEDERA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    topic0: HEDERA_BORROWED_TOPIC,
+    topic2: paddedUserAddress, // `to` is the second indexed topic in the Borrowed event
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  // Parse the raw logs into a clean array of events
+  const borrowEvents: BorrowEvent[] = logs.map(log => {
+    // The `usdAmount` is the first non-indexed value in the log's data field (type uint64)
+    const [amountUsd] = decodeAbiParameters([{ type: 'uint64', name: 'usdAmount' }], log.data);
+    return {
+      amountUsd: amountUsd as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  // Sort by date, oldest first, which is important for accumulation
+  return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
