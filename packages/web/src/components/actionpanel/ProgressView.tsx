@@ -1,6 +1,6 @@
 // src/components/ProgressView.tsx
 import React, { useState } from 'react';
-import { SpinnerIcon } from './Icons';
+import { SpinnerIcon } from '../Icons';
 
 interface ProgressViewProps {
   logs: string[];

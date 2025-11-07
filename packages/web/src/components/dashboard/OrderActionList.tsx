@@ -1,10 +1,10 @@
 ﻿import React, { useState } from 'react';
 import { formatUnits } from 'viem';
-import { AppState, OrderStatus, UserOrderSummary } from '../types';
-import { useAppContext } from '../context/AppContext';
-import { fetchOrderTransactions } from "../services/blockscoutService";
-import { explainTransaction, TxExplanation } from "../services/api";
-import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
+import { AppState, OrderStatus, UserOrderSummary } from '../../types';
+import { useAppContext } from '../../context/AppContext';
+import { fetchOrderTransactions } from "../../services/blockscoutService";
+import { explainTransaction, TxExplanation } from "../../services/api";
+import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../../config";
 
 interface OrderActionListProps {
   title: string;

@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { UserOrderSummary } from '../types';
+import { UserOrderSummary } from '../../types';
 import { formatUnits } from 'viem';
 
-import { fetchOrderTransactions } from "../services/blockscoutService";
-import { explainTransaction, TxExplanation } from "../services/api";
-import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../config";
+import { fetchOrderTransactions } from "../../services/blockscoutService";
+import { explainTransaction, TxExplanation } from "../../services/api";
+import { CHAIN_EXPLORERS, ETH_CHAIN_ID, HEDERA_CHAIN_ID } from "../../config";
 
 // ---------- helpers ----------
 function formatEthFromWei(amountWei: bigint) {

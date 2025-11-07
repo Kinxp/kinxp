@@ -4,9 +4,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount } from 'wagmi';
 
 // Import the service function we created earlier
-import { fetchAllUserOrders } from '../services/blockscoutService';
+import { fetchAllUserOrders } from '../../services/blockscoutService';
 // Import the shared types for consistency
-import { UserOrderSummary } from '../types';
+import { UserOrderSummary } from '../../types';
 // Import the presentational component that will display the data
 import OrderList from './OrderList';
 

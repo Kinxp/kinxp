@@ -5,12 +5,12 @@ import { fetchAllUserOrders } from '../services/blockscoutService';
 import { UserOrderSummary } from '../types';
 import { useAppContext } from '../context/AppContext';
 
-import OrderActionList from '../components/OrderActionList';
+import OrderActionList from '../components/dashboard/OrderActionList';
 import ActionPanel from '../components/ActionPanel';
 import HomePage from '../components/HomePage';
-import OrderInfoList from '../components/OrderInfoList';
-import CreateOrderView from '../components/CreateOrderView';
-import OrderListSkeleton from '../components/OrderListSkeleton';
+import OrderInfoList from '../components/dashboard/OrderInfoList';
+import CreateOrderView from '../components/dashboard/CreateOrderView';
+import OrderListSkeleton from '../components/dashboard/OrderListSkeleton';
 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { OrderData } from '../App'; // Import the shared type
-import { CopyIcon, SpinnerIcon } from './Icons';
+import { OrderData } from '../../../App'; // Import the shared type
+import { CopyIcon, SpinnerIcon } from '../../Icons';
 
 interface FundOrderProps {
   orderData: OrderData;

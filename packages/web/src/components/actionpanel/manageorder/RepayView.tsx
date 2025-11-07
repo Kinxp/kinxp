@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { parseEther, formatUnits } from 'viem';
-import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../config';
-import { fetchPythUpdateData } from '../services/pythService';
+import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../../../config';
+import { fetchPythUpdateData } from '../../../services/pythService';
 
 interface RepayViewProps {
   orderId: string;
