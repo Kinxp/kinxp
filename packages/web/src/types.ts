@@ -25,8 +25,7 @@ export interface OrderData {
     };
   }
 
-  export type OrderStatus = 'Created' | 'Funded' | 'Borrowed' | 'ReadyToWithdraw' | 'Withdrawn' | 'Liquidated';
-
+  export type OrderStatus = 'Created' | 'Funded' | 'Borrowed' | 'PendingRepayConfirmation' | 'ReadyToWithdraw' | 'Withdrawn' | 'Liquidated';
   export interface UserOrderSummary {
     orderId: `0x${string}`;
     amountWei: bigint;

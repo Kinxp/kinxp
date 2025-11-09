@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { OrderData } from '../App';
-import { SpinnerIcon } from './Icons';
+import { OrderData } from '../../App';
+import { SpinnerIcon } from '../Icons';
 // Import our new API service function and the response type
-import { fetchLiquidationRisk, LiquidationRiskResponse } from '../services/api';
+import { fetchLiquidationRisk, LiquidationRiskResponse } from '../../services/api';
 
 interface PositionDashboardProps {
   orderData: OrderData;

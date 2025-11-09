@@ -5,13 +5,13 @@ import { useAppContext } from '../context/AppContext';
 import { AppState } from '../types';
 
 import HomePage from '../components/HomePage';
-import CreateOrderView from '../components/CreateOrderView';
-import FundOrderView from '../components/FundOrderView';
-import ProgressView from '../components/ProgressView';
-import BorrowView from '../components/BorrowView';
-import RepayView from '../components/RepayView';
-import WithdrawView from '../components/WithdrawView';
-import UserOrders from '../components/UserOrders';
+import CreateOrderView from '../components/dashboard/CreateOrderView';
+import FundOrderView from '../components/actionpanel/FundOrderView';
+import ProgressView from '../components/actionpanel/ProgressView';
+import BorrowView from '../components/actionpanel/manageorder/BorrowView';
+import RepayView from '../components/actionpanel/manageorder/RepayView';
+import WithdrawView from '../components/actionpanel/manageorder/WithdrawView';
+import UserOrders from '../components/dashboard/UserOrders';
 
 const MainPage = () => {
   const { isConnected } = useAccount();

@@ -1,6 +1,6 @@
 import React from 'react';
-import { OrderData } from '../App';
-import { CheckIcon, CopyIcon } from './Icons';
+import { OrderData } from '../../App';
+import { CheckIcon, CopyIcon } from '../Icons';
 
 interface WithdrawUsdProps {
   orderData: OrderData;

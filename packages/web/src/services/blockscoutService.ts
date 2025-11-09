@@ -1,5 +1,5 @@
 ﻿import { multicall } from 'wagmi/actions';
-import { pad } from 'viem';
+import { decodeAbiParameters,pad } from 'viem';
 import { config as wagmiConfig } from '../wagmi';
 import { UserOrderSummary, OrderStatus } from '../types';
 
@@ -19,6 +19,7 @@ import {
   WITHDRAWN_TOPIC,
   LIQUIDATED_TOPIC,
   HEDERA_CREDIT_ABI,
+  HEDERA_BORROWED_TOPIC
 } from '../config';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -76,7 +77,7 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
 async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderSummary[]> {
   if (orderIds.length === 0) return [];
 
-  // Ethereum (Sepolia): read orders(...) to get funded/repaid/liquidated
+  // Step 1: Fetch all order statuses from Ethereum. This is fast and efficient.
   const ethContracts = orderIds.map(orderId => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
     abi: ETH_COLLATERAL_ABI,
@@ -90,65 +91,66 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
     allowFailure: true,
   });
 
-  // Hedera: read horders(...) to get borrowedUsd (source of truth for borrow state)
-  const hederaContracts = orderIds.map(orderId => ({
-    address: HEDERA_CREDIT_OAPP_ADDR,
-    abi: HEDERA_CREDIT_ABI,
-    functionName: 'horders',
-    args: [orderId],
-  }));
-
-  let hederaResults: Array<{ status: 'success' | 'failure'; result?: any }> = [];
-  try {
-    hederaResults = await multicall(wagmiConfig, {
-      chainId: HEDERA_CHAIN_ID,
-      contracts: hederaContracts,
-      allowFailure: true,
-    }) as any;
-  } catch {
-    hederaResults = [];
-  }
-
+  // Step 2: Sequentially process each order to determine its status and fetch Hedera data ONLY WHEN NEEDED.
   const summaries: UserOrderSummary[] = [];
 
-  ethResults.forEach((callResult, index) => {
-    if (callResult.status !== 'success' || !callResult.result) return;
+  for (let index = 0; index < orderIds.length; index++) {
+    const orderId = orderIds[index];
+    const ethCallResult = ethResults[index];
+    
+    if (ethCallResult.status !== 'success' || !ethCallResult.result) continue;
 
-    const [owner, amountWei, funded, repaid, liquidated] = callResult.result as unknown as [
-      `0x${string}`,
-      bigint,
-      boolean,
-      boolean,
-      boolean
-    ];
+    const [owner, amountWei, funded, repaid, liquidated] = ethCallResult.result as [ `0x${string}`, bigint, boolean, boolean, boolean ];
 
-    if (!owner || owner.toLowerCase() === ZERO_ADDRESS) return;
+    if (!owner || owner === ZERO_ADDRESS) continue;
 
-    // Pull borrowedUsd from Hedera if available
-    let borrowedUsd: bigint | undefined;
-    const hedera = hederaResults[index];
-    if (hedera && hedera.status === 'success' && hedera.result) {
-      // struct HOrder { address borrower; uint256 ethAmountWei; uint64 borrowedUsd; bool open; }
-      // Access by name (preferred) or by index (fallback)
-      const _borrowed = hedera.result.borrowedUsd ?? hedera.result[2];
-      if (typeof _borrowed === 'bigint') borrowedUsd = _borrowed;
-      else if (typeof _borrowed === 'number') borrowedUsd = BigInt(_borrowed);
-    }
+    let status: OrderStatus;
+    let borrowedUsd: bigint = 0n; // Default to 0
 
-    // Start from ETH-side state
-    let status = determineStatus({ funded, repaid, liquidated });
-    // If Hedera indicates any debt, upgrade to "Borrowed"
-    if (borrowedUsd && borrowedUsd > 0n && status === 'Funded') {
-      status = 'Borrowed';
+    // --- THIS IS THE CORRECTED LOGIC ---
+    if (liquidated) {
+      status = 'Liquidated';
+    } else if (repaid && !funded) {
+      status = 'Withdrawn';
+    } else if (repaid && funded) {
+      status = 'ReadyToWithdraw';
+    } else if (funded) {
+      // ONLY if an order is funded do we need to make the expensive call to Hedera.
+      try {
+        const hederaOrder = await readContract(wagmiConfig, {
+          address: HEDERA_CREDIT_OAPP_ADDR,
+          abi: HEDERA_CREDIT_ABI,
+          functionName: 'horders',
+          args: [orderId],
+          chainId: HEDERA_CHAIN_ID,
+        }) as { borrowedUsd: bigint };
+        
+        borrowedUsd = hederaOrder.borrowedUsd ?? 0n;
+
+        // Now, determine the sub-status for a funded order
+        if (borrowedUsd > 0n) {
+          status = 'Borrowed';
+        } else if (amountWei > 0n) { // If debt is 0 but it had collateral, it's pending repay
+          status = 'PendingRepayConfirmation';
+        } else {
+          status = 'Funded'; // Funded but no debt and no collateral (unlikely state)
+        }
+      } catch (error) {
+        // If the Hedera call fails (e.g., rate limit), we can gracefully fall back.
+        console.warn(`Could not fetch Hedera state for order ${orderId.slice(0,10)}. Defaulting to 'Funded'.`, error);
+        status = 'Funded';
+      }
+    } else {
+      status = 'Created';
     }
 
     summaries.push({
-      orderId: orderIds[index],
+      orderId: orderId,
       amountWei,
       status,
-      ...(borrowedUsd !== undefined ? { borrowedUsd } : {}),
+      borrowedUsd: borrowedUsd,
     });
-  });
+  }
 
   return summaries;
 }
@@ -321,4 +323,80 @@ export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<
     console.error('Error polling Sepolia repay event:', error);
     return null;
   }
+}
+
+export interface FundingEvent {
+  amountWei: bigint;
+  timestamp: number; // Unix timestamp
+}
+
+/**
+ * Fetches all historical OrderFunded events for a specific user from the Sepolia network.
+ * @param userAddress The user's wallet address.
+ * @returns A promise that resolves to an array of funding events.
+ */
+export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promise<FundingEvent[]> {
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    topic0: ORDER_FUNDED_TOPIC,
+    topic2: paddedUserAddress, // `user` is the second indexed topic in the OrderFunded event
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  // Parse the raw logs into a clean array of events
+  const fundingEvents: FundingEvent[] = logs.map(log => {
+    // The `amountWei` is the first non-indexed value in the log's data field
+    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+    return {
+      amountWei: amountWei as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  // Sort by date, oldest first, which is important for accumulation
+  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export interface BorrowEvent {
+  amountUsd: bigint; // This will be a bigint with 6 decimals
+  timestamp: number; // Unix timestamp
+}
+
+/**
+ * Fetches all historical Borrowed events for a specific user from the Hedera network.
+ * @param userAddress The user's wallet address.
+ * @returns A promise that resolves to an array of borrow events.
+ */
+export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promise<BorrowEvent[]> {
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  const logs = await fetchBlockscoutLogs(HEDERA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    topic0: HEDERA_BORROWED_TOPIC,
+    topic2: paddedUserAddress, // `to` is the second indexed topic in the Borrowed event
+    topic0_2_opr: 'and',
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  // Parse the raw logs into a clean array of events
+  const borrowEvents: BorrowEvent[] = logs.map(log => {
+    // The `usdAmount` is the first non-indexed value in the log's data field (type uint64)
+    const [amountUsd] = decodeAbiParameters([{ type: 'uint64', name: 'usdAmount' }], log.data);
+    return {
+      amountUsd: amountUsd as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  // Sort by date, oldest first, which is important for accumulation
+  return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
 }

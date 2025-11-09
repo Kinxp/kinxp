@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { parseEther, formatUnits } from 'viem';
-import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../config';
-import { fetchPythUpdateData } from '../services/pythService';
+import { ETH_CHAIN_ID, AI_LIQUIDATION_RISK_URL } from '../../../config';
+import { fetchPythUpdateData } from '../../../services/pythService';
 
 interface RepayViewProps {
   orderId: string;
@@ -197,7 +197,7 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
         )}
 
         {riskResult && (
-          <div className={`rounded-md border px-3 py-3 space-y-2 ${riskClassMap[riskResult.level]}`}>
+          <div className={`rounded-md border px-3 py-3 space-y-2 text-left ${riskClassMap[riskResult.level]}`}>
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold uppercase tracking-wide">
                 {riskResult.level} Risk
@@ -206,14 +206,17 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
                 <span className="text-xs font-mono">{riskResult.score}/100</span>
               )}
             </div>
+            
+            {riskResult.detailLine && (
+              <p className="text-xs text-gray-300 font-mono">{riskResult.detailLine}</p>
+            )}
             <p className="text-xs">
               <span className="font-semibold">Recommendation:</span> {riskResult.recommendation}
             </p>
-            {riskResult.summary && <p className="text-xs text-gray-200">{riskResult.summary}</p>}
-            {riskResult.detailLine && <p className="text-xs text-gray-300">{riskResult.detailLine}</p>}
-            {riskResult.explanation && <p className="text-xs text-gray-400 italic">{riskResult.explanation}</p>}
-            {(riskResult.aiAnalysis || riskResult.summary || riskResult.explanation) && (
-              <p className="text-xs text-indigo-200">✦  AI: {riskResult.aiAnalysis ?? riskResult.summary ?? riskResult.explanation}</p>
+            {riskResult.aiAnalysis && (
+              <p className="text-xs text-indigo-200 mt-1">
+                <span className="font-semibold">✦ AI Analysis:</span> <span className="italic text-gray-300">{riskResult.aiAnalysis}</span>
+              </p>
             )}
           </div>
         )}

@@ -1,6 +1,6 @@
 // src/components/ProgressView.tsx
 import React, { useState } from 'react';
-import { SpinnerIcon } from './Icons';
+import { SpinnerIcon } from '../Icons';
 
 interface ProgressViewProps {
   logs: string[];
@@ -40,16 +40,16 @@ const ProgressView: React.FC<ProgressViewProps> = ({
 
       {/* LayerZero Scan link, unchanged */}
       {lzTxHash && (
-        <div className="text-center bg-gray-900/50 p-3 rounded-lg">
-          <p className="text-sm text-gray-400">Your cross-chain message has been sent!</p>
-          <a
-            href={`https://testnet.layerzeroscan.com/tx/${lzTxHash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-cyan-400 hover:text-cyan-300 underline text-xs font-mono break-all"
-          >
-            Track on LayerZero Scan
-          </a>
+        <div className="text-center pt-2">
+            <a 
+              href={`https://testnet.layerzeroscan.com/tx/${lzTxHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-cyan-400 hover:text-cyan-300 transition-colors"
+            >
+                Track Cross-Chain Message ↗
+            </a>
+            <p className="text-xs text-gray-500 mt-1">(This can take several minutes to confirm)</p>
         </div>
       )}
 

@@ -26,7 +26,11 @@ export const HEDERA_REPAID_TOPIC = keccak256(toHex('Repaid(bytes32,uint64,bool)'
 // Add these two topic hashes
 export const WITHDRAWN_TOPIC = keccak256(toHex('Withdrawn(bytes32,address,uint256)'));
 export const LIQUIDATED_TOPIC = keccak256(toHex('Liquidated(bytes32,uint256)'));
+// Hedera: event Borrowed(bytes32 indexed orderId, address indexed to, uint64 usdAmount);
+export const HEDERA_BORROWED_TOPIC = keccak256(toHex('Borrowed(bytes32,address,uint64)'));
 
+// Sepolia: event Withdrawn(bytes32 indexed orderId, address indexed user, uint256 amountWei);
+export const ETH_WITHDRAWN_TOPIC = keccak256(toHex('Withdrawn(bytes32,address,uint256)'));
 
 // --- THIS IS THE FIX ---
 // Add the missing constant required by App.tsx

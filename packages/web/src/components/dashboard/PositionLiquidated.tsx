@@ -1,6 +1,6 @@
 import React from 'react';
-import { OrderData } from '../App';
-import { WarningIcon } from './Icons';
+import { OrderData } from '../../App';
+import { WarningIcon } from '../Icons';
 
 interface PositionLiquidatedProps {
   orderData: OrderData;

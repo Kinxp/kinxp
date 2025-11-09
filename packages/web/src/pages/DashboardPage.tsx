@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useMemo } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { useAccount } from 'wagmi';
 import { parseUnits } from 'viem';
 import { fetchAllUserOrders } from '../services/blockscoutService';
 import { UserOrderSummary } from '../types';
 import { useAppContext } from '../context/AppContext';
 
-import OrderActionList from '../components/OrderActionList';
+import OrderActionList from '../components/dashboard/OrderActionList';
 import ActionPanel from '../components/ActionPanel';
 import HomePage from '../components/HomePage';
-import OrderInfoList from '../components/OrderInfoList';
-import CreateOrderView from '../components/CreateOrderView';
+import OrderInfoList from '../components/dashboard/OrderInfoList';
+import CreateOrderView from '../components/dashboard/CreateOrderView';
+import OrderListSkeleton from '../components/dashboard/OrderListSkeleton';
 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();
@@ -103,7 +104,10 @@ const DashboardPage = () => {
       {/* RIGHT: Lists */}
       <div className="space-y-6">
         {isLoading ? (
-          <div className="text-center text-gray-400 p-4">Loading your orders...</div>
+          <>
+          <OrderListSkeleton />
+          <OrderListSkeleton />
+          </>
         ) : error ? (
           <div className="text-center text-red-400 p-4">{error}</div>
         ) : (

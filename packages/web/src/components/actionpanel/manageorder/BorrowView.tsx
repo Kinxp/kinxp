@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { SpinnerIcon } from './Icons';
+import { SpinnerIcon } from '../../Icons';
 
 interface BorrowViewProps {
   orderId: string;
