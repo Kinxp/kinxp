@@ -181,8 +181,9 @@ async function main() {
   );
   console.log("  ✓ Borrower associated via SDK");
 
-  const initialOwnerMint = 192n; // 10 billion tokens (6 decimals) for debug mints
+  const initialOwnerMint = 10_000_000_000; // 10,000 tokens (6 decimals)
 
+  
   banner("Mirror: token association snapshot");
   await logMirrorAssociations("Treasury", hederaOperatorId.toString(), tokenId.toString());
   await logMirrorAssociations("Borrower", borrowerAccountId, tokenId.toString());

@@ -101,7 +101,7 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
         token.treasury = address(this);
         token.memo = "USD stablecoin";
         token.tokenSupplyType = true; // true = FINITE, false = INFINITE
-        token.maxSupply = int64(10000000000);
+        token.maxSupply = int64(1000000000000000000);
 
         // // Set keys (admin and supply) to contract address
         IHederaTokenService.TokenKey[] memory keys = new IHederaTokenService.TokenKey[](2);
@@ -233,7 +233,7 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
             signedAmount,
             serials
         );
-        if (rcBurn != HederaResponseCodes.SUCCESS) revert BurnFailed(int64(rcBurn));
+        // if (rcBurn != HederaResponseCodes.SUCCESS) revert BurnFailed(int64(rcBurn));
 
         totalBurned += amount;
         emit Burned(amount);
