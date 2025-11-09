@@ -16,9 +16,14 @@ describe("UsdHtsController", function () {
 
     const mockFactory = await ethers.getContractFactory("MockHtsPrecompile");
     const htsMock = mockFactory.attach(HTS_PRECOMPILE_ADDR);
+    await htsMock.initialize();
     await htsMock.setMintResponse(22);
     await htsMock.setBurnResponse(22);
     await htsMock.setTransferResponse(22);
+    await htsMock.setCreateFungibleResponse(
+      22,
+      ethers.getAddress("0x00000000000000000000000000000000000000ff")
+    );
 
     const controllerFactory = await ethers.getContractFactory(
       "UsdHtsController"
@@ -35,11 +40,37 @@ describe("UsdHtsController", function () {
 
     await expect(controller.setExistingUsdToken(token, 6))
       .to.emit(controller, "TokenCreated")
-      .withArgs(token, 6);
+      .withArgs(token, 6, "", "");
 
-    await expect(controller.setExistingUsdToken(token, 6)).to.be.revertedWith(
-      "token already set"
+    await expect(controller.setExistingUsdToken(token, 6)).to.be.revertedWithCustomError(
+      controller,
+      "TokenAlreadyInitialized"
     );
+  });
+
+  it("creates a fungible token with the controller as treasury", async function () {
+    const { controller, htsMock } = await loadFixture(deployFixture);
+    const createdAddr = ethers.getAddress("0x0000000000000000000000000000000000000c01");
+    await htsMock.setCreateFungibleResponse(22, createdAddr);
+
+    await expect(
+      controller.createUsdToken("Hedera USD", "hUSD", 6, "memo")
+    )
+      .to.emit(controller, "TokenCreated")
+      .withArgs(createdAddr, 6, "Hedera USD", "hUSD");
+
+    expect(await controller.usdToken()).to.equal(createdAddr);
+    expect(await controller.usdDecimals()).to.equal(6);
+    expect(await controller.usdTokenName()).to.equal("Hedera USD");
+    expect(await controller.usdTokenSymbol()).to.equal("hUSD");
+
+    expect(await htsMock.lastCreateTokenName()).to.equal("Hedera USD");
+    expect(await htsMock.lastCreateTokenSymbol()).to.equal("hUSD");
+    expect(await htsMock.lastCreateTokenTreasury()).to.equal(
+      await controller.getAddress()
+    );
+    expect(await htsMock.lastCreateInitialSupply()).to.equal(0);
+    expect(await htsMock.lastCreateTokenDecimals()).to.equal(6);
   });
 
   it("associates the token with the controller", async function () {
@@ -64,14 +95,14 @@ describe("UsdHtsController", function () {
 
     expect(await htsMock.lastMintToken()).to.equal(token);
     expect(await htsMock.lastMintAmount()).to.equal(1_000_000);
-    expect(await htsMock.lastTransferToken()).to.equal(token);
-
-    const adjustments = await htsMock.lastTransferAdjustments();
-    expect(adjustments.length).to.equal(2);
-    expect(adjustments[0].accountID).to.equal(await controller.getAddress());
-    expect(adjustments[0].amount).to.equal(-1_000_000n);
-    expect(adjustments[1].accountID).to.equal(borrower.address);
-    expect(adjustments[1].amount).to.equal(1_000_000n);
+    expect(await htsMock.lastTransferTokenSimple()).to.equal(token);
+    expect(await htsMock.lastTransferTokenSender()).to.equal(
+      await controller.getAddress()
+    );
+    expect(await htsMock.lastTransferTokenRecipient()).to.equal(
+      borrower.address
+    );
+    expect(await htsMock.lastTransferTokenAmount()).to.equal(1_000_000n);
   });
 
   it("burns treasury balances", async function () {
@@ -90,9 +121,13 @@ describe("UsdHtsController", function () {
   it("reverts actions before a token is linked", async function () {
     const { controller, borrower } = await loadFixture(deployFixture);
 
-    await expect(controller.mintTo(borrower.address, 1)).to.be.revertedWith(
-      "no token"
+    await expect(controller.mintTo(borrower.address, 1)).to.be.revertedWithCustomError(
+      controller,
+      "TokenNotInitialized"
     );
-    await expect(controller.burnFromTreasury(1)).to.be.revertedWith("no token");
+    await expect(controller.burnFromTreasury(1)).to.be.revertedWithCustomError(
+      controller,
+      "TokenNotInitialized"
+    );
   });
 });

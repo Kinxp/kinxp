@@ -50,9 +50,10 @@ describe("EthCollateralOApp", function () {
     ).to.be.revertedWith("no ETH");
 
     const tx = await oapp.connect(user).fundOrder(orderId, { value });
+    const reserveId = await oapp.defaultReserveId();
     await expect(tx)
       .to.emit(oapp, "OrderFunded")
-      .withArgs(orderId, user.address, value);
+      .withArgs(orderId, reserveId, user.address, value);
 
     const order = await oapp.orders(orderId);
     expect(order.funded).to.equal(true);
@@ -64,6 +65,7 @@ describe("EthCollateralOApp", function () {
     const orderId = await createOrder(oapp, user);
     const stake = ethers.parseEther("0.75");
     await oapp.connect(user).fundOrder(orderId, { value: stake });
+    const reserveId = await oapp.defaultReserveId();
 
     await expect(oapp.connect(user).withdraw(orderId)).to.be.revertedWith(
       "not repaid"
@@ -75,7 +77,7 @@ describe("EthCollateralOApp", function () {
     const withdrawTx = await oapp.connect(user).withdraw(orderId);
     await expect(withdrawTx)
       .to.emit(oapp, "Withdrawn")
-      .withArgs(orderId, user.address, stake);
+      .withArgs(orderId, reserveId, user.address, stake);
 
     const receipt = await withdrawTx.wait();
     const gasSpent = receipt.fee;
@@ -94,12 +96,15 @@ describe("EthCollateralOApp", function () {
     const orderId = await createOrder(oapp, user);
     const stake = ethers.parseEther("2");
     await oapp.connect(user).fundOrder(orderId, { value: stake });
+    await oapp.forceSetHederaEid(101);
+    await oapp.setStubFee(0);
+    const reserveId = await oapp.defaultReserveId();
 
     await expect(
-      oapp.connect(owner).adminLiquidate(orderId, payout.address)
+      oapp.connect(owner).adminLiquidate(orderId, payout.address, stake)
     )
       .to.emit(oapp, "Liquidated")
-      .withArgs(orderId, stake);
+      .withArgs(orderId, reserveId, stake, payout.address);
 
     const order = await oapp.orders(orderId);
     expect(order.liquidated).to.equal(true);
@@ -116,7 +121,7 @@ describe("EthCollateralOApp", function () {
     });
 
     await expect(
-      oapp.connect(other).adminLiquidate(orderId, payout.address)
+      oapp.connect(other).adminLiquidate(orderId, payout.address, ethers.parseEther("0.3"))
     ).to.be.revertedWith("Ownable: caller is not the owner");
   });
 
@@ -128,7 +133,9 @@ describe("EthCollateralOApp", function () {
     await oapp.connect(user).fundOrder(orderId, {
       value: ethers.parseEther("1")
     });
-    await oapp.connect(owner).adminLiquidate(orderId, payout.address);
+    await oapp.forceSetHederaEid(101);
+    await oapp.setStubFee(0);
+    await oapp.connect(owner).adminLiquidate(orderId, payout.address, ethers.parseEther("1"));
 
     await expect(oapp.connect(user).withdraw(orderId)).to.be.revertedWith(
       "not repaid"
@@ -184,11 +191,17 @@ describe("EthCollateralOApp", function () {
     expect(await oapp.lastLzRefundAddress()).to.equal(user.address);
 
     const abi = ethers.AbiCoder.defaultAbiCoder();
-    const expectedPayload = abi.encode(
-      ["uint8", "bytes32", "address", "uint256"],
-      [1, orderId, user.address, etherDeposit]
+    const reserveId = await oapp.defaultReserveId();
+    const decoded = abi.decode(
+      ["uint8", "bytes32", "bytes32", "address", "uint256"],
+      await oapp.lastLzPayload()
     );
-    expect(await oapp.lastLzPayload()).to.equal(expectedPayload);
+    console.log("LayerZero payload decoded:", decoded);
+    expect(decoded[0]).to.equal(0);
+    expect(decoded[1]).to.equal(orderId);
+    expect(decoded[2]).to.equal(reserveId);
+    expect(decoded[3]).to.equal(user.address);
+    expect(decoded[4]).to.equal(etherDeposit);
 
     expect(await oapp.lastLzNativeFee()).to.equal(fee);
   });

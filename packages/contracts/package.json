@@ -6,7 +6,9 @@
     "build": "hardhat compile",
     "test": "hardhat test",
     "e2e:full": "hardhat run scripts/full-e2e.ts --network sepolia",
-    "e2e:liquidation": "hardhat run scripts/liquidation-e2e.ts --network sepolia"
+    "e2e:liquidation": "hardhat run scripts/liquidation-e2e.ts --network sepolia",
+    "mint-only": "hardhat run scripts/mint-only.ts --network sepolia",
+    "deploy-mint": "hardhat run scripts/deploy-mint.ts --network sepolia"
   },
   "devDependencies": {
     "@hashgraph/sdk": "^2.75.0",
@@ -16,12 +18,16 @@
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
     "@openzeppelin/contracts": "^4.9.5",
     "@pythnetwork/pyth-sdk-solidity": "^2.2.0",
+    "@types/node": "^24.8.0",
     "chai": "^4.4.1",
     "dotenv": "^16.4.5",
     "ethers": "^6.15.0",
     "hardhat": "^2.22.5",
     "solidity-bytes-utils": "^0.8.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.6.2"
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@hashgraph/smart-contracts": "github:hashgraph/hedera-smart-contracts"
   }
 }

@@ -47,6 +47,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
     struct Position {
         address borrower;
+        address borrowerCanonical;
         bytes32 reserveId;
         uint256 collateralWei;
         uint128 scaledDebtRay;
@@ -68,9 +69,10 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         uint64 lastPublishTime;
     }
 
-    mapping(bytes32 => Position) public positions;
-    mapping(bytes32 => ReserveState) public reserveStates;
-    mapping(bytes32 => OracleState) public oracleStates;
+	mapping(bytes32 => Position) public positions;
+	mapping(bytes32 => ReserveState) public reserveStates;
+	mapping(bytes32 => OracleState) public oracleStates;
+	bool public debugStopAfterMint = false;
 
     /// -----------------------------------------------------------------------
     ///                                 EVENTS
@@ -112,8 +114,17 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     event ReserveRegistryUpdated(address indexed newRegistry);
     event DefaultReserveUpdated(bytes32 indexed newReserveId);
     event OraclePriceChecked(bytes32 indexed reserveId, uint256 price1e18);
-    event PositionLiquidated(bytes32 indexed orderId, bytes32 indexed reserveId);
-    event OrderManuallyMirrored(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed borrower, uint256 collateralWei);
+    event PositionLiquidated(
+        bytes32 indexed orderId,
+        bytes32 indexed reserveId,
+        address indexed liquidator,
+        uint64 repaidAmountUsd,
+        uint256 seizedCollateralWei,
+        address ethRecipient,
+        bool fullyRepaid
+    );
+	event OrderManuallyMirrored(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed borrower, uint256 collateralWei);
+	event BorrowDebug(bytes32 indexed orderId, string tag, uint256 val1, uint256 val2, address addr);
 
     /// -----------------------------------------------------------------------
     ///                                 ERRORS
@@ -129,18 +140,22 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     error LzFeeTooLow(uint256 required, uint256 provided);
     error NothingToCollect();
 
-    constructor(
-        address lzEndpoint,
-        address owner_,
-        address registry_,
-        address pythContract,
+	constructor(
+		address lzEndpoint,
+		address owner_,
+		address registry_,
+		address pythContract,
         bytes32 defaultReserveId_
     ) OApp(lzEndpoint, owner_) {
         reserveRegistry = ReserveRegistry(registry_);
-        pyth = IPyth(pythContract);
-        defaultReserveId = defaultReserveId_;
-        _transferOwnership(owner_);
-    }
+		pyth = IPyth(pythContract);
+		defaultReserveId = defaultReserveId_;
+		_transferOwnership(owner_);
+	}
+
+	function setDebugStopAfterMint(bool enabled) external onlyOwner {
+		debugStopAfterMint = enabled;
+	}
 
     /// -----------------------------------------------------------------------
     ///                              MESSAGING HOOK
@@ -169,17 +184,18 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             pos.collateralWei = ethAmountWei;
             pos.open = true;
             pos.liquidated = false;
+            pos.borrowerCanonical = borrower;
 
             emit HederaOrderOpened(orderId, reserveId, borrower, ethAmountWei);
         } else if (msgType == MessageTypes.LIQUIDATED) {
-            (, bytes32 orderId, bytes32 reserveId) = abi.decode(
+            (, bytes32 orderId, bytes32 reserveId, , ) = abi.decode(
                 message,
-                (uint8, bytes32, bytes32)
+                (uint8, bytes32, bytes32, address, uint256)
             );
             Position storage pos = positions[orderId];
             pos.open = false;
             pos.liquidated = true;
-            emit PositionLiquidated(orderId, reserveId);
+            emit PositionLiquidated(orderId, reserveId, address(0), 0, 0, address(0), true);
         }
     }
 
@@ -269,13 +285,35 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         uint64 feeAmount = uint64(originationFee);
 
         // Mint principal to borrower and fees to treasury
-        ctrl.mintTo(msg.sender, netAmount);
+        address borrower = pos.borrower;
+        // if (canonicalBorrower == address(0)) {
+        //     canonicalBorrower = pos.borrower;
+        // }
+
+        emit BorrowDebug(orderId, "mint_borrower_start", netAmount, feeAmount, borrower);
+
+        try ctrl.mintTo(borrower, netAmount) {
+            // no-op
+        } catch (bytes memory /* err */) {
+            emit BorrowDebug(orderId, "mint_borrower_failed", netAmount, feeAmount, msg.sender);
+            return 0;
+        }
         if (feeAmount > 0) {
-            ctrl.mintTo(
+            try ctrl.mintTo(
                 cfg.metadata.protocolTreasury,
                 feeAmount
-            );
+            ) {
+                // no-op
+            } catch (bytes memory /* err2 */) {
+                emit BorrowDebug(orderId, "mint_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
+                return 0;
+            }
         }
+
+        if (debugStopAfterMint) {
+            emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
+			return netAmount;
+		}
 
         // Update scaled debt
         uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
@@ -397,6 +435,137 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         } else if (msg.value > 0) {
             (bool ok2, ) = msg.sender.call{value: msg.value}("");
             require(ok2, "refund fail");
+        }
+    }
+
+    function liquidate(
+        bytes32 orderId,
+        uint64 repayAmount,
+        bytes[] calldata priceUpdateData,
+        uint32 maxAgeSecs,
+        address ethRecipient
+    ) external payable nonReentrant {
+        require(ethRecipient != address(0), "recipient=0");
+        Position storage pos = positions[orderId];
+        if (!(pos.open && !pos.liquidated)) revert BadOrder(orderId);
+        require(repayAmount > 0, "repay=0");
+
+        ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
+            .getReserveConfig(pos.reserveId);
+        require(cfg.metadata.active && !cfg.metadata.frozen, "reserve inactive");
+        UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
+        if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
+            revert ControllerMismatch();
+        }
+
+        uint256 oracleFee = 0;
+        if (priceUpdateData.length > 0) {
+            oracleFee = pyth.getUpdateFee(priceUpdateData);
+            require(msg.value >= oracleFee, "fee");
+            pyth.updatePriceFeeds{value: oracleFee}(priceUpdateData);
+        }
+
+        uint256 price1e18 = _fetchPrice(pos.reserveId, cfg.oracle, maxAgeSecs);
+        require(price1e18 > 0, "bad price");
+        ReserveState storage state = _accrueReserve(
+            pos.reserveId,
+            cfg.risk,
+            cfg.interest
+        );
+
+        uint8 decimals = cfg.metadata.debtTokenDecimals;
+        uint256 debtRay = _positionDebtRay(pos, state);
+        require(debtRay > 0, "no debt");
+        uint256 debtTokens = MathUtils.fromRay(debtRay, decimals);
+
+        require(
+            _isLiquidatable(pos, cfg.risk, price1e18, debtTokens, decimals),
+            "healthy"
+        );
+
+        uint256 repayTokens = repayAmount;
+        if (repayTokens > debtTokens) repayTokens = debtTokens;
+        uint256 maxClose = (debtTokens * cfg.risk.closeFactorBps) / 10_000;
+        if (maxClose > 0 && repayTokens > maxClose) {
+            repayTokens = maxClose;
+        }
+        require(repayTokens > 0, "closeFactor=0");
+
+        uint256 repayRay = MathUtils.toRay(repayTokens, decimals);
+        uint256 scaledRepayment = MathUtils.rayDiv(
+            repayRay,
+            uint256(state.variableBorrowIndex)
+        );
+        uint256 actualRepayRay;
+        if (scaledRepayment >= pos.scaledDebtRay) {
+            scaledRepayment = pos.scaledDebtRay;
+            actualRepayRay = MathUtils.rayMul(
+                uint256(pos.scaledDebtRay),
+                uint256(state.variableBorrowIndex)
+            );
+            pos.scaledDebtRay = 0;
+        } else {
+            actualRepayRay = repayRay;
+            pos.scaledDebtRay -= uint128(scaledRepayment);
+        }
+        state.totalVariableDebtRay -= actualRepayRay;
+
+        ctrl.burnFromTreasury(uint64(repayTokens));
+
+        uint256 repayUsd18 = _to1e18(repayTokens, decimals);
+        uint256 seizeWei = _calcSeizeAmountWei(
+            repayUsd18,
+            price1e18,
+            cfg.risk.liquidationBonusBps
+        );
+        if (seizeWei > pos.collateralWei) {
+            seizeWei = pos.collateralWei;
+        }
+        pos.collateralWei -= seizeWei;
+
+        bool fullyRepaid = (pos.scaledDebtRay == 0);
+        if (fullyRepaid) {
+            pos.open = false;
+            pos.liquidated = true;
+        }
+
+        emit PositionLiquidated(
+            orderId,
+            pos.reserveId,
+            msg.sender,
+            uint64(repayTokens),
+            seizeWei,
+            ethRecipient,
+            fullyRepaid
+        );
+
+        if (ethEid != 0 && seizeWei > 0) {
+            bytes memory payload = abi.encode(
+                MessageTypes.LIQUIDATED,
+                orderId,
+                pos.reserveId,
+                ethRecipient,
+                seizeWei
+            );
+            bytes memory opts = OptionsBuilder
+                .newOptions()
+                .addExecutorLzReceiveOption(200_000, 0);
+            MessagingFee memory q = _quote(ethEid, payload, opts, false);
+            uint256 lzValue = msg.value - oracleFee;
+            require(lzValue >= q.nativeFee, "insufficient msg.value");
+            _lzSend(ethEid, payload, opts, q, payable(msg.sender));
+            uint256 refund = lzValue - q.nativeFee;
+            if (refund > 0) {
+                (bool ok, ) = msg.sender.call{value: refund}("");
+                require(ok, "refund fail");
+            }
+        } else if (oracleFee > 0) {
+            // refund unused oracle fee excess
+            uint256 refund = msg.value - oracleFee;
+            if (refund > 0) {
+                (bool ok2, ) = msg.sender.call{value: refund}("");
+                require(ok2, "refund fail");
+            }
         }
     }
 
@@ -562,13 +731,23 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     ///                             INTERNAL HELPERS
     /// -----------------------------------------------------------------------
 
+    error OracleFeeTooLow(uint256 required, uint256 provided);
+    error OracleUpdateFailed(bytes data, uint256 required, uint256 provided, uint256 items);
+    error OraclePriceQueryFailed(bytes data, uint32 maxAgeSecs);
+
     function _updateOracle(
         bytes[] calldata priceUpdateData
     ) internal returns (uint256 feePaid) {
         if (priceUpdateData.length == 0) return 0;
         feePaid = pyth.getUpdateFee(priceUpdateData);
-        require(msg.value >= feePaid, "fee");
-        pyth.updatePriceFeeds{value: feePaid}(priceUpdateData);
+        if (msg.value < feePaid) {
+            revert OracleFeeTooLow(feePaid, msg.value);
+        }
+        try pyth.updatePriceFeeds{value: feePaid}(priceUpdateData) {
+            // no-op
+        } catch (bytes memory errData) {
+            revert OracleUpdateFailed(errData, feePaid, msg.value, priceUpdateData.length);
+        }
     }
 
     function _fetchPrice(
@@ -585,10 +764,15 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             maxAge = oracleCfg.heartbeatSeconds;
         }
 
-        PythStructs.Price memory price = pyth.getPriceNoOlderThan(
+        PythStructs.Price memory price;
+        try pyth.getPriceNoOlderThan(
             oracleCfg.priceId,
             maxAge
-        );
+        ) returns (PythStructs.Price memory fetched) {
+            price = fetched;
+        } catch (bytes memory errData) {
+            revert OraclePriceQueryFailed(errData, maxAge);
+        }
         require(price.price > 0, "bad price");
         if (
             oracleCfg.heartbeatSeconds > 0 &&
@@ -723,10 +907,38 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         return amount;
     }
 
+    function _isLiquidatable(
+        Position storage pos,
+        ReserveRegistry.RiskConfig memory riskCfg,
+        uint256 price1e18,
+        uint256 debtTokens,
+        uint8 decimals
+    ) internal view returns (bool) {
+        uint256 collateralUsd18 = (pos.collateralWei * price1e18) / WAD;
+        uint256 debtUsd18 = _to1e18(debtTokens, decimals);
+        uint256 threshold = (collateralUsd18 * riskCfg.liquidationThresholdBps) /
+            10_000;
+        return debtUsd18 > threshold;
+    }
+
+    function _msgSender() internal view override returns (address) {
+        return msg.sender;
+    }
+
+    function _calcSeizeAmountWei(
+        uint256 repayUsd18,
+        uint256 price1e18,
+        uint16 bonusBps
+    ) internal pure returns (uint256) {
+        uint256 usdWithBonus = (repayUsd18 * (10_000 + bonusBps)) / 10_000;
+        return (usdWithBonus * WAD) / price1e18;
+    }
+
     function adminMirrorOrder(
         bytes32 orderId,
         bytes32 reserveId,
         address borrower,
+        address borrowerCanonical,
         uint256 collateralWei
     ) external onlyOwner {
         require(borrower != address(0), "borrower=0");
@@ -735,6 +947,9 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         require(!pos.open, "already mirrored");
 
         pos.borrower = borrower;
+        pos.borrowerCanonical = borrowerCanonical == address(0)
+            ? borrower
+            : borrowerCanonical;
         pos.reserveId = reserveId;
         pos.collateralWei = collateralWei;
         pos.scaledDebtRay = 0;
@@ -747,3 +962,4 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
     receive() external payable {}
 }
+    error ControllerMintFailed(bytes data);

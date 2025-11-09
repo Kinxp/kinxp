@@ -44,7 +44,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     event OrderReserveUpdated(bytes32 indexed orderId, bytes32 indexed newReserveId);
     event MarkRepaid(bytes32 indexed orderId, bytes32 indexed reserveId);
     event Withdrawn(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user, uint256 amountWei);
-    event Liquidated(bytes32 indexed orderId, bytes32 indexed reserveId, uint256 amountWei);
+    event Liquidated(bytes32 indexed orderId, bytes32 indexed reserveId, uint256 amountWei, address indexed payout);
 
     constructor(address lzEndpoint, bytes32 defaultReserveId_) OApp(lzEndpoint, msg.sender) {
         defaultReserveId = defaultReserveId_;
@@ -123,7 +123,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         emit Withdrawn(orderId, o.reserveId, msg.sender, amt);
     }
 
-    function adminLiquidate(bytes32 orderId, address payout)
+    function adminLiquidate(bytes32 orderId, address payout, uint256 seizeAmountWei)
         external
         payable
         nonReentrant
@@ -132,22 +132,26 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         require(hederaEid != 0, "eid unset");
         Order storage o = orders[orderId];
         require(o.funded && !o.repaid, "nothing to liquidate");
-        o.liquidated = true;
 
-        uint256 amt = o.amountWei;
-        o.amountWei = 0;
+        uint256 available = o.amountWei;
+        uint256 amt = seizeAmountWei == 0 ? available : seizeAmountWei;
+        if (amt > available) {
+            amt = available;
+        }
+        o.amountWei = available - amt;
+        o.liquidated = (o.amountWei == 0);
 
         (bool ok, ) = payout.call{value: amt}("");
         require(ok, "send fail");
 
-        bytes memory payload = abi.encode(MessageTypes.LIQUIDATED, orderId, o.reserveId);
+        bytes memory payload = _encodeLiquidationPayload(orderId, o.reserveId, payout, amt);
         bytes memory opts = _getMessageOptions();
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
         require(msg.value >= q.nativeFee, "insufficient msg.value");
 
         _sendLzMessage(hederaEid, payload, opts, q.nativeFee, msg.sender);
 
-        emit Liquidated(orderId, o.reserveId, amt);
+        emit Liquidated(orderId, o.reserveId, amt, payout);
 
         uint256 refund = msg.value - q.nativeFee;
         if (refund > 0) {
@@ -156,10 +160,10 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         }
     }
 
-    function quoteLiquidationFee(bytes32 orderId) external view returns (uint256 nativeFee) {
+    function quoteLiquidationFee(bytes32 orderId, address payout, uint256 seizeAmountWei) external view returns (uint256 nativeFee) {
         require(hederaEid != 0, "eid unset");
         Order storage o = orders[orderId];
-        bytes memory payload = abi.encode(MessageTypes.LIQUIDATED, orderId, o.reserveId);
+        bytes memory payload = _encodeLiquidationPayload(orderId, o.reserveId, payout, seizeAmountWei);
         bytes memory opts = _getMessageOptions();
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
         return q.nativeFee;
@@ -195,7 +199,54 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
                 o.repaid = true;
                 emit MarkRepaid(orderId, reserveId);
             }
+        } else if (msgType == MessageTypes.LIQUIDATED) {
+            try this.decodeLiquidationPayload(message) returns (
+                bytes32 orderId,
+                bytes32 reserveId,
+                address payout,
+                uint256 seizeWei
+            ) {
+                _applyLiquidation(orderId, reserveId, payout, seizeWei);
+            } catch {
+                // fallback to legacy payload (no payout/seize info)
+                (, bytes32 orderIdLegacy, bytes32 reserveIdLegacy) = abi.decode(
+                    message,
+                    (uint8, bytes32, bytes32)
+                );
+                _applyLiquidation(orderIdLegacy, reserveIdLegacy, orders[orderIdLegacy].owner, orders[orderIdLegacy].amountWei);
+            }
         }
+    }
+
+    function decodeLiquidationPayload(
+        bytes calldata message
+    )
+        external
+        pure
+        returns (bytes32 orderId, bytes32 reserveId, address payout, uint256 seizeWei)
+    {
+        ( , orderId, reserveId, payout, seizeWei) = abi.decode(
+            message,
+            (uint8, bytes32, bytes32, address, uint256)
+        );
+    }
+
+    function _applyLiquidation(
+        bytes32 orderId,
+        bytes32 reserveId,
+        address payout,
+        uint256 seizeWei
+    ) private {
+        Order storage o = orders[orderId];
+        require(o.reserveId == reserveId, "reserve mismatch");
+        uint256 amount = seizeWei > o.amountWei ? o.amountWei : seizeWei;
+        o.amountWei -= amount;
+        if (o.amountWei == 0) {
+            o.liquidated = true;
+        }
+        (bool ok, ) = payout.call{value: amount}("");
+        require(ok, "eth send fail");
+        emit Liquidated(orderId, reserveId, amount, payout);
     }
 
     /// ---------------------------------------------------------------------
@@ -290,6 +341,21 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         return OptionsBuilder
             .newOptions()
             .addExecutorLzReceiveOption(200_000, 0);
+    }
+
+    function _encodeLiquidationPayload(
+        bytes32 orderId,
+        bytes32 reserveId,
+        address payout,
+        uint256 seizeWei
+    ) private pure returns (bytes memory) {
+        return abi.encode(
+            MessageTypes.LIQUIDATED,
+            orderId,
+            reserveId,
+            payout,
+            seizeWei
+        );
     }
 
     function _quoteOpenFee(bytes32 reserveId, uint256 depositAmountWei) internal view returns (uint256 nativeFee) {
