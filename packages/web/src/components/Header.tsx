@@ -1,6 +1,7 @@
 // src/components/Header.tsx
 import React from 'react';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
+import { NavLink } from 'react-router-dom';
 
 const Header: React.FC = () => {
   const { address, isConnected } = useAccount();
@@ -11,6 +12,24 @@ const Header: React.FC = () => {
     <nav className="bg-gray-800/50 backdrop-blur-sm border-b border-gray-700 p-4 sticky top-0 z-10">
       <div className="container mx-auto flex justify-between items-center">
         <h1 className="text-2xl font-bold text-cyan-400">KINXP</h1>
+        <div className="flex items-center gap-4 border-b border-gray-700/50 pb-2">
+            <NavLink 
+              to="/" 
+              className={({ isActive }) => 
+                `px-3 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700/50'}`
+              }
+            >
+              Dashboard
+            </NavLink>
+            <NavLink 
+              to="/analytics" 
+              className={({ isActive }) => 
+                `px-3 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700/50'}`
+              }
+            >
+              Analytics
+            </NavLink>
+        </div>
         {isConnected ? (
           <div className="flex items-center gap-4">
             <div className="bg-gray-700 text-sm text-cyan-300 font-mono py-2 px-4 rounded-lg">

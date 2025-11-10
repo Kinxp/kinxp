@@ -1,39 +1,71 @@
-// src/components/HomePage.tsx
-
 import React from 'react';
 import { useConnect } from 'wagmi';
+
+// An SVG icon component for a wallet, for a cleaner button
+const WalletIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+    </svg>
+);
+
 
 const HomePage: React.FC = () => {
   const { connectors, connect, isPending } = useConnect();
 
   const handleConnect = () => {
-    // We connect to the first available connector, which is typically MetaMask's injected provider
+    // Connect to the first available connector (usually MetaMask)
     if (connectors.length > 0) {
       connect({ connector: connectors[0] });
     } else {
-        alert("No wallet connector found. Please install MetaMask.");
+      alert("No wallet connector found. Please install a web3 wallet like MetaMask.");
     }
   };
 
   return (
-    <div className="bg-gray-800 rounded-2xl shadow-2xl p-8 text-center animate-fade-in">
-      <h2 className="text-4xl font-bold text-cyan-400 mb-4">Welcome to KINXP</h2>
-      <p className="text-lg text-gray-300 mb-8">
-        The simplest way to swap your Ethereum (ETH) for US Dollars (USD) on the Hedera network.
+    <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 sm:p-10 text-center animate-fade-in border border-gray-700/50">
+      
+      <h1 className="text-4xl sm:text-5xl font-bold mb-4">
+        <span className="bg-gradient-to-r from-cyan-400 to-blue-500 text-transparent bg-clip-text">
+          Unlock Liquidity Across Chains
+        </span>
+      </h1>
+      
+      <p className="text-lg text-gray-300 mb-12 max-w-2xl mx-auto">
+        Leverage your Ethereum (ETH) as collateral to instantly borrow USD on the high-speed Hedera network.
       </p>
       
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10 text-left">
-        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
-          <h3 className="font-bold text-white mb-2">Secure Collateral</h3>
-          <p className="text-sm text-gray-400">Lock your ETH in a secure smart contract on the Ethereum network.</p>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12 text-left">
+        {/* Step 1: Lock */}
+        <div className="bg-gray-900/50 p-5 rounded-lg border border-gray-700 transition-all hover:border-cyan-500/50 hover:shadow-lg">
+          <div className="flex items-center gap-3 mb-2">
+              <div className="bg-cyan-500/10 text-cyan-400 rounded-md p-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+              </div>
+              <h3 className="font-bold text-lg text-white">1. Secure Collateral</h3>
+          </div>
+          <p className="text-sm text-gray-400">Lock your ETH in a secure, audited smart contract on the Ethereum Sepolia testnet.</p>
         </div>
-        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
-          <h3 className="font-bold text-white mb-2">Fast Liquidity</h3>
-          <p className="text-sm text-gray-400">Instantly borrow HTS-backed USD on Hedera's high-speed network.</p>
+        
+        {/* Step 2: Borrow */}
+        <div className="bg-gray-900/50 p-5 rounded-lg border border-gray-700 transition-all hover:border-cyan-500/50 hover:shadow-lg">
+          <div className="flex items-center gap-3 mb-2">
+              <div className="bg-cyan-500/10 text-cyan-400 rounded-md p-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+              </div>
+              <h3 className="font-bold text-lg text-white">2. Borrow Instantly</h3>
+          </div>
+          <p className="text-sm text-gray-400">Receive native HTS-backed US Dollars (hUSD) on the Hedera testnet, ready to use.</p>
         </div>
-        <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700">
-          <h3 className="font-bold text-white mb-2">Cross-Chain</h3>
-          <p className="text-sm text-gray-400">Powered by LayerZero for seamless and trustless communication.</p>
+
+        {/* Step 3: Repay & Withdraw */}
+        <div className="bg-gray-900/50 p-5 rounded-lg border border-gray-700 transition-all hover:border-cyan-500/50 hover:shadow-lg">
+            <div className="flex items-center gap-3 mb-2">
+                <div className="bg-cyan-500/10 text-cyan-400 rounded-md p-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                </div>
+                <h3 className="font-bold text-lg text-white">3. Repay & Withdraw</h3>
+            </div>
+          <p className="text-sm text-gray-400">Repay your loan on Hedera at any time to instantly unlock your original ETH collateral.</p>
         </div>
       </div>
 
@@ -42,11 +74,11 @@ const HomePage: React.FC = () => {
         disabled={isPending}
         className="w-full max-w-xs mx-auto bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-4 px-6 rounded-lg text-xl transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-wait flex items-center justify-center gap-3"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-        </svg>
-        {isPending ? 'Connecting...' : 'Connect Wallet to Get Started'}
+        <WalletIcon />
+        {isPending ? 'Connecting...' : 'Connect Wallet to Start'}
       </button>
+
+
     </div>
   );
 };
