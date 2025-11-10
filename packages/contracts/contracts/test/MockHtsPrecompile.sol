@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.24;
 
-import "../hedera/hedera-hts/IHederaTokenService.sol";
+import {IHederaTokenService} from "@hashgraph/smart-contracts/contracts/system-contracts/hedera-token-service/IHederaTokenService.sol";
 
 /// @notice In-memory HTS precompile mock exposed via `hardhat_setCode`.
 contract MockHtsPrecompile {

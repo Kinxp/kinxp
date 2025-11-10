@@ -145,7 +145,7 @@ export async function deployHederaController(hederaClient: Client, hederaOperato
   const controllerParams = new ContractFunctionParameters().addAddress(await hederaOperatorWallet.getAddress());
 
   const controllerCreate = new ContractCreateFlow()
-    .setGas(10000000)
+    .setGas(2500000)
     .setBytecode(controllerArtifact.bytecode)
     .setConstructorParameters(controllerParams);
   const controllerCreateResponse = await controllerCreate.execute(hederaClient);
@@ -165,8 +165,8 @@ export async function deployReserveRegistry(hederaClient: Client, ownerWallet: W
   const registryArtifact = await artifacts.readArtifact("ReserveRegistry");
   const registryParams = new ContractFunctionParameters().addAddress(await ownerWallet.getAddress());
   const registryCreate = new ContractCreateFlow()
-    .setGas(10000000)
-    .setBytecode(registryArtifact.bytecode)
+  .setGas(2500000)
+  .setBytecode(registryArtifact.bytecode)
     .setConstructorParameters(registryParams);
 
   const registryCreateResponse = await registryCreate.execute(hederaClient);
@@ -280,7 +280,8 @@ export async function deployHederaCreditOApp(
   const creditCreate = new ContractCreateFlow()
     .setBytecode(creditArtifact.bytecode)
     .setConstructorParameters(creditParams);
-  creditCreate.setGas(15_000_000);
+  creditCreate.setGas(5_000_000)
+
 
   const creditCreateResponse = await creditCreate.execute(hederaClient);
   const creditReceipt = await creditCreateResponse.getReceipt(hederaClient);
@@ -487,7 +488,8 @@ export async function associateToken(
   const addressToAssociate = targetAddress || await borrowerWallet.getAddress();
   
   const tx = await hts.associateToken(addressToAssociate, tokenAddress, { 
-    gasLimit: 1000000 
+    gasLimit: 2500000
+ 
   });
   const receipt = await tx.wait();
   
@@ -744,7 +746,7 @@ export async function printBalances(
   const protocolBal = await token.balanceOf(protocolAddress);
   console.log("  Treasury balance:", formatUnits(treasuryBal, 6), "hUSD");
   console.log("  Borrower balance:", formatUnits(borrowerBal, 6), "hUSD");
-  console.log("  Protocol treasury balance:", formatUnits(protocolBal, 6), "hUSD");
+  console.log("  CONTROLLER SELF balance:", formatUnits(protocolBal, 6), "hUSD");
 }
 
 export async function hederaBorrow(

@@ -60,7 +60,7 @@ const hederaMirrorUrl =
 const MIRROR_DEBUG_DELAY_MS = Number(process.env.MIRROR_DEBUG_DELAY_MS ?? "5000");
 
 async function main() {
-  banner("Full cross-chain flow - DEBUG VERSION");
+  banner("E2E Borrow");
 
   const hederaOperatorWalletAddress = await hederaOperatorWallet.getAddress();
   const hederaOperatorAccountAddress = ("0x" + hederaOperatorId.toSolidityAddress()) as Hex;
@@ -76,14 +76,21 @@ async function main() {
     formatEther(await ethSigner.provider!.getBalance(await ethSigner.getAddress())),
     "ETH"
   );
-  console.log("Hedera operator:", hederaOperatorId.toString());
-  console.log("Hedera operator EVM:", hederaOperatorWalletAddress);
-  console.log("Hedera operator HEDERA EVM hederaOperatorAccountAddress:", hederaOperatorAccountAddress);
+
+  banner("E2E ADDRESES");
+
+  console.log("Hedera operator / TREASURY ID:", hederaOperatorId.toString());
+  console.log("Hedera operator / TREASURY EVM:", hederaOperatorWalletAddress);
+  // console.log("Hedera operator / TREASURY EVM hederaOperatorAccountAddress:", hederaOperatorAccountAddress);
+
+  banner("--");
+
+  
   console.log("Borrower EVM :", borrowerAddress);
   console.log("Borrower HEDERA EVM  borrowerAccountAddress:", borrowerAccountAddress);
 
-  await logMirrorAccountInfo("Treasury account", hederaOperatorId.toString());
-  await logMirrorAccountInfo("Borrower account", borrowerAccountIdStr);
+  // await logMirrorAccountInfo("Treasury account", hederaOperatorId.toString());
+  // await logMirrorAccountInfo("Borrower account", borrowerAccountIdStr);
 
   banner("Ensuring Hedera operator has HBAR for fees");
   await ensureOperatorHasHbar(hederaOperatorWalletAddress);
@@ -116,6 +123,9 @@ async function main() {
     hederaClient,
     registryAddr
   );
+
+  banner("HEDERA CREDIT OAPP");
+
   console.log(`  → HederaCreditOApp: ${hederaCreditAddr}, (${creditId})`);
 
   // ──────────────────────────────────────────────────────────────────────────────
@@ -155,9 +165,13 @@ async function main() {
     value: ethers.parseEther("15"),
     gasLimit: 250_000,
   });
+
+
   const createRcpt = await createTx.wait();
   const tokenAddress = await controller.usdToken();
   const tokenId = TokenId.fromSolidityAddress(tokenAddress);
+
+
   console.log("  ?+' Token ID:", tokenId.toString());
   console.log("  ?+' EVM address:", tokenAddress);
   console.log("  ?+' Treasury (controller):", controllerAddr);
@@ -184,7 +198,7 @@ async function main() {
   const initialOwnerMint = 10_000_000_000; // 10,000 tokens (6 decimals)
 
   
-  banner("Mirror: token association snapshot");
+  banner("MINTING BEFORE BORROW");
   await logMirrorAssociations("Treasury", hederaOperatorId.toString(), tokenId.toString());
   await logMirrorAssociations("Borrower", borrowerAccountId, tokenId.toString());
   await logMirrorAssociations("Controller", controllerId.toString(), tokenId.toString());
@@ -278,7 +292,7 @@ async function main() {
     tokenAddress,
     hederaOperatorAccountAddress,
     borrowerAccountAddress,
-    hederaOperatorAccountAddress
+    controllerAddr
   );
 
   console.log(" controller.mintTo static call as HederaCredit");
@@ -365,7 +379,7 @@ async function main() {
     tokenAddress,
     hederaOperatorAccountAddress,
     borrowerAccountAddress,
-    hederaOperatorAccountAddress
+    controllerAddr
   );
 
   if (borrowerBalance === 0n) {
@@ -384,7 +398,7 @@ async function main() {
     tokenAddress,
     hederaOperatorAccountAddress,
     borrowerAccountAddress,
-    hederaOperatorAccountAddress
+    controllerAddr
   );
 
   banner("Attempting repay static call...");
@@ -432,7 +446,7 @@ async function main() {
     tokenAddress,
     hederaOperatorAccountAddress,
     borrowerAddress,
-    hederaOperatorAccountAddress
+    controllerAddr
   );
 
   banner("Waiting for Ethereum repay flag");
