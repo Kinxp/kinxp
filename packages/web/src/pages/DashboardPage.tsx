@@ -7,23 +7,22 @@ import { useAppContext } from '../context/AppContext';
 
 import OrderActionList from '../components/dashboard/OrderActionList';
 import ActionPanel from '../components/ActionPanel';
-import HomePage from '../components/HomePage';
+import HomePage from '../components/DashboardPageModal';
 import OrderInfoList from '../components/dashboard/OrderInfoList';
 import CreateOrderView from '../components/dashboard/CreateOrderView';
 import OrderListSkeleton from '../components/dashboard/OrderListSkeleton';
-
+import DemoDashboardView from '../components/dashboard/DemoDashboardView'; 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();
   const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders, handleCreateOrder } = useAppContext();
 
   const [allOrders, setAllOrders] = useState<UserOrderSummary[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true); // Start in loading state
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const refreshOrders = async () => {
       if (!address) return;
-
       setIsLoading(true);
       setError(null);
       try {
@@ -40,24 +39,18 @@ const DashboardPage = () => {
     if (isConnected && address) {
       refreshOrders();
     } else {
+      setIsLoading(false); // Stop loading if not connected
       setAllOrders([]);
     }
   }, [isConnected, address, appState]);
 
   const decoratedOrders = useMemo(() => {
     return allOrders.map(order => {
-      // Prefer on-chain Hedera truth when present
       if (order.borrowedUsd && order.borrowedUsd > 0n) return order;
-
-      // Fallback: local cache, only if ETH-side says "Funded"
       const cacheEntry = borrowedOrders[order.orderId.toLowerCase()];
       if (cacheEntry && order.status === 'Funded') {
         try {
-          return {
-            ...order,
-            status: 'Borrowed' as const,
-            borrowedUsd: parseUnits(cacheEntry.amount, 6),
-          };
+          return { ...order, status: 'Borrowed' as const, borrowedUsd: parseUnits(cacheEntry.amount, 6) };
         } catch {
           return { ...order, status: 'Borrowed' as const };
         }
@@ -83,65 +76,48 @@ const DashboardPage = () => {
   const handleSelectOrder = (orderId: `0x${string}`) => {
     setSelectedOrderId(prev => (prev === orderId ? null : orderId));
   };
-
-  if (!isConnected) {
-    return <HomePage />;
-  }
-
+  
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      {/* LEFT: Create Order always on top + dynamic action panel below */}
-      <div className="space-y-6">
-        <div className="bg-gray-800 rounded-2xl p-6">
-          <CreateOrderView onSubmit={handleCreateOrder} />
-        </div>
-
-        <div className="bg-gray-800 rounded-2xl p-6">
-          <ActionPanel allOrders={decoratedOrders} />
-        </div>
-      </div>
-
-      {/* RIGHT: Lists */}
-      <div className="space-y-6">
-        {isLoading ? (
-          <>
-          <OrderListSkeleton />
-          <OrderListSkeleton />
-          </>
-        ) : error ? (
-          <div className="text-center text-red-400 p-4">{error}</div>
-        ) : (
-          <>
-            <OrderActionList
-              title="Ready to Fund on Sepolia"
-              orders={fundableOrders}
-              selectedOrderId={selectedOrderId}
-              onSelectOrder={handleSelectOrder}
-            />
-            <OrderActionList
-              title="Active Orders"
-              orders={activeOrders}
-              selectedOrderId={selectedOrderId}
-              onSelectOrder={handleSelectOrder}
-            />
-            <OrderActionList
-              title="Ready to Withdraw on Sepolia"
-              orders={withdrawableOrders}
-              selectedOrderId={selectedOrderId}
-              onSelectOrder={handleSelectOrder}
-            />
-            <OrderInfoList
-              title="Closed Orders"
-              orders={closedOrders}
-            />
-            {!isLoading && allOrders.length === 0 && (
-              <div className="text-center text-gray-500 p-4 bg-gray-800/50 rounded-lg">
-                No orders found for your address. Create a new order to begin.
-              </div>
+    <div className="relative">
+      {isConnected ? (
+        // --- LIVE VIEW (for connected users) ---
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
+          <div className="space-y-6">
+            <div className="bg-gray-800 rounded-2xl p-6">
+              <CreateOrderView onSubmit={handleCreateOrder} />
+            </div>
+            <div className="bg-gray-800 rounded-2xl p-6">
+              <ActionPanel allOrders={decoratedOrders} />
+            </div>
+          </div>
+          <div className="space-y-6">
+            {isLoading ? (
+              <><OrderListSkeleton /><OrderListSkeleton /></>
+            ) : error ? (
+              <div className="text-center text-red-400 p-4">{error}</div>
+            ) : (
+              <>
+                <OrderActionList title="Ready to Fund" orders={fundableOrders} selectedOrderId={selectedOrderId} onSelectOrder={handleSelectOrder} />
+                <OrderActionList title="Active Orders" orders={activeOrders} selectedOrderId={selectedOrderId} onSelectOrder={handleSelectOrder} />
+                <OrderActionList title="Ready to Withdraw" orders={withdrawableOrders} selectedOrderId={selectedOrderId} onSelectOrder={handleSelectOrder} />
+                <OrderInfoList title="Closed Orders" orders={closedOrders} />
+                {!isLoading && allOrders.length === 0 && (
+                  <div className="text-center text-gray-500 p-4 bg-gray-800/50 rounded-lg">No orders found.</div>
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div className="blur-[2px]">
+            <DemoDashboardView />
+          </div>
+          <div className="absolute inset-0 flex items-center justify-center z-20">
+            <HomePage />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

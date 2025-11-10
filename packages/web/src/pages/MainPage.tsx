@@ -4,7 +4,7 @@ import { useAccount } from 'wagmi';
 import { useAppContext } from '../context/AppContext';
 import { AppState } from '../types';
 
-import HomePage from '../components/HomePage';
+import DashboardPageModal from '../components/DashboardPageModal';
 import CreateOrderView from '../components/dashboard/CreateOrderView';
 import FundOrderView from '../components/actionpanel/FundOrderView';
 import ProgressView from '../components/actionpanel/ProgressView';
@@ -33,7 +33,7 @@ const MainPage = () => {
   } = useAppContext();
 
   const renderContent = () => {
-    if (!isConnected) return <HomePage />;
+    if (!isConnected) return <DashboardPageModal />;
     switch (appState) {
       case AppState.IDLE:
         return <CreateOrderView onSubmit={handleCreateOrder} />;
