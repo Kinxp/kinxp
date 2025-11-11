@@ -744,9 +744,9 @@ export async function printBalances(
   const treasuryBal = await token.balanceOf(treasuryAddress);
   const borrowerBal = await token.balanceOf(borrowerAddress);
   const protocolBal = await token.balanceOf(protocolAddress);
-  console.log("  Treasury balance:", formatUnits(treasuryBal, 6), "hUSD");
+  // console.log("  Treasury balance:", formatUnits(treasuryBal, 6), "hUSD");
   console.log("  Borrower balance:", formatUnits(borrowerBal, 6), "hUSD");
-  console.log("  CONTROLLER SELF balance:", formatUnits(protocolBal, 6), "hUSD");
+  console.log("  Treasury/ Controller balance:", formatUnits(protocolBal, 6), "hUSD");
 }
 
 export async function hederaBorrow(

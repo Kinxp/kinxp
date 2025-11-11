@@ -299,17 +299,19 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
             return 0;
         }
-        if (feeAmount > 0) {
-            try ctrl.transferTo(
-                cfg.metadata.protocolTreasury,
-                feeAmount
-            ) {
-                // no-op
-            } catch (bytes memory /* err2 */) {
-                emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
-                return 0;
-            }
-        }
+
+        // There is no need to transfer anything to the owner
+        // if (feeAmount > 0) {
+        //     try ctrl.transferTo(
+        //         cfg.metadata.protocolTreasury,
+        //         feeAmount
+        //     ) {
+        //         // no-op
+        //     } catch (bytes memory /* err2 */) {
+        //         emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
+        //         return 0;
+        //     }
+        // }
 
         if (debugStopAfterMint) {
             emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);

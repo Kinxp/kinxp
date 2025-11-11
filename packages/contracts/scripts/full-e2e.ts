@@ -417,23 +417,23 @@ async function main() {
   );
 
   const decimals = Number(await controller.usdDecimals());
-  const tokenIdForAllowance = TokenId.fromSolidityAddress(tokenAddress).toString();
-  const borrowerAccountInfo = await new AccountInfoQuery()
-    .setAccountId(borrowerAccountIdObj)
-    .execute(hederaClient);
-  const borrowerAllowance = borrowerAccountInfo.tokenAllowances.find(
-    (allowance) =>
-      allowance.tokenId.toString() === tokenIdForAllowance &&
-      allowance.spenderAccountId?.toString() === controllerId.toString()
-  );
-  const allowanceValue = borrowerAllowance?.amount
-    ? BigInt(borrowerAllowance.amount.toString())
-    : 0n;
-  console.log(
-    "  Borrower allowance to controller before approve:",
-    formatUnits(allowanceValue, decimals),
-    "hUSD"
-  );
+  // const tokenIdForAllowance = TokenId.fromSolidityAddress(tokenAddress).toString();
+  // const borrowerAccountInfo = await new AccountInfoQuery()
+  //   .setAccountId(borrowerAccountIdObj)
+  //   .execute(hederaClient);
+  // const borrowerAllowance = borrowerAccountInfo.tokenAllowances.find(
+  //   (allowance) =>
+  //     allowance.tokenId.toString() === tokenIdForAllowance &&
+  //     allowance.spenderAccountId?.toString() === controllerId.toString()
+  // );
+  // const allowanceValue = borrowerAllowance?.amount
+  //   ? BigInt(borrowerAllowance.amount.toString())
+  //   : 0n;
+  // console.log(
+  //   "  Borrower allowance to controller before approve:",
+  //   formatUnits(allowanceValue, decimals),
+  //   "hUSD"
+  // );
 
   banner("Approving controller to spend hUSD (via HTS precompile)");
   const HTS_ADDRESS = "0x0000000000000000000000000000000000000167";
@@ -468,14 +468,23 @@ async function main() {
     throw err;
   }
 
-    const allowanceValueAfter = borrowerAllowance?.amount
-    ? BigInt(borrowerAllowance.amount.toString())
-    : 0n;
-  console.log(
-    "  Borrower allowance to controller after approve:",
-    formatUnits(allowanceValueAfter, decimals),
-    "hUSD"
-  );
+  //   const borrowerAccountInfoAfter = await new AccountInfoQuery()
+  //   .setAccountId(borrowerAccountIdObj)
+  //   .execute(hederaClient);
+
+  //   const borrowerAllowanceAfter = borrowerAccountInfoAfter.tokenAllowances.find(
+  //     (allowance) =>
+  //       allowance.tokenId.toString() === tokenIdForAllowance &&
+  //       allowance.spenderAccountId?.toString() === controllerId.toString()
+  //   );
+  //   const allowanceValueAfter = borrowerAllowanceAfter?.amount
+  //   ? BigInt(borrowerAllowanceAfter.amount.toString())
+  //   : 0n;
+  // console.log(
+  //   "  Borrower allowance to controller after approve:",
+  //   formatUnits(allowanceValueAfter, decimals),
+  //   "hUSD"
+  // );
 
   banner("Attempting repay static call...");
   try {
