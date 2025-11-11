@@ -290,58 +290,59 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         //     canonicalBorrower = pos.borrower;
         // }
 
-        emit BorrowDebug(orderId, "mint_borrower_start", netAmount, feeAmount, borrower);
+        emit BorrowDebug(orderId, "transfer_borrower_start", netAmount, feeAmount, borrower);
 
-        try ctrl.mintTo(borrower, netAmount) {
-            // no-op
-        } catch (bytes memory /* err */) {
-            emit BorrowDebug(orderId, "mint_borrower_failed", netAmount, feeAmount, msg.sender);
-            return 0;
-        }
-        if (feeAmount > 0) {
-            try ctrl.mintTo(
-                cfg.metadata.protocolTreasury,
-                feeAmount
-            ) {
-                // no-op
-            } catch (bytes memory /* err2 */) {
-                emit BorrowDebug(orderId, "mint_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
-                return 0;
-            }
-        }
+        // Transfer tokens from controller treasury to borrower (instead of minting)
+        // try ctrl.transferTo(borrower, netAmount) {
+        //     // no-op
+        // } catch (bytes memory /* err */) {
+        //     emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
+        //     return 0;
+        // }
+        // if (feeAmount > 0) {
+        //     try ctrl.transferTo(
+        //         cfg.metadata.protocolTreasury,
+        //         feeAmount
+        //     ) {
+        //         // no-op
+        //     } catch (bytes memory /* err2 */) {
+        //         emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
+        //         return 0;
+        //     }
+        // }
 
-        if (debugStopAfterMint) {
-            emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
-			return netAmount;
-		}
+        // if (debugStopAfterMint) {
+        //     emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
+		// 	return netAmount;
+		// }
 
-        // Update scaled debt
-        uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
-        uint256 scaledDelta = MathUtils.rayDiv(
-            amountRay,
-            uint256(state.variableBorrowIndex)
-        );
-        if (scaledDelta > type(uint128).max) revert DebtOverflow();
+        // // Update scaled debt
+        // uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
+        // uint256 scaledDelta = MathUtils.rayDiv(
+        //     amountRay,
+        //     uint256(state.variableBorrowIndex)
+        // );
+        // if (scaledDelta > type(uint128).max) revert DebtOverflow();
 
-        pos.scaledDebtRay += uint128(scaledDelta);
-        state.totalVariableDebtRay += amountRay;
+        // pos.scaledDebtRay += uint128(scaledDelta);
+        // state.totalVariableDebtRay += amountRay;
 
-        emit Borrowed(
-            orderId,
-            reserveId,
-            msg.sender,
-            usdAmount,
-            netAmount,
-            feeAmount,
-            state.lastBorrowRateBps
-        );
+        // emit Borrowed(
+        //     orderId,
+        //     reserveId,
+        //     msg.sender,
+        //     usdAmount,
+        //     netAmount,
+        //     feeAmount,
+        //     state.lastBorrowRateBps
+        // );
 
-        if (msg.value > feePaid) {
-            (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
-                ""
-            );
-            require(refundOk, "refund fail");
-        }
+        // if (msg.value > feePaid) {
+        //     (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
+        //         ""
+        //     );
+        //     require(refundOk, "refund fail");
+        // }
     }
 
 
@@ -408,9 +409,9 @@ function repay(
     uint64 burnAmount = uint64(repayTokens);
 
     // 🔐 IMPORTANT: charge the BORROWER:
-    // pulls hUSD from borrower -> treasury, then burns from treasury
+    // User must approve controller first, then we transfer tokens back to treasury
     // (requires borrower approval to controller for at least `burnAmount`)
-    ctrl.pullFromAndBurn(pos.borrower, burnAmount);
+    ctrl.pullFrom(pos.borrower, burnAmount);
 
     fullyRepaid = (pos.scaledDebtRay == 0);
 

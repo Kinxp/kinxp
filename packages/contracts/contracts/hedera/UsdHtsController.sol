@@ -7,68 +7,53 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {HederaTokenService} from "@hashgraph/smart-contracts/contracts/system-contracts/hedera-token-service/HederaTokenService.sol";
 import {IHederaTokenService} from "@hashgraph/smart-contracts/contracts/system-contracts/hedera-token-service/IHederaTokenService.sol";
 import {HederaResponseCodes} from "@hashgraph/smart-contracts/contracts/system-contracts/HederaResponseCodes.sol";
-import {KeyHelper} from "@hashgraph/smart-contracts/contracts/system-contracts/hedera-token-service/KeyHelper.sol";
-
 
 /// @title UsdHtsController
-/// @notice Governance controlled helper around the Hedera Token Service for a fungible HTS token.
-contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
+/// @notice Controller for managing an existing HTS token (created via SimpleHtsToken)
+/// @dev This contract manages minting, burning, and tracks treasury USD amounts
+contract UsdHtsController is HederaTokenService, Ownable {
     uint64 private constant MAX_INT64 = uint64(type(int64).max);
-    int64 private constant DEFAULT_AUTO_RENEW = 7_776_000; // 90 days
 
     address public immutable treasuryAccount;
-
     address public usdToken;
     uint8 public usdDecimals;
     string public usdTokenName;
     string public usdTokenSymbol;
+    bool public tokenInitialized;
 
     uint256 public mintCap; // 0 = unlimited
     uint256 public totalMinted;
     uint256 public totalBurned;
     bool public paused;
 
-    event TokenCreated(
+    // Treasury USD amounts tracking
+    struct TreasuryInfo {
+        address treasury;
+        uint256 usdAmount; // Amount in token's smallest unit (with decimals)
+        bool active;
+    }
+
+    mapping(address => TreasuryInfo) public treasuries;
+    address[] public treasuryList; // List of all treasury addresses
+
+    event TokenLinked(
         address indexed token,
         uint8 decimals,
         string name,
         string symbol
     );
+    event TokenAssociated(address indexed token);
     event MintCapUpdated(uint256 newCap);
     event Minted(address indexed to, uint64 amount);
     event Burned(uint64 amount);
     event Paused(address indexed account);
     event Unpaused(address indexed account);
-    event MintAttempt(
-        address indexed caller,
-        address indexed to,
-        uint64 amount,
-        int64 rcMint,
-        int64 rcTransfer,
-        uint256 totalMintedBefore,
-        uint256 totalMintedAfter
-    );
-    event HtsTransferFromAttempt(
-        address indexed from,
-        address to,
-        uint256 amount,
-        int64 responseCode
-    );
+    event TreasuryAdded(address indexed treasury, uint256 initialAmount);
+    event TreasuryUpdated(address indexed treasury, uint256 newAmount);
+    event TreasuryRemoved(address indexed treasury);
 
-    struct MintDebugData {
-        address owner;
-        address treasury;
-        address usdToken;
-        uint8 usdTokenDecimals;
-        bool paused;
-        uint256 mintCap;
-        uint256 totalMinted;
-        uint256 totalBurned;
-        bool tokenInitialized;
-    }
-
-    error TokenAlreadyInitialized();
     error TokenNotInitialized();
+    error TokenAlreadyInitialized();
     error MintCapExceeded();
     error ControllerPaused();
     error InvalidRecipient();
@@ -78,7 +63,8 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
     error TransferFailed(int64 rc);
     error BurnFailed(int64 rc);
     error AssociateFailed(int64 rc);
-    error TokenCreateFailed(int64 rc);
+    error TreasuryNotFound();
+    error TreasuryAlreadyExists();
 
     constructor(address owner_) {
         treasuryAccount = address(this);
@@ -87,90 +73,117 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
         }
     }
 
-    /// @notice Deploys a new fungible HTS token where this contract is the treasury and supply/admin key.
-    function createUsdToken(
-        string memory name_,
-        string memory symbol_,
-        uint8 decimals_,
-        string memory memo_
-    ) external payable onlyOwner returns (address tokenAddr) {
-        if (usdToken != address(0)) revert TokenAlreadyInitialized();
-        require(bytes(name_).length != 0, "name empty");
-        require(bytes(symbol_).length != 0, "symbol empty");
-
-    
-
-
-        IHederaTokenService.HederaToken memory token;
-        token.name = "USD Token";
-        token.symbol = "USDT";
-        token.treasury = address(this);
-        token.memo = "USD stablecoin";
-        token.tokenSupplyType = true; // true = FINITE, false = INFINITE
-        token.maxSupply = int64(1000000000000000000);
-
-        // // Set keys (admin and supply) to contract address
-        IHederaTokenService.TokenKey[] memory keys = new IHederaTokenService.TokenKey[](2);
-        keys[0] = getSingleKey(KeyType.SUPPLY, KeyValueType.CONTRACT_ID, address(this));
-        keys[1] = getSingleKey(KeyType.ADMIN, KeyValueType.CONTRACT_ID, address(this));
-        token.tokenKeys = keys;
-
-        (int responseCode, address tokenAddress) = createFungibleToken(
-            token,
-            int64(0),      // initial supplys
-            int32(6)       // decimals
-        );
-        require(responseCode == 22, "Token failed to create"); // 22 = SUCCESS
-
-        // emit MintAttempt(
-        //     msg.sender,
-        //     msg.sender,
-        //     uint64(0),
-        //     int64(rc),
-        //     int64(rc),
-        //     0,
-        //     0
-        // );
-        usdToken = tokenAddress;
-        usdDecimals = decimals_;
-        usdTokenName = name_;
-        usdTokenSymbol = symbol_;
-
-        emit TokenCreated(tokenAddress, decimals_, name_, symbol_);
-        return tokenAddress;
-    }
-
-    function approve(uint64 amount) external {
-        if (usdToken == address(0)) revert TokenNotInitialized();
-        if (amount == 0) revert InvalidAmount();
-
-        int rc = HederaTokenService.approve(usdToken, address(this), 10000000000);
-
-        emit HtsTransferFromAttempt(msg.sender, usdToken, amount, int64(rc));
-
-    
-    }
-
-    /// @notice Links an already created HTS token (must have transferred the supply key here beforehand).
-    function setExistingUsdToken(address tokenAddr, uint8 decimals_)
+    /// @notice Links an existing HTS token to this controller
+    /// @param tokenAddr Address of the existing token
+    /// @param decimals_ Token decimals
+    function setUsdToken(address tokenAddr, uint8 decimals_)
         external
         onlyOwner
     {
-        if (usdToken != address(0)) revert TokenAlreadyInitialized();
+        if (tokenInitialized) revert TokenAlreadyInitialized();
         require(tokenAddr != address(0), "token=0");
 
         usdToken = tokenAddr;
         usdDecimals = _resolveDecimals(tokenAddr, decimals_);
         usdTokenName = _readName(tokenAddr);
         usdTokenSymbol = _readSymbol(tokenAddr);
+        tokenInitialized = true;
 
-        emit TokenCreated(tokenAddr, usdDecimals, usdTokenName, usdTokenSymbol);
+        emit TokenLinked(tokenAddr, usdDecimals, usdTokenName, usdTokenSymbol);
     }
 
-    function associateToken(address tokenAddr) external onlyOwner {
-        require(tokenAddr != address(0), "token=0");
-        int rc = HederaTokenService.associateToken(address(this), tokenAddr);
-        if (rc != HederaResponseCodes.SUCCESS) revert AssociateFailed(int64(rc));
+    /// @notice Associates this controller with the token
+    /// @dev Must be called after setUsdToken to enable minting/burning
+    function associateToken() external onlyOwner {
+        if (!tokenInitialized) revert TokenNotInitialized();
+        require(usdToken != address(0), "token=0");
+        
+        int rc = HederaTokenService.associateToken(address(this), usdToken);
+        if (rc != HederaResponseCodes.SUCCESS) {
+            revert AssociateFailed(int64(rc));
+        }
+        
+        emit TokenAssociated(usdToken);
+    }
+
+    /// @notice Adds a treasury to track USD amounts
+    /// @param treasury Treasury address
+    /// @param initialAmount Initial USD amount (in token's smallest unit)
+    function addTreasury(address treasury, uint256 initialAmount) external onlyOwner {
+        require(treasury != address(0), "treasury=0");
+        if (treasuries[treasury].active) revert TreasuryAlreadyExists();
+
+        treasuries[treasury] = TreasuryInfo({
+            treasury: treasury,
+            usdAmount: initialAmount,
+            active: true
+        });
+        treasuryList.push(treasury);
+
+        emit TreasuryAdded(treasury, initialAmount);
+    }
+
+    /// @notice Updates USD amount for a treasury
+    /// @param treasury Treasury address
+    /// @param newAmount New USD amount (in token's smallest unit)
+    function updateTreasuryAmount(address treasury, uint256 newAmount) external onlyOwner {
+        if (!treasuries[treasury].active) revert TreasuryNotFound();
+        
+        treasuries[treasury].usdAmount = newAmount;
+        emit TreasuryUpdated(treasury, newAmount);
+    }
+
+    /// @notice Removes a treasury from tracking
+    /// @param treasury Treasury address
+    function removeTreasury(address treasury) external onlyOwner {
+        if (!treasuries[treasury].active) revert TreasuryNotFound();
+        
+        treasuries[treasury].active = false;
+        
+        // Remove from list (keep in mapping for historical data)
+        for (uint i = 0; i < treasuryList.length; i++) {
+            if (treasuryList[i] == treasury) {
+                treasuryList[i] = treasuryList[treasuryList.length - 1];
+                treasuryList.pop();
+                break;
+            }
+        }
+        
+        emit TreasuryRemoved(treasury);
+    }
+
+    /// @notice Gets all active treasuries
+    /// @return addresses Array of treasury addresses
+    /// @return amounts Array of USD amounts
+    function getAllTreasuries() external view returns (address[] memory addresses, uint256[] memory amounts) {
+        uint256 activeCount = 0;
+        for (uint i = 0; i < treasuryList.length; i++) {
+            if (treasuries[treasuryList[i]].active) {
+                activeCount++;
+            }
+        }
+
+        addresses = new address[](activeCount);
+        amounts = new uint256[](activeCount);
+        
+        uint256 idx = 0;
+        for (uint i = 0; i < treasuryList.length; i++) {
+            if (treasuries[treasuryList[i]].active) {
+                addresses[idx] = treasuryList[i];
+                amounts[idx] = treasuries[treasuryList[i]].usdAmount;
+                idx++;
+            }
+        }
+    }
+
+    /// @notice Gets total USD amount across all treasuries
+    /// @return total Total USD amount
+    function getTotalTreasuryAmount() external view returns (uint256 total) {
+        for (uint i = 0; i < treasuryList.length; i++) {
+            if (treasuries[treasuryList[i]].active) {
+                total += treasuries[treasuryList[i]].usdAmount;
+            }
+        }
     }
 
     function setMintCap(uint256 newCap) external onlyOwner {
@@ -188,26 +201,30 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Mints tokens to a specified address
+    /// @param to Address to receive the tokens
+    /// @param amount Amount to mint
     function mintTo(address to, uint64 amount) external onlyOwner {
-        // if (paused) revert ControllerPaused();
-        // if (usdToken == address(0)) revert TokenNotInitialized();
-        // if (to == address(0)) revert InvalidRecipient();
-        // if (amount == 0) revert InvalidAmount();
-        // if (amount > MAX_INT64) revert AmountExceedsInt64();
-        // if (mintCap != 0 && totalMinted + amount > mintCap) {
-        //     revert MintCapExceeded();
-        // }
+        if (paused) revert ControllerPaused();
+        if (!tokenInitialized) revert TokenNotInitialized();
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert InvalidAmount();
+        if (amount > MAX_INT64) revert AmountExceedsInt64();
+        if (mintCap != 0 && totalMinted + amount > mintCap) {
+            revert MintCapExceeded();
+        }
 
         int64 signedAmount = int64(uint64(amount));
 
-        // Fungible mint uses amount; metadata array can be empty
         bytes[] memory metadata = new bytes[](0);
         (int rcMint, , ) = HederaTokenService.mintToken(
             usdToken,
             signedAmount,
             metadata
         );
-        // if (rcMint != HederaResponseCodes.SUCCESS) revert MintFailed(int64(rcMint));
+        if (rcMint != HederaResponseCodes.SUCCESS) {
+            revert MintFailed(int64(rcMint));
+        }
 
         int64 rcTransfer = int64(HederaResponseCodes.SUCCESS);
         if (to != treasuryAccount) {
@@ -218,30 +235,44 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
                 signedAmount
             );
             rcTransfer = int64(rcXfer);
-            // if (rcXfer != HederaResponseCodes.SUCCESS) revert TransferFailed(int64(rcXfer));
+            if (rcXfer != HederaResponseCodes.SUCCESS) {
+                revert TransferFailed(int64(rcXfer));
+            }
         }
 
-        uint256 beforeMint = totalMinted;
-        totalMinted = beforeMint + amount;
-
-        emit MintAttempt(
-            msg.sender,
-            to,
-            amount,
-            int64(rcMint),
-            rcTransfer,
-            beforeMint,
-            totalMinted
-        );
+        totalMinted += amount;
         emit Minted(to, amount);
     }
 
-    function burnFromTreasury(uint64 amount) external onlyOwner {
-        _burnFromTreasury(amount);
+    /// @notice Transfers tokens from controller treasury to recipient
+    /// @param to Address to receive the tokens
+    /// @param amount Amount to transfer
+    function transferTo(address to, uint64 amount) external onlyOwner {
+        if (paused) revert ControllerPaused();
+        if (!tokenInitialized) revert TokenNotInitialized();
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert InvalidAmount();
+        if (amount > MAX_INT64) revert AmountExceedsInt64();
+
+        int64 signedAmount = int64(uint64(amount));
+
+        int rcXfer = HederaTokenService.transferToken(
+            usdToken,
+            treasuryAccount,
+            to,
+            signedAmount
+        );
+        if (rcXfer != HederaResponseCodes.SUCCESS) {
+            revert TransferFailed(int64(rcXfer));
+        }
+
+        emit Minted(to, amount); // Reusing event for transfer
     }
 
-    function _burnFromTreasury(uint64 amount) internal {
-        if (usdToken == address(0)) revert TokenNotInitialized();
+    /// @notice Burns tokens from this contract's treasury
+    /// @param amount Amount to burn
+    function burnFromTreasury(uint64 amount) external onlyOwner {
+        if (!tokenInitialized) revert TokenNotInitialized();
         if (amount == 0) revert InvalidAmount();
         if (amount > MAX_INT64) revert AmountExceedsInt64();
 
@@ -254,21 +285,26 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
             serials
         );
 
-        if (rcBurn != HederaResponseCodes.SUCCESS) revert BurnFailed(int64(rcBurn));
+        if (rcBurn != HederaResponseCodes.SUCCESS) {
+            revert BurnFailed(int64(rcBurn));
+        }
 
         totalBurned += amount;
         emit Burned(amount);
     }
 
-    function pullFromAndBurn(address from, uint64 amount) external onlyOwner {
+    /// @notice Transfers tokens from an address back to treasury (requires approval)
+    /// @param from Address to transfer tokens from
+    /// @param amount Amount to transfer
+    function pullFrom(address from, uint64 amount) external onlyOwner {
         if (from == address(0)) revert InvalidRecipient();
-        if (usdToken == address(0)) revert TokenNotInitialized();
+        if (!tokenInitialized) revert TokenNotInitialized();
         if (amount == 0) revert InvalidAmount();
         if (amount > MAX_INT64) revert AmountExceedsInt64();
 
-        int64 signedAmount = int64(amount);
         uint256 transferAmount = uint256(amount);
 
+        // Transfer from borrower to treasury (requires approval)
         int64 rcTransfer = this.transferFrom(
             usdToken,
             from,
@@ -276,55 +312,51 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
             transferAmount
         );
 
-        emit HtsTransferFromAttempt(from, usdToken, amount, rcTransfer);
+        if (rcTransfer != HederaResponseCodes.SUCCESS) {
+            revert TransferFailed(rcTransfer);
+        }
 
-        // if (rcTransfer != HederaResponseCodes.SUCCESS) {
-        //     revert TransferFailed(rcTransfer);
-        // }
-
-        _burnFromTreasury(amount);
+        emit Minted(treasuryAccount, amount); // Reusing event for transfer back
     }
 
+    /// @notice Transfers tokens from an address and burns them
+    /// @param from Address to transfer tokens from
+    /// @param amount Amount to transfer and burn
+    function pullFromAndBurn(address from, uint64 amount) external onlyOwner {
+        if (from == address(0)) revert InvalidRecipient();
+        if (!tokenInitialized) revert TokenNotInitialized();
+        if (amount == 0) revert InvalidAmount();
+        if (amount > MAX_INT64) revert AmountExceedsInt64();
 
-    function debugMintStatus(address)
-        external
-        view
-        returns (MintDebugData memory data)
-    {
-        data.owner = owner();
-        data.treasury = treasuryAccount;
-        data.usdToken = usdToken;
-        data.usdTokenDecimals = usdDecimals;
-        data.paused = paused;
-        data.mintCap = mintCap;
-        data.totalMinted = totalMinted;
-        data.totalBurned = totalBurned;
-        data.tokenInitialized = usdToken != address(0);
-    }
+        int64 signedAmount = int64(amount);
+        uint256 transferAmount = uint256(amount);
 
-    function _contractKeys()
-        internal
-        view
-        returns (IHederaTokenService.TokenKey[] memory keys)
-    {
-        keys = new IHederaTokenService.TokenKey[](2);
-        keys[0] = _contractKey(1 << 0); // ADMIN
-        keys[1] = _contractKey(1 << 4); // SUPPLY
-    }
+        // Transfer from borrower to treasury (requires approval)
+        int64 rcTransfer = this.transferFrom(
+            usdToken,
+            from,
+            treasuryAccount,
+            transferAmount
+        );
 
-    function _contractKey(uint keyType)
-        internal
-        view
-        returns (IHederaTokenService.TokenKey memory tokenKey)
-    {
-        tokenKey.keyType = keyType;
-        tokenKey.key = IHederaTokenService.KeyValue({
-            inheritAccountKey: false,
-            contractId: address(this),
-            ed25519: "",
-            ECDSA_secp256k1: "",
-            delegatableContractId: address(0)
-        });
+        if (rcTransfer != HederaResponseCodes.SUCCESS) {
+            revert TransferFailed(rcTransfer);
+        }
+
+        // Burn from treasury
+        int64[] memory serials = new int64[](0);
+        (int rcBurn, ) = burnToken(
+            usdToken,
+            signedAmount,
+            serials
+        );
+
+        if (rcBurn != HederaResponseCodes.SUCCESS) {
+            revert BurnFailed(int64(rcBurn));
+        }
+
+        totalBurned += amount;
+        emit Burned(amount);
     }
 
     function _readName(address tokenAddr) private view returns (string memory) {
