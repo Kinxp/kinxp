@@ -1,11 +1,17 @@
-import {
+﻿import {
   formatEther,
   formatUnits,
   Contract,
   parseUnits,
+  parseEther,
   ethers,
 } from "ethers";
-import { AccountId, TokenId, TokenInfoQuery } from "@hashgraph/sdk";
+import {
+  AccountId,
+  AccountInfoQuery,
+  TokenId,
+  TokenInfoQuery,
+} from "@hashgraph/sdk";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import {
@@ -158,34 +164,105 @@ async function main() {
   console.log("  ✓ Order synced to Hedera");
 
   // ──────────────────────────────────────────────────────────────────────────────
-  // Create HTS token
+  // Create/Link Token and Setup Controller
   // ──────────────────────────────────────────────────────────────────────────────
-  banner("Creating HTS token via controller");
-  const createTx = await controller.createUsdToken("Hedera Stable USD", "hUSD", 6, "hUSD", {
-    value: ethers.parseEther("15"),
-    gasLimit: 250_000,
+  banner("Setting up token for controller");
+
+  let tokenAddress: string;
+  let tokenId: TokenId;
+
+  // Check if token contract address is provided in env, otherwise deploy new token
+  const CONTRACT_TOKEN = process.env.CONTRACT_TOKEN
+  
+  // if (CONTRACT_TOKEN) {
+    // Use existing token contract
+    console.log("  → Using existing token contract:", CONTRACT_TOKEN);
+    const { ethers: hreEthers } = await import("hardhat");
+    const tokenContract = await hreEthers.getContractAt("SimpleHtsToken", CONTRACT_TOKEN, hederaOperatorWallet);
+    tokenAddress = await tokenContract.token();
+    if (tokenAddress === "0x0000000000000000000000000000000000000000") {
+      throw new Error("Token not created in contract yet. Please create token first.");
+    }
+    tokenId = TokenId.fromSolidityAddress(tokenAddress);
+    console.log("  → Token address:", tokenAddress);
+    console.log("  → Token ID:", tokenId.toString());
+  // } else {
+  //   // Deploy new token contract and create token
+  //   banner("Deploying new token contract");
+  //   const { ContractCreateFlow, ContractFunctionParameters } = await import("@hashgraph/sdk");
+  //   const { EntityIdHelper } = await import("@hashgraph/sdk");
+  //   const { artifacts } = await import("hardhat");
+    
+  //   const tokenArtifact = await artifacts.readArtifact("SimpleHtsToken");
+  //   const tokenCreate = new ContractCreateFlow()
+  //     .setGas(3_000_000)
+  //     .setBytecode(tokenArtifact.bytecode)
+  //     .setConstructorParameters(new ContractFunctionParameters());
+    
+  //   const tokenCreateResponse = await tokenCreate.execute(hederaClient);
+  //   const tokenReceipt = await tokenCreateResponse.getReceipt(hederaClient);
+  //   const tokenContractId = tokenReceipt.contractId!;
+  //   const tokenContractAddr = '0x' + EntityIdHelper.toSolidityAddress([
+  //     tokenContractId.realm!,
+  //     tokenContractId.shard!,
+  //     tokenContractId.num!
+  //   ]);
+    
+    // console.log(`  → Token contract deployed: ${tokenContractAddr}`);
+    
+    // const { ethers: hreEthers } = await import("hardhat");
+    // const tokenContract = await hreEthers.getContractAt("SimpleHtsToken", tokenContractAddr, hederaOperatorWallet);
+    
+    // banner("Creating HTS token");
+    // const createTx = await tokenContract.createToken({
+    //   value: parseEther("15"),
+    //   gasLimit: 2_500_000,
+    // });
+    // const createReceipt = await createTx.wait();
+    // if (!createReceipt) {
+    //   throw new Error("Token creation failed - no receipt");
+    // }
+    
+    // tokenAddress = await tokenContract.token();
+    // tokenId = TokenId.fromSolidityAddress(tokenAddress);
+    // console.log(`  → Token created: ${tokenAddress}`);
+    // console.log(`  → Token ID: ${tokenId.toString()}`);
+  // }
+
+  // Link token to controller
+  banner("Linking token to controller");
+  try {
+    const linkTx = await (controller as any).setUsdToken(tokenAddress, 6);
+    await linkTx.wait();
+    console.log("  ✓ Token linked to controller");
+  } catch (err) {
+    console.error("  ✗ Failed to link token:", formatRevertError(err));
+    throw err;
+  }
+
+  // Associate controller with token
+  banner("Associating controller with token");
+  try {
+    const associateTx = await (controller as any).associateToken();
+    await associateTx.wait();
+    console.log("  ✓ Controller associated with token ", associateTx);
+  } catch (err) {
+    console.error("  ✗ Failed to associate:", formatRevertError(err));
+    throw err;
+  }
+  
+
+  // Mint initial tokens to controller treasury (10,000 tokens = 10_000_000_000 with 6 decimals)
+  banner("Minting initial tokens to controller");
+  const initialMintAmount = 10_000_000_000; // 10,000 tokens
+  const mintTx = await tokenContract.mintTo(controllerAddr, initialMintAmount, {
+    gasLimit: 2_500_000,
   });
+  await mintTx.wait();
+  console.log(`  ✓ Minted ${formatUnits(BigInt(initialMintAmount), 6)} tokens to controller treasury`);
 
-
-  const createRcpt = await createTx.wait();
-  const tokenAddress = await controller.usdToken();
-  const tokenId = TokenId.fromSolidityAddress(tokenAddress);
-
-
-  console.log("  ?+' Token ID:", tokenId.toString());
-  console.log("  ?+' EVM address:", tokenAddress);
-  console.log("  ?+' Treasury (controller):", controllerAddr);
-  console.log("  ✓ Token creation tx:", createRcpt.hash);
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Configure controller & token (+ deep diagnostics)
-  // ──────────────────────────────────────────────────────────────────────────────
-  banner("Debug: Token info snapshot");
-  const tokenInfo = await new TokenInfoQuery().setTokenId(tokenId).execute(hederaClient);
-  console.log("  Token treasury:", tokenInfo.treasuryAccountId?.toString?.());
-  console.log("  Token supply key:", tokenInfo.supplyKey?.toString?.() ?? "<none>");
-  console.log("  Token admin key:", tokenInfo.adminKey?.toString?.() ?? "<none>");
-
-  banner("Associating borrower with token (SDK)");
+  // Associate borrower with token
+  banner("Associating borrower with token");
   await associateAccountWithTokenSdk(
     borrowerAccountIdObj,
     borrowerHederaKey,
@@ -194,76 +271,6 @@ async function main() {
     "Borrower"
   );
   console.log("  ✓ Borrower associated via SDK");
-
-  const initialOwnerMint = 10_000_000_000; // 10,000 tokens (6 decimals)
-
-  
-  banner("MINTING BEFORE BORROW");
-  await logMirrorAssociations("Treasury", hederaOperatorId.toString(), tokenId.toString());
-  await logMirrorAssociations("Borrower", borrowerAccountId, tokenId.toString());
-  await logMirrorAssociations("Controller", controllerId.toString(), tokenId.toString());
-
-  await logControllerMintStatus(controller, hederaCreditAddr);
-
-  // Quick static probes before actual mints
-  await probeControllerMintStatic(
-    controller,
-    borrowerAddress,
-    Number(initialOwnerMint),
-    "Borrower"
-  );
-  await probeControllerMintStatic(
-    controller,
-    hederaOperatorWalletAddress,
-    Number(initialOwnerMint),
-    "Treasury"
-  );
-  await probeControllerMintStatic(
-    controller,
-    controllerAddr,
-    Number(initialOwnerMint),
-    "ControllerSelf"
-  );
-
-  // Try real mints (pre-ownership-transfer) to surface allowance/association issues early
-  const tokenIdString = tokenId.toString();
-  await mintWithDebug(
-    controller,
-    borrowerAddress,
-    Number(initialOwnerMint),
-    "Borrower",
-    tokenAddress,
-    tokenIdString,
-    borrowerAccountIdStr
-  );
-  await mintWithDebug(
-    controller,
-    hederaOperatorWalletAddress,
-    Number(initialOwnerMint),
-    "Treasury",
-    tokenAddress,
-    tokenIdString,
-    hederaOperatorId.toString()
-  );
-  await mintWithDebug(
-    controller,
-    controllerAddr,
-    Number(initialOwnerMint),
-    "ControllerSelf",
-    tokenAddress,
-    tokenIdString,
-    controllerId.toString()
-  );
-
-  banner("Transferring controller ownership");
-  await transferOwnership(controller, hederaCreditAddr);
-  const controllerOwner = await controller.owner();
-  console.log("  ✓ Controller owned by OApp, owner now:", controllerOwner);
-
-  await logControllerMintStatus(controller, hederaCreditAddr);
-
-  // ──────────────────────────────────────────────────────────────────────────────
-  // Test borrow
   // ──────────────────────────────────────────────────────────────────────────────
   banner("Fetching Pyth price");
   const { priceUpdateData, price, expo } = await fetchPythUpdate();
@@ -295,20 +302,20 @@ async function main() {
     controllerAddr
   );
 
-  console.log(" controller.mintTo static call as HederaCredit");
+  console.log(" controller.transferTo static call as HederaCredit");
   try {
-    const mintCalldata = controller.interface.encodeFunctionData("mintTo", [
+    const transferCalldata = (controller as any).interface.encodeFunctionData("transferTo", [
       borrowerAccountAddress,
       borrowAmount,
     ]);
     await hederaOperatorWallet.provider!.call({
       to: controllerAddr,
       from: hederaCreditAddr,
-      data: mintCalldata,
+      data: transferCalldata,
     });
-    console.log("    ✓ controller.mintTo static call passed");
+    console.log("    ✓ controller.transferTo static call passed");
   } catch (err) {
-    console.error("    ✗ controller.mintTo static call reverted:", formatRevertError(err));
+    console.error("    ✗ controller.transferTo static call reverted:", formatRevertError(err));
   }
 
   banner("Borrowing");
@@ -349,12 +356,12 @@ async function main() {
       priceUpdateData,
       priceUpdateFee
     );
-    await logMintAttemptEvents(
-      borrowResult.receipt,
-      controller,
-      "MintAttempt",
-      borrowResult.txHash
-    );
+    // await logMintAttemptEvents(
+    //   borrowResult.receipt,
+    //   controller,
+    //   "MintAttempt",
+    //   borrowResult.txHash
+    // );
     console.log("  ✓ Borrow succeeded");
   } catch (err) {
     console.error("  ✗ Borrow failed:", formatRevertError(err));
@@ -399,6 +406,67 @@ async function main() {
     hederaOperatorAccountAddress,
     borrowerAccountAddress,
     controllerAddr
+  );
+
+  const decimals = Number(await controller.usdDecimals());
+  const tokenIdForAllowance = TokenId.fromSolidityAddress(tokenAddress).toString();
+  const borrowerAccountInfo = await new AccountInfoQuery()
+    .setAccountId(borrowerAccountIdObj)
+    .execute(hederaClient);
+  const borrowerAllowance = borrowerAccountInfo.tokenAllowances.find(
+    (allowance) =>
+      allowance.tokenId.toString() === tokenIdForAllowance &&
+      allowance.spenderAccountId?.toString() === controllerId.toString()
+  );
+  const allowanceValue = borrowerAllowance?.amount
+    ? BigInt(borrowerAllowance.amount.toString())
+    : 0n;
+  console.log(
+    "  Borrower allowance to controller before approve:",
+    formatUnits(allowanceValue, decimals),
+    "hUSD"
+  );
+
+  banner("Approving controller to spend hUSD (via HTS precompile)");
+  const HTS_ADDRESS = "0x0000000000000000000000000000000000000167";
+  const HTS_ABI = ["function approve(address token, address spender, uint256 amount) external returns (int64)"];
+  const hts = new Contract(HTS_ADDRESS, HTS_ABI, borrowerWallet);
+  
+  try {
+    console.log("   Static calling HTS approve...");
+    await hts.approve.staticCall(tokenAddress, controllerAddr, repayAmount, {
+      gasLimit: 2_500_000,
+    });
+    console.log("    ✓ HTS approve static call passed");
+  } catch (err) {
+    console.warn(
+      "    ⚠ HTS approve static call reverted:",
+      formatRevertError(err as Error)
+    );
+  }
+
+  try {
+    const approveTx = await hts.approve(tokenAddress, controllerAddr, repayAmount, {
+      gasLimit: 2_500_000,
+    });
+    const approveReceipt = await approveTx.wait();
+    console.log("    ✓ Borrower approved controller to spend tokens");
+    console.log("    → Approve tx:", approveReceipt.hash);
+  } catch (err) {
+    console.error(
+      "    ✗ HTS approve tx failed:",
+      formatRevertError(err as Error)
+    );
+    throw err;
+  }
+
+    const allowanceValueAfter = borrowerAllowance?.amount
+    ? BigInt(borrowerAllowance.amount.toString())
+    : 0n;
+  console.log(
+    "  Borrower allowance to controller after approve:",
+    formatUnits(allowanceValueAfter, decimals),
+    "hUSD"
   );
 
   banner("Attempting repay static call...");
@@ -572,30 +640,7 @@ async function fetchMirrorAccountToken(accountId: string, tokenId: string) {
   }
 }
 
-async function mintWithDebug(
-  controller: any,
-  to: string,
-  amount: number,
-  label: string,
-  tokenAddress: string,
-  tokenId: string,
-  mirrorAccountId: string
-) {
-  try {
-    console.log(`  → Minting to ${label} (${to}) amount=${amount}`);
-    const tx = await controller.mintTo(to, amount);
-    const receipt = await tx.wait();
-    console.log(`  ✓ Mint ${label} tx`, receipt.hash);
-    await logMintAttemptEvents(receipt, controller, `MintAttempt:${label}`, receipt.hash);
-    await logMirrorAccountInfo(`${label} account`, mirrorAccountId);
-    await logMirrorAssociations(`${label} (post-mint)`, mirrorAccountId, tokenId);
-  } catch (err) {
-    console.error(`  ✗ Mint to ${label} failed:`, formatRevertError(err as Error));
-    await logMirrorAccountInfo(`${label} account (post-fail)`, mirrorAccountId);
-    await logMirrorAssociations(`${label} (post-fail)`, mirrorAccountId, tokenId);
-    throw err;
-  }
-}
+
 
 async function logMirrorAccountInfo(label: string, accountId: string) {
   try {

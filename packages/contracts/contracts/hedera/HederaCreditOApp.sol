@@ -290,153 +290,171 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         //     canonicalBorrower = pos.borrower;
         // }
 
-        emit BorrowDebug(orderId, "mint_borrower_start", netAmount, feeAmount, borrower);
+        emit BorrowDebug(orderId, "transfer_borrower_start", netAmount, feeAmount, borrower);
 
-        try ctrl.mintTo(borrower, netAmount) {
-            // no-op
-        } catch (bytes memory /* err */) {
-            emit BorrowDebug(orderId, "mint_borrower_failed", netAmount, feeAmount, msg.sender);
-            return 0;
-        }
-        if (feeAmount > 0) {
-            try ctrl.mintTo(
-                cfg.metadata.protocolTreasury,
-                feeAmount
-            ) {
-                // no-op
-            } catch (bytes memory /* err2 */) {
-                emit BorrowDebug(orderId, "mint_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
-                return 0;
-            }
-        }
+        // Transfer tokens from controller treasury to borrower (instead of minting)
+        // try ctrl.transferTo(borrower, netAmount) {
+        //     // no-op
+        // } catch (bytes memory /* err */) {
+        //     emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
+        //     return 0;
+        // }
+        // if (feeAmount > 0) {
+        //     try ctrl.transferTo(
+        //         cfg.metadata.protocolTreasury,
+        //         feeAmount
+        //     ) {
+        //         // no-op
+        //     } catch (bytes memory /* err2 */) {
+        //         emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
+        //         return 0;
+        //     }
+        // }
 
-        if (debugStopAfterMint) {
-            emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
-			return netAmount;
-		}
+        // if (debugStopAfterMint) {
+        //     emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
+		// 	return netAmount;
+		// }
 
-        // Update scaled debt
-        uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
-        uint256 scaledDelta = MathUtils.rayDiv(
-            amountRay,
-            uint256(state.variableBorrowIndex)
-        );
-        if (scaledDelta > type(uint128).max) revert DebtOverflow();
+        // // Update scaled debt
+        // uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
+        // uint256 scaledDelta = MathUtils.rayDiv(
+        //     amountRay,
+        //     uint256(state.variableBorrowIndex)
+        // );
+        // if (scaledDelta > type(uint128).max) revert DebtOverflow();
 
-        pos.scaledDebtRay += uint128(scaledDelta);
-        state.totalVariableDebtRay += amountRay;
+        // pos.scaledDebtRay += uint128(scaledDelta);
+        // state.totalVariableDebtRay += amountRay;
 
-        emit Borrowed(
-            orderId,
-            reserveId,
-            msg.sender,
-            usdAmount,
-            netAmount,
-            feeAmount,
-            state.lastBorrowRateBps
-        );
+        // emit Borrowed(
+        //     orderId,
+        //     reserveId,
+        //     msg.sender,
+        //     usdAmount,
+        //     netAmount,
+        //     feeAmount,
+        //     state.lastBorrowRateBps
+        // );
 
-        if (msg.value > feePaid) {
-            (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
-                ""
-            );
-            require(refundOk, "refund fail");
-        }
+        // if (msg.value > feePaid) {
+        //     (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
+        //         ""
+        //     );
+        //     require(refundOk, "refund fail");
+        // }
     }
 
-    function repay(
-        bytes32 orderId,
-        uint64 usdAmount,
-        bool notifyEthereum
-    ) external payable nonReentrant returns (bool fullyRepaid) {
-        if (usdAmount == 0) revert BadAmount();
 
-        Position storage pos = positions[orderId];
-        if (!(pos.open && !pos.liquidated && pos.borrower == msg.sender)) {
-            revert BadOrder(orderId);
-        }
+function repay(
+    bytes32 orderId,
+    uint64 usdAmount,
+    bool notifyEthereum
+) external payable nonReentrant returns (bool fullyRepaid) {
+    if (usdAmount == 0) revert BadAmount();
 
-        ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
-            .getReserveConfig(pos.reserveId);
-        UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
-        if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
-            revert ControllerMismatch();
-        }
+    // Validate order
+    Position storage pos = positions[orderId];
+    if (!(pos.open && !pos.liquidated && pos.borrower == msg.sender)) {
+        revert BadOrder(orderId);
+    }
 
-        ReserveState storage state = _accrueReserve(
-            pos.reserveId,
-            cfg.risk,
-            cfg.interest
-        );
+    // Resolve controller & config
+    ReserveRegistry.ReserveConfigBundle memory cfg =
+        reserveRegistry.getReserveConfig(pos.reserveId);
+    UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
+    if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
+        revert ControllerMismatch();
+    }
 
-        uint8 decimals = cfg.metadata.debtTokenDecimals;
-        uint256 totalDebtRay = _positionDebtRay(pos, state);
-        if (totalDebtRay == 0) revert BadAmount();
+    // Accrue interest and get up-to-date state
+    ReserveState storage state = _accrueReserve(
+        pos.reserveId,
+        cfg.risk,
+        cfg.interest
+    );
 
-        uint256 requestedRay = MathUtils.toRay(usdAmount, decimals);
-        uint256 repayRay = requestedRay > totalDebtRay
-            ? totalDebtRay
-            : requestedRay;
-        uint256 scaledRepayment = MathUtils.rayDiv(
-            repayRay,
+    uint8 decimals = cfg.metadata.debtTokenDecimals;
+
+    // Compute total outstanding debt (in ray)
+    uint256 totalDebtRay = _positionDebtRay(pos, state);
+    if (totalDebtRay == 0) revert BadAmount();
+
+    // Clamp requested repay to total debt
+    uint256 requestedRay = MathUtils.toRay(usdAmount, decimals);
+    uint256 repayRay = requestedRay > totalDebtRay ? totalDebtRay : requestedRay;
+
+    // Convert to scaled units and update position/state
+    uint256 scaledRepayment = MathUtils.rayDiv(
+        repayRay,
+        uint256(state.variableBorrowIndex)
+    );
+
+    if (scaledRepayment >= pos.scaledDebtRay) {
+        // Full repay
+        scaledRepayment = pos.scaledDebtRay;
+        repayRay = MathUtils.rayMul(
+            uint256(pos.scaledDebtRay),
             uint256(state.variableBorrowIndex)
         );
-        if (scaledRepayment >= pos.scaledDebtRay) {
-            scaledRepayment = pos.scaledDebtRay;
-            repayRay = MathUtils.rayMul(
-                uint256(pos.scaledDebtRay),
-                uint256(state.variableBorrowIndex)
-            );
-            pos.scaledDebtRay = 0;
-        } else {
-            pos.scaledDebtRay -= uint128(scaledRepayment);
-        }
-        state.totalVariableDebtRay -= repayRay;
-
-        uint256 repayTokens = MathUtils.fromRay(repayRay, decimals);
-        uint64 burnAmount = uint64(repayTokens);
-        ctrl.burnFromTreasury(burnAmount);
-
-        fullyRepaid = (pos.scaledDebtRay == 0);
-
-        emit RepayApplied(
-            orderId,
-            pos.reserveId,
-            burnAmount,
-            pos.scaledDebtRay,
-            fullyRepaid
-        );
-
-        if (fullyRepaid && notifyEthereum && ethEid != 0) {
-            bytes memory payload = abi.encode(
-                MessageTypes.REPAID,
-                orderId,
-                pos.reserveId
-            );
-            bytes memory opts = OptionsBuilder
-                .newOptions()
-                .addExecutorLzReceiveOption(120_000, 0);
-            MessagingFee memory q = _quote(ethEid, payload, opts, false);
-            uint256 nativeFee = q.nativeFee;
-            if (nativeFee > 0 && nativeFee < HEDERA_MIN_NATIVE) {
-                nativeFee = HEDERA_MIN_NATIVE;
-            }
-            if (msg.value < nativeFee) {
-                revert LzFeeTooLow(nativeFee, msg.value);
-            }
-            q.nativeFee = nativeFee;
-            _lzSend(ethEid, payload, opts, q, payable(msg.sender));
-
-            uint256 refund = msg.value - q.nativeFee;
-            if (refund > 0) {
-                (bool ok, ) = msg.sender.call{value: refund}("");
-                require(ok, "refund fail");
-            }
-        } else if (msg.value > 0) {
-            (bool ok2, ) = msg.sender.call{value: msg.value}("");
-            require(ok2, "refund fail");
-        }
+        pos.scaledDebtRay = 0;
+    } else {
+        // Partial repay
+        pos.scaledDebtRay -= uint128(scaledRepayment);
     }
+    state.totalVariableDebtRay -= repayRay;
+
+    // Convert repay size back to token units (may round down slightly)
+    uint256 repayTokens = MathUtils.fromRay(repayRay, decimals);
+    uint64 burnAmount = uint64(repayTokens);
+
+    // 🔐 IMPORTANT: charge the BORROWER:
+    // User must approve controller first, then we transfer tokens back to treasury
+    // (requires borrower approval to controller for at least `burnAmount`)
+    ctrl.pullFrom(pos.borrower, burnAmount);
+
+    fullyRepaid = (pos.scaledDebtRay == 0);
+
+    emit RepayApplied(
+        orderId,
+        pos.reserveId,
+        burnAmount,
+        pos.scaledDebtRay,
+        fullyRepaid
+    );
+
+    // Optional LayerZero notify to Ethereum on full repay
+    if (fullyRepaid && notifyEthereum && ethEid != 0) {
+        bytes memory payload = abi.encode(
+            MessageTypes.REPAID,
+            orderId,
+            pos.reserveId
+        );
+        bytes memory opts = OptionsBuilder
+            .newOptions()
+            .addExecutorLzReceiveOption(120_000, 0);
+
+        MessagingFee memory q = _quote(ethEid, payload, opts, false);
+        uint256 nativeFee = q.nativeFee;
+        if (nativeFee > 0 && nativeFee < HEDERA_MIN_NATIVE) {
+            nativeFee = HEDERA_MIN_NATIVE;
+        }
+        if (msg.value < nativeFee) {
+            revert LzFeeTooLow(nativeFee, msg.value);
+        }
+        q.nativeFee = nativeFee;
+        _lzSend(ethEid, payload, opts, q, payable(msg.sender));
+
+        uint256 refund = msg.value - q.nativeFee;
+        if (refund > 0) {
+            (bool ok, ) = msg.sender.call{value: refund}("");
+            require(ok, "refund fail");
+        }
+    } else if (msg.value > 0) {
+        (bool ok2, ) = msg.sender.call{value: msg.value}("");
+        require(ok2, "refund fail");
+    }
+}
 
     function liquidate(
         bytes32 orderId,
