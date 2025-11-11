@@ -247,7 +247,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             revert ControllerMismatch();
         }
 
-        uint256 feePaid = _updateOracle(priceUpdateData);
+    uint256 feePaid = _updateOracle(priceUpdateData);
         uint256 price1e18 = _fetchPrice(
             reserveId,
             cfg.oracle,
@@ -293,56 +293,56 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         emit BorrowDebug(orderId, "transfer_borrower_start", netAmount, feeAmount, borrower);
 
         // Transfer tokens from controller treasury to borrower (instead of minting)
-        // try ctrl.transferTo(borrower, netAmount) {
-        //     // no-op
-        // } catch (bytes memory /* err */) {
-        //     emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
-        //     return 0;
-        // }
-        // if (feeAmount > 0) {
-        //     try ctrl.transferTo(
-        //         cfg.metadata.protocolTreasury,
-        //         feeAmount
-        //     ) {
-        //         // no-op
-        //     } catch (bytes memory /* err2 */) {
-        //         emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
-        //         return 0;
-        //     }
-        // }
+        try ctrl.transferTo(borrower, netAmount) {
+            // no-op
+        } catch (bytes memory /* err */) {
+            emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
+            return 0;
+        }
+        if (feeAmount > 0) {
+            try ctrl.transferTo(
+                cfg.metadata.protocolTreasury,
+                feeAmount
+            ) {
+                // no-op
+            } catch (bytes memory /* err2 */) {
+                emit BorrowDebug(orderId, "transfer_fee_failed", netAmount, feeAmount, cfg.metadata.protocolTreasury);
+                return 0;
+            }
+        }
 
-        // if (debugStopAfterMint) {
-        //     emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
-		// 	return netAmount;
-		// }
+        if (debugStopAfterMint) {
+            emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
+			return netAmount;
+		}
 
-        // // Update scaled debt
-        // uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
-        // uint256 scaledDelta = MathUtils.rayDiv(
-        //     amountRay,
-        //     uint256(state.variableBorrowIndex)
-        // );
-        // if (scaledDelta > type(uint128).max) revert DebtOverflow();
+        // Update scaled debt
+        uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
+        uint256 scaledDelta = MathUtils.rayDiv(
+            amountRay,
+            uint256(state.variableBorrowIndex)
+        );
+        if (scaledDelta > type(uint128).max) revert DebtOverflow();
 
-        // pos.scaledDebtRay += uint128(scaledDelta);
-        // state.totalVariableDebtRay += amountRay;
+        pos.scaledDebtRay += uint128(scaledDelta);
+        state.totalVariableDebtRay += amountRay;
 
-        // emit Borrowed(
-        //     orderId,
-        //     reserveId,
-        //     msg.sender,
-        //     usdAmount,
-        //     netAmount,
-        //     feeAmount,
-        //     state.lastBorrowRateBps
-        // );
+        emit Borrowed(
+            orderId,
+            reserveId,
+            msg.sender,
+            usdAmount,
+            netAmount,
+            feeAmount,
+            state.lastBorrowRateBps
+        );
 
-        // if (msg.value > feePaid) {
-        //     (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
-        //         ""
-        //     );
-        //     require(refundOk, "refund fail");
-        // }
+        if (msg.value > feePaid) {
+            (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
+                ""
+            );
+            require(refundOk, "refund fail");
+        }
     }
 
 
@@ -591,39 +591,39 @@ function repay(
     ///                              ADMIN ACTIONS
     /// -----------------------------------------------------------------------
 
-    function collectProtocolFees(
-        bytes32 reserveId,
-        address recipient
-    ) external onlyOwner returns (uint64 amountCollected) {
-        require(recipient != address(0), "recipient=0");
-        ReserveState storage state = reserveStates[reserveId];
-        uint256 accruedRay = state.accruedProtocolFeesRay;
-        if (accruedRay == 0) revert NothingToCollect();
+    // function collectProtocolFees(
+    //     bytes32 reserveId,
+    //     address recipient
+    // ) external onlyOwner returns (uint64 amountCollected) {
+    //     require(recipient != address(0), "recipient=0");
+    //     ReserveState storage state = reserveStates[reserveId];
+    //     uint256 accruedRay = state.accruedProtocolFeesRay;
+    //     if (accruedRay == 0) revert NothingToCollect();
 
-        ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
-            .getReserveConfig(reserveId);
-        uint8 decimals = cfg.metadata.debtTokenDecimals;
+    //     ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
+    //         .getReserveConfig(reserveId);
+    //     uint8 decimals = cfg.metadata.debtTokenDecimals;
 
-        uint256 amountTokens = MathUtils.fromRay(accruedRay, decimals);
-        if (amountTokens == 0) revert NothingToCollect();
-        if (amountTokens > type(uint64).max) {
-            amountTokens = type(uint64).max;
-        }
+    //     uint256 amountTokens = MathUtils.fromRay(accruedRay, decimals);
+    //     if (amountTokens == 0) revert NothingToCollect();
+    //     if (amountTokens > type(uint64).max) {
+    //         amountTokens = type(uint64).max;
+    //     }
 
-        uint256 tokensRay = MathUtils.toRay(amountTokens, decimals);
-        if (tokensRay > state.accruedProtocolFeesRay) {
-            tokensRay = state.accruedProtocolFeesRay;
-        }
-        state.accruedProtocolFeesRay -= tokensRay;
-        amountCollected = uint64(amountTokens);
+    //     uint256 tokensRay = MathUtils.toRay(amountTokens, decimals);
+    //     if (tokensRay > state.accruedProtocolFeesRay) {
+    //         tokensRay = state.accruedProtocolFeesRay;
+    //     }
+    //     state.accruedProtocolFeesRay -= tokensRay;
+    //     amountCollected = uint64(amountTokens);
 
-        UsdHtsController(payable(cfg.metadata.controller)).mintTo(
-            recipient,
-            amountCollected
-        );
+    //     UsdHtsController(payable(cfg.metadata.controller)).mintTo(
+    //         recipient,
+    //         amountCollected
+    //     );
 
-        emit ProtocolFeesCollected(reserveId, recipient, amountCollected);
-    }
+    //     emit ProtocolFeesCollected(reserveId, recipient, amountCollected);
+    // }
 
     function setReserveRegistry(address newRegistry) external onlyOwner {
         require(newRegistry != address(0), "registry=0");

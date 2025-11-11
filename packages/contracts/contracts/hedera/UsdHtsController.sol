@@ -12,6 +12,7 @@ import {HederaResponseCodes} from "@hashgraph/smart-contracts/contracts/system-c
 /// @notice Controller for managing an existing HTS token (created via SimpleHtsToken)
 /// @dev This contract manages minting, burning, and tracks treasury USD amounts
 contract UsdHtsController is HederaTokenService, Ownable {
+   
     uint64 private constant MAX_INT64 = uint64(type(int64).max);
 
     address public immutable treasuryAccount;
@@ -201,58 +202,58 @@ contract UsdHtsController is HederaTokenService, Ownable {
         emit Unpaused(msg.sender);
     }
 
-    /// @notice Mints tokens to a specified address
-    /// @param to Address to receive the tokens
-    /// @param amount Amount to mint
-    function mintTo(address to, uint64 amount) external onlyOwner {
-        if (paused) revert ControllerPaused();
-        if (!tokenInitialized) revert TokenNotInitialized();
-        if (to == address(0)) revert InvalidRecipient();
-        if (amount == 0) revert InvalidAmount();
-        if (amount > MAX_INT64) revert AmountExceedsInt64();
-        if (mintCap != 0 && totalMinted + amount > mintCap) {
-            revert MintCapExceeded();
-        }
+    // / @notice Mints tokens to a specified address
+    // / @param to Address to receive the tokens
+    // / @param amount Amount to mint
+    // function mintTo(address to, uint64 amount) external onlyOwner {
+    //     if (paused) revert ControllerPaused();
+    //     if (!tokenInitialized) revert TokenNotInitialized();
+    //     if (to == address(0)) revert InvalidRecipient();
+    //     if (amount == 0) revert InvalidAmount();
+    //     if (amount > MAX_INT64) revert AmountExceedsInt64();
+    //     if (mintCap != 0 && totalMinted + amount > mintCap) {
+    //         revert MintCapExceeded();
+    //     }
 
-        int64 signedAmount = int64(uint64(amount));
+    //     int64 signedAmount = int64(uint64(amount));
 
-        bytes[] memory metadata = new bytes[](0);
-        (int rcMint, , ) = HederaTokenService.mintToken(
-            usdToken,
-            signedAmount,
-            metadata
-        );
-        if (rcMint != HederaResponseCodes.SUCCESS) {
-            revert MintFailed(int64(rcMint));
-        }
+    //     bytes[] memory metadata = new bytes[](0);
+    //     (int rcMint, , ) = HederaTokenService.mintToken(
+    //         usdToken,
+    //         signedAmount,
+    //         metadata
+    //     );
+    //     if (rcMint != HederaResponseCodes.SUCCESS) {
+    //         revert MintFailed(int64(rcMint));
+    //     }
 
-        int64 rcTransfer = int64(HederaResponseCodes.SUCCESS);
-        if (to != treasuryAccount) {
-            int rcXfer = HederaTokenService.transferToken(
-                usdToken,
-                treasuryAccount,
-                to,
-                signedAmount
-            );
-            rcTransfer = int64(rcXfer);
-            if (rcXfer != HederaResponseCodes.SUCCESS) {
-                revert TransferFailed(int64(rcXfer));
-            }
-        }
+    //     int64 rcTransfer = int64(HederaResponseCodes.SUCCESS);
+    //     if (to != treasuryAccount) {
+    //         int rcXfer = HederaTokenService.transferToken(
+    //             usdToken,
+    //             treasuryAccount,
+    //             to,
+    //             signedAmount
+    //         );
+    //         rcTransfer = int64(rcXfer);
+    //         if (rcXfer != HederaResponseCodes.SUCCESS) {
+    //             revert TransferFailed(int64(rcXfer));
+    //         }
+    //     }
 
-        totalMinted += amount;
-        emit Minted(to, amount);
-    }
+    //     totalMinted += amount;
+    //     emit Minted(to, amount);
+    // }
 
     /// @notice Transfers tokens from controller treasury to recipient
     /// @param to Address to receive the tokens
     /// @param amount Amount to transfer
-    function transferTo(address to, uint64 amount) external onlyOwner {
-        if (paused) revert ControllerPaused();
-        if (!tokenInitialized) revert TokenNotInitialized();
-        if (to == address(0)) revert InvalidRecipient();
-        if (amount == 0) revert InvalidAmount();
-        if (amount > MAX_INT64) revert AmountExceedsInt64();
+    function transferTo(address to, uint64 amount) external  {
+        // if (paused) revert ControllerPaused();
+        // if (!tokenInitialized) revert TokenNotInitialized();
+        // if (to == address(0)) revert InvalidRecipient();
+        // if (amount == 0) revert InvalidAmount();
+        // if (amount > MAX_INT64) revert AmountExceedsInt64();
 
         int64 signedAmount = int64(uint64(amount));
 
@@ -262,9 +263,10 @@ contract UsdHtsController is HederaTokenService, Ownable {
             to,
             signedAmount
         );
-        if (rcXfer != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed(int64(rcXfer));
-        }
+        // if (rcXfer != HederaResponseCodes.SUCCESS) {
+        //     revert TransferFailed(int64(rcXfer));
+        // }
+        emit TreasuryAdded(address(this), uint256(rcXfer));
 
         emit Minted(to, amount); // Reusing event for transfer
     }

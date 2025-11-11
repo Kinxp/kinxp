@@ -85,20 +85,20 @@ async function main() {
 
   banner("E2E ADDRESES");
 
-  console.log("Hedera operator / TREASURY ID:", hederaOperatorId.toString());
-  console.log("Hedera operator / TREASURY EVM:", hederaOperatorWalletAddress);
+  console.log("Hedera operator /  ID:", hederaOperatorId.toString());
+  console.log("Hedera operator /  EVM:", hederaOperatorWalletAddress);
   // console.log("Hedera operator / TREASURY EVM hederaOperatorAccountAddress:", hederaOperatorAccountAddress);
 
   banner("--");
 
   
   console.log("Borrower EVM :", borrowerAddress);
-  console.log("Borrower HEDERA EVM  borrowerAccountAddress:", borrowerAccountAddress);
+  // console.log("Borrower HEDERA EVM  borrowerAccountAddress:", borrowerAccountAddress);
 
   // await logMirrorAccountInfo("Treasury account", hederaOperatorId.toString());
   // await logMirrorAccountInfo("Borrower account", borrowerAccountIdStr);
 
-  banner("Ensuring Hedera operator has HBAR for fees");
+  // banner("Ensuring Hedera operator has HBAR for fees");
   await ensureOperatorHasHbar(hederaOperatorWalletAddress);
 
   // ──────────────────────────────────────────────────────────────────────────────
@@ -108,11 +108,14 @@ async function main() {
   const { ethCollateralAddr, ethCollateral } = await deployEthCollateralOApp();
   console.log("  → EthCollateralOApp:", ethCollateralAddr);
 
-  banner("Deploying Hedera contracts");
+  // banner("Deploying Hedera contracts");
   const { controllerAddr, controllerId, controller } = await deployHederaController(
     hederaClient,
     hederaOperatorWallet
   );
+
+  banner("USDT CONTROLLER");
+
   console.log(`  → UsdHtsController: ${controllerAddr}, (${controllerId})`);
   await logMirrorAccountInfo("Controller account", controllerId.toString());
 
@@ -302,21 +305,21 @@ async function main() {
     controllerAddr
   );
 
-  console.log(" controller.transferTo static call as HederaCredit");
-  try {
-    const transferCalldata = (controller as any).interface.encodeFunctionData("transferTo", [
-      borrowerAccountAddress,
-      borrowAmount,
-    ]);
-    await hederaOperatorWallet.provider!.call({
-      to: controllerAddr,
-      from: hederaCreditAddr,
-      data: transferCalldata,
-    });
-    console.log("    ✓ controller.transferTo static call passed");
-  } catch (err) {
-    console.error("    ✗ controller.transferTo static call reverted:", formatRevertError(err));
-  }
+  // console.log(" controller.transferTo static call as HederaCredit");
+  // try {
+  //   const transferCalldata = (controller as any).interface.encodeFunctionData("transferTo", [
+  //     borrowerAccountAddress,
+  //     borrowAmount,
+  //   ]);
+  //   await hederaOperatorWallet.provider!.call({
+  //     to: controllerAddr,
+  //     from: hederaCreditAddr,
+  //     data: transferCalldata,
+  //   });
+  //   console.log("    ✓ controller.transferTo static call passed");
+  // } catch (err) {
+  //   console.error("    ✗ controller.transferTo static call reverted:", formatRevertError(err));
+  // }
 
   banner("Borrowing");
   console.log("  Step 1: Calling borrow with orderId:", orderId);
@@ -334,6 +337,11 @@ async function main() {
     ]);
 
     console.log("Encoded calldata length:", borrowCalldata.length);
+
+
+    banner("Transfer Ownership");
+
+    await transferOwnership(controller, hederaCreditAddr);
 
     try {
       await borrowerWallet.provider!.call({

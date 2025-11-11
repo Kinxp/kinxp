@@ -6,7 +6,8 @@
   "scripts": {
     "dev:web": "pnpm --filter @kinxp/web dev",
     "dev:server": "pnpm --filter @kinxp/server dev",
-    "build:contracts": "pnpm --filter @kinxp/contracts build"
+    "build:contracts": "pnpm --filter @kinxp/contracts build",
+    "e2e:full": "pnpm --filter @kinxp/contracts e2e:full"
   },
   "devDependencies": {
     "@types/node": "^24.8.0",
