@@ -13,8 +13,16 @@ const Header: React.FC = () => {
       <div className="container mx-auto flex justify-between items-center">
         <h1 className="text-2xl font-bold text-cyan-400">KINXP</h1>
         <div className="flex items-center gap-4 border-b border-gray-700/50 pb-2">
-            <NavLink 
+           <NavLink 
               to="/" 
+              className={({ isActive }) => 
+                `px-3 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700/50'}`
+              }
+            >
+              Home
+            </NavLink>
+            <NavLink 
+              to="/dashboard" 
               className={({ isActive }) => 
                 `px-3 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700/50'}`
               }

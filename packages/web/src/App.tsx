@@ -5,7 +5,9 @@ import { AppProvider } from './context/AppContext';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 
 import DashboardPage from './pages/DashboardPage';
-import AnalyticsPage from './pages/AnalyticsPage'; // We will create this next
+import AnalyticsPage from './pages/AnalyticsPage'; 
+import HomePage from './pages/HomePage';
+
 import Header from './components/Header';
 import { Toaster } from 'react-hot-toast';
 
@@ -27,7 +29,8 @@ function App() {
         <main className="container mx-auto p-4 sm:p-8">
             {/* --- NEW: Route Definitions --- */}
             <Routes>
-              <Route path="/" element={<DashboardPage />} />
+              <Route path="/" element={<HomePage />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
             </Routes>
         </main>

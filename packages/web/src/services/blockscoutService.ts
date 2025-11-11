@@ -400,3 +400,54 @@ export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promis
   // Sort by date, oldest first, which is important for accumulation
   return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
+
+
+/**
+ * Fetches ALL historical OrderFunded events across the entire protocol.
+ * @returns A promise that resolves to an array of all funding events.
+ */
+export async function fetchAllHistoricalFunding(): Promise<FundingEvent[]> {
+  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: ETH_COLLATERAL_OAPP_ADDR,
+    topic0: ORDER_FUNDED_TOPIC,
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  const fundingEvents: FundingEvent[] = logs.map(log => {
+    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+    return {
+      amountWei: amountWei as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+/**
+ * Fetches ALL historical Borrowed events across the entire protocol.
+ * @returns A promise that resolves to an array of all borrow events.
+ */
+export async function fetchAllHistoricalBorrows(): Promise<BorrowEvent[]> {
+  const logs = await fetchBlockscoutLogs(HEDERA_BLOCKSCOUT_API_URL, {
+    module: 'logs',
+    action: 'getLogs',
+    address: HEDERA_CREDIT_OAPP_ADDR,
+    topic0: HEDERA_BORROWED_TOPIC,
+    fromBlock: '0',
+    toBlock: 'latest',
+  });
+
+  const borrowEvents: BorrowEvent[] = logs.map(log => {
+    const [amountUsd] = decodeAbiParameters([{ type: 'uint64', name: 'usdAmount' }], log.data);
+    return {
+      amountUsd: amountUsd as bigint,
+      timestamp: parseInt(log.timeStamp, 16),
+    };
+  });
+
+  return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
