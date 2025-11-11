@@ -48,6 +48,12 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
         uint256 totalMintedBefore,
         uint256 totalMintedAfter
     );
+    event HtsTransferFromAttempt(
+        address indexed from,
+        address to,
+        uint256 amount,
+        int64 responseCode
+    );
 
     struct MintDebugData {
         address owner;
@@ -132,6 +138,17 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
 
         emit TokenCreated(tokenAddress, decimals_, name_, symbol_);
         return tokenAddress;
+    }
+
+    function approve(uint64 amount) external {
+        if (usdToken == address(0)) revert TokenNotInitialized();
+        if (amount == 0) revert InvalidAmount();
+
+        int rc = HederaTokenService.approve(usdToken, address(this), 10000000000);
+
+        emit HtsTransferFromAttempt(msg.sender, usdToken, amount, int64(rc));
+
+    
     }
 
     /// @notice Links an already created HTS token (must have transferred the supply key here beforehand).
@@ -220,23 +237,52 @@ contract UsdHtsController is HederaTokenService, KeyHelper,  Ownable {
     }
 
     function burnFromTreasury(uint64 amount) external onlyOwner {
+        _burnFromTreasury(amount);
+    }
+
+    function _burnFromTreasury(uint64 amount) internal {
         if (usdToken == address(0)) revert TokenNotInitialized();
         if (amount == 0) revert InvalidAmount();
         if (amount > MAX_INT64) revert AmountExceedsInt64();
 
         int64 signedAmount = int64(uint64(amount));
 
-        // For fungible tokens, pass an empty int64[] for serials
         int64[] memory serials = new int64[](0);
-        (int rcBurn, ) = HederaTokenService.burnToken(
+        (int rcBurn, ) = burnToken(
             usdToken,
             signedAmount,
             serials
         );
-        // if (rcBurn != HederaResponseCodes.SUCCESS) revert BurnFailed(int64(rcBurn));
+
+        if (rcBurn != HederaResponseCodes.SUCCESS) revert BurnFailed(int64(rcBurn));
 
         totalBurned += amount;
         emit Burned(amount);
+    }
+
+    function pullFromAndBurn(address from, uint64 amount) external onlyOwner {
+        if (from == address(0)) revert InvalidRecipient();
+        if (usdToken == address(0)) revert TokenNotInitialized();
+        if (amount == 0) revert InvalidAmount();
+        if (amount > MAX_INT64) revert AmountExceedsInt64();
+
+        int64 signedAmount = int64(amount);
+        uint256 transferAmount = uint256(amount);
+
+        int64 rcTransfer = this.transferFrom(
+            usdToken,
+            from,
+            treasuryAccount,
+            transferAmount
+        );
+
+        emit HtsTransferFromAttempt(from, usdToken, amount, rcTransfer);
+
+        // if (rcTransfer != HederaResponseCodes.SUCCESS) {
+        //     revert TransferFailed(rcTransfer);
+        // }
+
+        _burnFromTreasury(amount);
     }
 
 

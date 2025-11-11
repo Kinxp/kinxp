@@ -1,11 +1,16 @@
-import {
+﻿import {
   formatEther,
   formatUnits,
   Contract,
   parseUnits,
   ethers,
 } from "ethers";
-import { AccountId, TokenId, TokenInfoQuery } from "@hashgraph/sdk";
+import {
+  AccountId,
+  AccountInfoQuery,
+  TokenId,
+  TokenInfoQuery,
+} from "@hashgraph/sdk";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import {
@@ -399,6 +404,63 @@ async function main() {
     hederaOperatorAccountAddress,
     borrowerAccountAddress,
     controllerAddr
+  );
+
+  const decimals = Number(await controller.usdDecimals());
+  const tokenIdForAllowance = TokenId.fromSolidityAddress(tokenAddress).toString();
+  const borrowerAccountInfo = await new AccountInfoQuery()
+    .setAccountId(borrowerAccountIdObj)
+    .execute(hederaClient);
+  const borrowerAllowance = borrowerAccountInfo.tokenAllowances.find(
+    (allowance) =>
+      allowance.tokenId.toString() === tokenIdForAllowance &&
+      allowance.spenderAccountId?.toString() === controllerId
+  );
+  const allowanceValue = borrowerAllowance?.amount
+    ? BigInt(borrowerAllowance.amount.toString())
+    : 0n;
+  console.log(
+    "  Borrower allowance to controller before approve:",
+    formatUnits(allowanceValue, decimals),
+    "hUSD"
+  );
+
+  banner("Approving HederaCreditOApp to spend hUSD");
+  const borrowerController = controller.connect(borrowerWallet);
+  try {
+    console.log("   Static calling borrowerController.approve(...)");
+    await borrowerController.callStatic.approve(repayAmount, {
+      gasLimit: 2_500_000,
+    });
+    console.log("    Borrower controller approve static call passed");
+  } catch (err) {
+    console.warn(
+      "    Borrower controller approve static call reverted:",
+      formatRevertError(err as Error)
+    );
+  }
+
+  try {
+    const approveTx = await borrowerController.approve(repayAmount, {
+      gasLimit: 2_500_000,
+    });
+    const approveReceipt = await approveTx.wait();
+    console.log("    Borrower controller approve tx:", approveReceipt.hash);
+  } catch (err) {
+    console.error(
+      "    Borrower controller approve tx failed:",
+      formatRevertError(err as Error)
+    );
+    throw err;
+  }
+
+    const allowanceValueAfter = borrowerAllowance?.amount
+    ? BigInt(borrowerAllowance.amount.toString())
+    : 0n;
+  console.log(
+    "  Borrower allowance to controller after approve:",
+    formatUnits(allowanceValueAfter, decimals),
+    "hUSD"
   );
 
   banner("Attempting repay static call...");
