@@ -8,7 +8,8 @@
     "e2e:full": "hardhat run scripts/full-e2e.ts --network sepolia",
     "e2e:liquidation": "hardhat run scripts/liquidation-e2e.ts --network sepolia",
     "deploy-token": "hardhat run scripts/deploy-token.ts --network hedera",
-    "mint-tokens": "hardhat run scripts/mint-tokens.ts --network hedera"
+    "mint-tokens": "hardhat run scripts/mint-tokens.ts --network hedera",
+    "p-repayment": "hardhat run scripts/partial-repayment.ts --network sepolia"
   },
   "devDependencies": {
     "@hashgraph/sdk": "^2.75.0",

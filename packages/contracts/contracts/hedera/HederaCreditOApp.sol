@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 import {UsdHtsController} from "./UsdHtsController.sol";
 import {ReserveRegistry} from "../ReserveRegistry.sol";
@@ -10,8 +12,14 @@ import {MathUtils} from "../libraries/MathUtils.sol";
 import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
 import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 
-import {OApp, MessagingFee, Origin} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
-import {OptionsBuilder} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+import {
+    OApp,
+    MessagingFee,
+    Origin
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import {
+    OptionsBuilder
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
 
 import {MessageTypes} from "../MessageTypes.sol";
 
@@ -69,10 +77,10 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         uint64 lastPublishTime;
     }
 
-	mapping(bytes32 => Position) public positions;
-	mapping(bytes32 => ReserveState) public reserveStates;
-	mapping(bytes32 => OracleState) public oracleStates;
-	bool public debugStopAfterMint = false;
+    mapping(bytes32 => Position) public positions;
+    mapping(bytes32 => ReserveState) public reserveStates;
+    mapping(bytes32 => OracleState) public oracleStates;
+    bool public debugStopAfterMint = false;
 
     /// -----------------------------------------------------------------------
     ///                                 EVENTS
@@ -123,8 +131,19 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         address ethRecipient,
         bool fullyRepaid
     );
-	event OrderManuallyMirrored(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed borrower, uint256 collateralWei);
-	event BorrowDebug(bytes32 indexed orderId, string tag, uint256 val1, uint256 val2, address addr);
+    event OrderManuallyMirrored(
+        bytes32 indexed orderId,
+        bytes32 indexed reserveId,
+        address indexed borrower,
+        uint256 collateralWei
+    );
+    event BorrowDebug(
+        bytes32 indexed orderId,
+        string tag,
+        uint256 val1,
+        uint256 val2,
+        address addr
+    );
 
     /// -----------------------------------------------------------------------
     ///                                 ERRORS
@@ -140,22 +159,22 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     error LzFeeTooLow(uint256 required, uint256 provided);
     error NothingToCollect();
 
-	constructor(
-		address lzEndpoint,
-		address owner_,
-		address registry_,
-		address pythContract,
+    constructor(
+        address lzEndpoint,
+        address owner_,
+        address registry_,
+        address pythContract,
         bytes32 defaultReserveId_
     ) OApp(lzEndpoint, owner_) {
         reserveRegistry = ReserveRegistry(registry_);
-		pyth = IPyth(pythContract);
-		defaultReserveId = defaultReserveId_;
-		_transferOwnership(owner_);
-	}
+        pyth = IPyth(pythContract);
+        defaultReserveId = defaultReserveId_;
+        _transferOwnership(owner_);
+    }
 
-	function setDebugStopAfterMint(bool enabled) external onlyOwner {
-		debugStopAfterMint = enabled;
-	}
+    function setDebugStopAfterMint(bool enabled) external onlyOwner {
+        debugStopAfterMint = enabled;
+    }
 
     /// -----------------------------------------------------------------------
     ///                              MESSAGING HOOK
@@ -176,7 +195,10 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
                 bytes32 reserveId,
                 address borrower,
                 uint256 ethAmountWei
-            ) = abi.decode(message, (uint8, bytes32, bytes32, address, uint256));
+            ) = abi.decode(
+                    message,
+                    (uint8, bytes32, bytes32, address, uint256)
+                );
             Position storage pos = positions[orderId];
             require(!pos.open, "order exists");
             pos.borrower = borrower;
@@ -195,7 +217,15 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             Position storage pos = positions[orderId];
             pos.open = false;
             pos.liquidated = true;
-            emit PositionLiquidated(orderId, reserveId, address(0), 0, 0, address(0), true);
+            emit PositionLiquidated(
+                orderId,
+                reserveId,
+                address(0),
+                0,
+                0,
+                address(0),
+                true
+            );
         }
     }
 
@@ -242,17 +272,15 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             revert ReserveInactive(reserveId);
         }
 
-        UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
+        UsdHtsController ctrl = UsdHtsController(
+            payable(cfg.metadata.controller)
+        );
         if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
             revert ControllerMismatch();
         }
 
-    uint256 feePaid = _updateOracle(priceUpdateData);
-        uint256 price1e18 = _fetchPrice(
-            reserveId,
-            cfg.oracle,
-            maxAgeSecs
-        );
+        uint256 feePaid = _updateOracle(priceUpdateData);
+        uint256 price1e18 = _fetchPrice(reserveId, cfg.oracle, maxAgeSecs);
         emit OraclePriceChecked(reserveId, price1e18);
 
         ReserveState storage state = _accrueReserve(
@@ -272,8 +300,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         uint256 existingDebt18 = _to1e18(existingDebtTokens, decimals);
 
         uint256 collateralUsd18 = (pos.collateralWei * price1e18) / WAD;
-        uint256 maxBorrow18 = (collateralUsd18 *
-            cfg.risk.maxLtvBps) / 10_000;
+        uint256 maxBorrow18 = (collateralUsd18 * cfg.risk.maxLtvBps) / 10_000;
         require(existingDebt18 + desired18 <= maxBorrow18, "exceeds LTV");
 
         uint256 originationFee = MathUtils.applyBps(
@@ -290,16 +317,27 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         //     canonicalBorrower = pos.borrower;
         // }
 
-        emit BorrowDebug(orderId, "transfer_borrower_start", netAmount, feeAmount, borrower);
+        emit BorrowDebug(
+            orderId,
+            "transfer_borrower_start",
+            netAmount,
+            feeAmount,
+            borrower
+        );
 
         // Transfer tokens from controller treasury to borrower (instead of minting)
         try ctrl.transferTo(borrower, netAmount) {
             // no-op
         } catch (bytes memory /* err */) {
-            emit BorrowDebug(orderId, "transfer_borrower_failed", netAmount, feeAmount, msg.sender);
+            emit BorrowDebug(
+                orderId,
+                "transfer_borrower_failed",
+                netAmount,
+                feeAmount,
+                msg.sender
+            );
             return 0;
         }
-
         // There is no need to transfer anything to the owner
         // if (feeAmount > 0) {
         //     try ctrl.transferTo(
@@ -314,9 +352,15 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         // }
 
         if (debugStopAfterMint) {
-            emit BorrowDebug(orderId, "post_mint", desiredTokens, feeAmount, msg.sender);
-			return netAmount;
-		}
+            emit BorrowDebug(
+                orderId,
+                "post_mint",
+                desiredTokens,
+                feeAmount,
+                msg.sender
+            );
+            return netAmount;
+        }
 
         // Update scaled debt
         uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
@@ -340,124 +384,130 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         );
 
         if (msg.value > feePaid) {
-            (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}(
-                ""
-            );
+            (bool refundOk, ) = msg.sender.call{value: msg.value - feePaid}("");
             require(refundOk, "refund fail");
         }
     }
 
+    function repay(
+        bytes32 orderId,
+        uint64 usdAmount,
+        bool notifyEthereum
+    ) external payable nonReentrant returns (bool fullyRepaid) {
+        if (usdAmount == 0) revert BadAmount();
 
-function repay(
-    bytes32 orderId,
-    uint64 usdAmount,
-    bool notifyEthereum
-) external payable nonReentrant returns (bool fullyRepaid) {
-    if (usdAmount == 0) revert BadAmount();
+        // Validate order
+        Position storage pos = positions[orderId];
+        if (!(pos.open && !pos.liquidated && pos.borrower == msg.sender)) {
+            revert BadOrder(orderId);
+        }
 
-    // Validate order
-    Position storage pos = positions[orderId];
-    if (!(pos.open && !pos.liquidated && pos.borrower == msg.sender)) {
-        revert BadOrder(orderId);
-    }
-
-    // Resolve controller & config
-    ReserveRegistry.ReserveConfigBundle memory cfg =
-        reserveRegistry.getReserveConfig(pos.reserveId);
-    UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
-    if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
-        revert ControllerMismatch();
-    }
-
-    // Accrue interest and get up-to-date state
-    ReserveState storage state = _accrueReserve(
-        pos.reserveId,
-        cfg.risk,
-        cfg.interest
-    );
-
-    uint8 decimals = cfg.metadata.debtTokenDecimals;
-
-    // Compute total outstanding debt (in ray)
-    uint256 totalDebtRay = _positionDebtRay(pos, state);
-    if (totalDebtRay == 0) revert BadAmount();
-
-    // Clamp requested repay to total debt
-    uint256 requestedRay = MathUtils.toRay(usdAmount, decimals);
-    uint256 repayRay = requestedRay > totalDebtRay ? totalDebtRay : requestedRay;
-
-    // Convert to scaled units and update position/state
-    uint256 scaledRepayment = MathUtils.rayDiv(
-        repayRay,
-        uint256(state.variableBorrowIndex)
-    );
-
-    if (scaledRepayment >= pos.scaledDebtRay) {
-        // Full repay
-        scaledRepayment = pos.scaledDebtRay;
-        repayRay = MathUtils.rayMul(
-            uint256(pos.scaledDebtRay),
-            uint256(state.variableBorrowIndex)
+        // Resolve controller & config
+        ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
+            .getReserveConfig(pos.reserveId);
+        UsdHtsController ctrl = UsdHtsController(
+            payable(cfg.metadata.controller)
         );
-        pos.scaledDebtRay = 0;
-    } else {
-        // Partial repay
-        pos.scaledDebtRay -= uint128(scaledRepayment);
-    }
-    state.totalVariableDebtRay -= repayRay;
+        if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
+            revert ControllerMismatch();
+        }
 
-    // Convert repay size back to token units (may round down slightly)
-    uint256 repayTokens = MathUtils.fromRay(repayRay, decimals);
-    uint64 burnAmount = uint64(repayTokens);
+        uint8 decimals = cfg.metadata.debtTokenDecimals;
 
-    // 🔐 IMPORTANT: charge the BORROWER:
-    // User must approve controller first, then we transfer tokens back to treasury
-    // (requires borrower approval to controller for at least `burnAmount`)
-    ctrl.pullFrom(pos.borrower, burnAmount);
+        // Get current outstanding debt before repayment
+        uint256 totalDebtRay = _positionDebtRay(pos, reserveStates[pos.reserveId]);
+        if (totalDebtRay == 0) revert BadAmount();
+        
+        uint256 totalDebtTokens = MathUtils.fromRay(totalDebtRay, decimals);
 
-    fullyRepaid = (pos.scaledDebtRay == 0);
+        // Clamp repayment to total debt
+        uint64 repayAmount = usdAmount;
+        if (repayAmount > totalDebtTokens) {
+            repayAmount = uint64(totalDebtTokens);
+        }
 
-    emit RepayApplied(
-        orderId,
-        pos.reserveId,
-        burnAmount,
-        pos.scaledDebtRay,
-        fullyRepaid
-    );
+        // CHANGE: Transfer tokens from borrower to controller treasury (no burning)
+        // User must approve controller first
+        ctrl.pullFrom(pos.borrower, repayAmount);
 
-    // Optional LayerZero notify to Ethereum on full repay
-    if (fullyRepaid && notifyEthereum && ethEid != 0) {
-        bytes memory payload = abi.encode(
-            MessageTypes.REPAID,
+        // Update debt tracking
+        uint256 repayRay = MathUtils.toRay(repayAmount, decimals);
+        ReserveState storage state = reserveStates[pos.reserveId];
+        
+        uint256 scaledRepayment = MathUtils.rayDiv(
+            repayRay,
+            uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
+        );
+
+        if (scaledRepayment >= pos.scaledDebtRay) {
+            // Full repayment
+            scaledRepayment = pos.scaledDebtRay;
+            repayRay = MathUtils.rayMul(
+                uint256(pos.scaledDebtRay),
+                uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
+            );
+            pos.scaledDebtRay = 0;
+        } else {
+            // Partial repayment
+            pos.scaledDebtRay -= uint128(scaledRepayment);
+        }
+        
+        state.totalVariableDebtRay -= repayRay;
+        fullyRepaid = (pos.scaledDebtRay == 0);
+
+        emit RepayApplied(
             orderId,
-            pos.reserveId
+            pos.reserveId,
+            repayAmount,
+            pos.scaledDebtRay,
+            fullyRepaid
         );
-        bytes memory opts = OptionsBuilder
-            .newOptions()
-            .addExecutorLzReceiveOption(120_000, 0);
 
-        MessagingFee memory q = _quote(ethEid, payload, opts, false);
-        uint256 nativeFee = q.nativeFee;
-        if (nativeFee > 0 && nativeFee < HEDERA_MIN_NATIVE) {
-            nativeFee = HEDERA_MIN_NATIVE;
-        }
-        if (msg.value < nativeFee) {
-            revert LzFeeTooLow(nativeFee, msg.value);
-        }
-        q.nativeFee = nativeFee;
-        _lzSend(ethEid, payload, opts, q, payable(msg.sender));
+        // CHANGE: Notify Ethereum on any repayment if notifyEthereum is true (not just full repay)
+        if (notifyEthereum && ethEid != 0) {
+            // Calculate the percentage of debt repaid
+            uint256 repaidPercentageBps = (repayRay * 10_000) / totalDebtRay;
 
-        uint256 refund = msg.value - q.nativeFee;
-        if (refund > 0) {
-            (bool ok, ) = msg.sender.call{value: refund}("");
-            require(ok, "refund fail");
+            // Calculate collateral to unlock based on repayment percentage
+            uint256 collateralToUnlock = (pos.collateralWei * repaidPercentageBps) / 10_000;
+
+
+            //TODO: CHECK WHY MESSAGE IS NOT WORKING
+            // bytes memory payload = abi.encode(
+            //     MessageTypes.REPAID,
+            //     orderId,
+            //     pos.reserveId,
+            //     fullyRepaid,
+            //     collateralToUnlock // CHANGE: Send the amount of collateral user can withdraw
+            // );
+            // bytes memory opts = OptionsBuilder
+            //     .newOptions()
+            //     .addExecutorLzReceiveOption(120_000, 0);
+
+            // MessagingFee memory q = _quote(ethEid, payload, opts, false);
+            // uint256 nativeFee = q.nativeFee;
+            // if (nativeFee > 0 && nativeFee < HEDERA_MIN_NATIVE) {
+            //     nativeFee = HEDERA_MIN_NATIVE;
+            // }
+            // if (msg.value < nativeFee) {
+            //     revert LzFeeTooLow(nativeFee, msg.value);
+            // }
+            // q.nativeFee = nativeFee;
+            // _lzSend(ethEid, payload, opts, q, payable(msg.sender));
+
+
+
+
+            // uint256 refund = msg.value - q.nativeFee;
+            // if (refund > 0) {
+            //     (bool ok, ) = msg.sender.call{value: refund}("");
+            //     require(ok, "refund fail");
+            // }
+        } else if (msg.value > 0) {
+            // (bool ok2, ) = msg.sender.call{value: msg.value}("");
+            // require(ok2, "refund fail");
         }
-    } else if (msg.value > 0) {
-        (bool ok2, ) = msg.sender.call{value: msg.value}("");
-        require(ok2, "refund fail");
     }
-}
-
     function liquidate(
         bytes32 orderId,
         uint64 repayAmount,
@@ -472,8 +522,13 @@ function repay(
 
         ReserveRegistry.ReserveConfigBundle memory cfg = reserveRegistry
             .getReserveConfig(pos.reserveId);
-        require(cfg.metadata.active && !cfg.metadata.frozen, "reserve inactive");
-        UsdHtsController ctrl = UsdHtsController(payable(cfg.metadata.controller));
+        require(
+            cfg.metadata.active && !cfg.metadata.frozen,
+            "reserve inactive"
+        );
+        UsdHtsController ctrl = UsdHtsController(
+            payable(cfg.metadata.controller)
+        );
         if (ctrl.usdDecimals() != cfg.metadata.debtTokenDecimals) {
             revert ControllerMismatch();
         }
@@ -530,7 +585,7 @@ function repay(
         }
         state.totalVariableDebtRay -= actualRepayRay;
 
-        ctrl.burnFromTreasury(uint64(repayTokens));
+        // ctrl.burnFromTreasury(uint64(repayTokens));
 
         uint256 repayUsd18 = _to1e18(repayTokens, decimals);
         uint256 seizeWei = _calcSeizeAmountWei(
@@ -660,7 +715,9 @@ function repay(
         return q.nativeFee;
     }
 
-    function getOutstandingDebt(bytes32 orderId) external view returns (uint256) {
+    function getOutstandingDebt(
+        bytes32 orderId
+    ) external view returns (uint256) {
         Position storage pos = positions[orderId];
         ReserveState storage state = reserveStates[pos.reserveId];
         uint256 debtRay = _positionDebtRay(pos, state);
@@ -680,15 +737,18 @@ function repay(
         bool open;
     }
 
-    function horders(bytes32 orderId) external view returns (HOrderCompat memory) {
+    function horders(
+        bytes32 orderId
+    ) external view returns (HOrderCompat memory) {
         Position storage pos = positions[orderId];
         if (!pos.open) {
-            return HOrderCompat({
-                borrower: address(0),
-                ethAmountWei: 0,
-                borrowedUsd: 0,
-                open: false
-            });
+            return
+                HOrderCompat({
+                    borrower: address(0),
+                    ethAmountWei: 0,
+                    borrowedUsd: 0,
+                    open: false
+                });
         }
 
         bytes32 reserveId = pos.reserveId == bytes32(0)
@@ -701,14 +761,14 @@ function repay(
         ) {
             cfg = data;
         } catch {
-            return HOrderCompat({
-                borrower: pos.borrower,
-                ethAmountWei: pos.collateralWei,
-                borrowedUsd: 0,
-                open: pos.open && !pos.liquidated
-            });
+            return
+                HOrderCompat({
+                    borrower: pos.borrower,
+                    ethAmountWei: pos.collateralWei,
+                    borrowedUsd: 0,
+                    open: pos.open && !pos.liquidated
+                });
         }
-
         ReserveState storage state = reserveStates[reserveId];
         uint256 debtRay = _positionDebtRay(pos, state);
         uint256 debtTokens = MathUtils.fromRay(
@@ -719,12 +779,13 @@ function repay(
             debtTokens = type(uint64).max;
         }
 
-        return HOrderCompat({
-            borrower: pos.borrower,
-            ethAmountWei: pos.collateralWei,
-            borrowedUsd: uint64(debtTokens),
-            open: pos.open && !pos.liquidated
-        });
+        return
+            HOrderCompat({
+                borrower: pos.borrower,
+                ethAmountWei: pos.collateralWei,
+                borrowedUsd: uint64(debtTokens),
+                open: pos.open && !pos.liquidated
+            });
     }
 
     function ltvBps() external view returns (uint16) {
@@ -752,7 +813,12 @@ function repay(
     /// -----------------------------------------------------------------------
 
     error OracleFeeTooLow(uint256 required, uint256 provided);
-    error OracleUpdateFailed(bytes data, uint256 required, uint256 provided, uint256 items);
+    error OracleUpdateFailed(
+        bytes data,
+        uint256 required,
+        uint256 provided,
+        uint256 items
+    );
     error OraclePriceQueryFailed(bytes data, uint32 maxAgeSecs);
 
     function _updateOracle(
@@ -766,7 +832,12 @@ function repay(
         try pyth.updatePriceFeeds{value: feePaid}(priceUpdateData) {
             // no-op
         } catch (bytes memory errData) {
-            revert OracleUpdateFailed(errData, feePaid, msg.value, priceUpdateData.length);
+            revert OracleUpdateFailed(
+                errData,
+                feePaid,
+                msg.value,
+                priceUpdateData.length
+            );
         }
     }
 
@@ -777,7 +848,10 @@ function repay(
     ) internal returns (uint256 price1e18) {
         require(oracleCfg.priceId != bytes32(0), "oracle unset");
         uint32 maxAge = oracleCfg.maxStalenessSeconds;
-        if (externalMaxAgeSecs != 0 && (maxAge == 0 || externalMaxAgeSecs < maxAge)) {
+        if (
+            externalMaxAgeSecs != 0 &&
+            (maxAge == 0 || externalMaxAgeSecs < maxAge)
+        ) {
             maxAge = externalMaxAgeSecs;
         }
         if (maxAge == 0) {
@@ -785,10 +859,9 @@ function repay(
         }
 
         PythStructs.Price memory price;
-        try pyth.getPriceNoOlderThan(
-            oracleCfg.priceId,
-            maxAge
-        ) returns (PythStructs.Price memory fetched) {
+        try pyth.getPriceNoOlderThan(oracleCfg.priceId, maxAge) returns (
+            PythStructs.Price memory fetched
+        ) {
             price = fetched;
         } catch (bytes memory errData) {
             revert OraclePriceQueryFailed(errData, maxAge);
@@ -809,10 +882,7 @@ function repay(
         }
 
         OracleState storage oracleState = oracleStates[reserveId];
-        if (
-            oracleCfg.maxDeviationBps > 0 &&
-            oracleState.lastPrice != 0
-        ) {
+        if (oracleCfg.maxDeviationBps > 0 && oracleState.lastPrice != 0) {
             uint256 last = uint64(oracleState.lastPrice);
             uint256 current = uint64(price.price);
             uint256 diff = current > last ? current - last : last - current;
@@ -825,10 +895,7 @@ function repay(
         oracleState.lastPrice = price.price;
         oracleState.lastPublishTime = uint64(price.publishTime);
 
-        price1e18 = _scalePriceTo1e18(
-            uint256(uint64(price.price)),
-            price.expo
-        );
+        price1e18 = _scalePriceTo1e18(uint256(uint64(price.price)), price.expo);
     }
 
     function _accrueReserve(
@@ -900,10 +967,15 @@ function repay(
         ReserveState storage state
     ) internal view returns (uint256) {
         if (pos.scaledDebtRay == 0) return 0;
-        return MathUtils.rayMul(
-            uint256(pos.scaledDebtRay),
-            uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
-        );
+        return
+            MathUtils.rayMul(
+                uint256(pos.scaledDebtRay),
+                uint256(
+                    state.variableBorrowIndex == 0
+                        ? uint128(RAY)
+                        : state.variableBorrowIndex
+                )
+            );
     }
 
     function _scalePriceTo1e18(
@@ -917,7 +989,10 @@ function repay(
         return rawPrice / (10 ** uint32(uint32(-power)));
     }
 
-    function _to1e18(uint256 amount, uint8 decimals) internal pure returns (uint256) {
+    function _to1e18(
+        uint256 amount,
+        uint8 decimals
+    ) internal pure returns (uint256) {
         if (decimals < 18) {
             return amount * (10 ** (18 - decimals));
         }
@@ -936,8 +1011,8 @@ function repay(
     ) internal view returns (bool) {
         uint256 collateralUsd18 = (pos.collateralWei * price1e18) / WAD;
         uint256 debtUsd18 = _to1e18(debtTokens, decimals);
-        uint256 threshold = (collateralUsd18 * riskCfg.liquidationThresholdBps) /
-            10_000;
+        uint256 threshold = (collateralUsd18 *
+            riskCfg.liquidationThresholdBps) / 10_000;
         return debtUsd18 > threshold;
     }
 
@@ -982,4 +1057,4 @@ function repay(
 
     receive() external payable {}
 }
-    error ControllerMintFailed(bytes data);
+error ControllerMintFailed(bytes data);

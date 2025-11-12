@@ -188,16 +188,34 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         address,
         bytes calldata
     ) internal override {
+        require(message.length > 0, "Empty message received");
         uint8 msgType = uint8(message[0]);
+
         if (msgType == MessageTypes.REPAID) {
-            (, bytes32 orderId, bytes32 reserveId) = abi.decode(
-                message,
-                (uint8, bytes32, bytes32)
-            );
+            (
+                ,
+                bytes32 orderId,
+                bytes32 reserveId,
+                bool fullyRepaid,
+                uint256 collateralToUnlock
+            ) = abi.decode(message, (uint8, bytes32, bytes32, bool, uint256));
+            
             Order storage o = orders[orderId];
-            if (o.reserveId == reserveId) {
+            require(o.funded, "order not funded");
+            
+            if (fullyRepaid) {
+                // Full repayment - mark as repaid so user can withdraw all
                 o.repaid = true;
+                
                 emit MarkRepaid(orderId, reserveId);
+            } else {
+                // Partial repayment - reduce collateral (user can withdraw unlocked portion)
+                require(collateralToUnlock <= o.amountWei, "unlock amount exceeds collateral");
+                
+                o.amountWei -= collateralToUnlock;
+                
+                // Note: No event defined for partial repayment in original contract
+                // You may want to add: emit PartialRepayment(orderId, reserveId, collateralToUnlock, o.amountWei);
             }
         } else if (msgType == MessageTypes.LIQUIDATED) {
             try this.decodeLiquidationPayload(message) returns (
@@ -217,7 +235,6 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
             }
         }
     }
-
     function decodeLiquidationPayload(
         bytes calldata message
     )
@@ -370,5 +387,33 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         bytes memory opts = _getMessageOptions();
         MessagingFee memory q = _quote(hederaEid, payload, opts, false);
         return q.nativeFee;
+    }
+
+    /// @notice Admin function to manually mirror repayment for testing (when LayerZero is offline)
+    /// @dev This simulates the _lzReceive REPAID message handling - ONLY updates state, doesn't transfer ETH
+    /// @dev ETH transfer happens when user calls withdraw() separately
+    function adminMirrorRepayment(
+        bytes32 orderId,
+        bytes32 reserveId,
+        bool fullyRepaid,
+        uint256 collateralToUnlock
+    ) external onlyOwner {
+        Order storage o = orders[orderId];
+        require(o.funded, "order not funded");
+        
+        if (fullyRepaid) {
+            // Full repayment - mark position as repaid so user can withdraw all
+            o.repaid = true;
+            
+            emit MarkRepaid(orderId, reserveId);
+        } else {
+            // Partial repayment - reduce collateral amount (user can withdraw the unlocked portion)
+            require(collateralToUnlock <= o.amountWei, "unlock amount exceeds collateral");
+            
+            o.amountWei -= collateralToUnlock;
+            
+            // NOTE: The unlocked collateral stays in the contract until user calls withdraw()
+            // No existing event for partial repayment - consider adding one if needed
+        }
     }
 }

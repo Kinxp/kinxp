@@ -202,48 +202,6 @@ contract UsdHtsController is HederaTokenService, Ownable {
         emit Unpaused(msg.sender);
     }
 
-    // / @notice Mints tokens to a specified address
-    // / @param to Address to receive the tokens
-    // / @param amount Amount to mint
-    // function mintTo(address to, uint64 amount) external onlyOwner {
-    //     if (paused) revert ControllerPaused();
-    //     if (!tokenInitialized) revert TokenNotInitialized();
-    //     if (to == address(0)) revert InvalidRecipient();
-    //     if (amount == 0) revert InvalidAmount();
-    //     if (amount > MAX_INT64) revert AmountExceedsInt64();
-    //     if (mintCap != 0 && totalMinted + amount > mintCap) {
-    //         revert MintCapExceeded();
-    //     }
-
-    //     int64 signedAmount = int64(uint64(amount));
-
-    //     bytes[] memory metadata = new bytes[](0);
-    //     (int rcMint, , ) = HederaTokenService.mintToken(
-    //         usdToken,
-    //         signedAmount,
-    //         metadata
-    //     );
-    //     if (rcMint != HederaResponseCodes.SUCCESS) {
-    //         revert MintFailed(int64(rcMint));
-    //     }
-
-    //     int64 rcTransfer = int64(HederaResponseCodes.SUCCESS);
-    //     if (to != treasuryAccount) {
-    //         int rcXfer = HederaTokenService.transferToken(
-    //             usdToken,
-    //             treasuryAccount,
-    //             to,
-    //             signedAmount
-    //         );
-    //         rcTransfer = int64(rcXfer);
-    //         if (rcXfer != HederaResponseCodes.SUCCESS) {
-    //             revert TransferFailed(int64(rcXfer));
-    //         }
-    //     }
-
-    //     totalMinted += amount;
-    //     emit Minted(to, amount);
-    // }
 
     /// @notice Transfers tokens from controller treasury to recipient
     /// @param to Address to receive the tokens
@@ -271,29 +229,7 @@ contract UsdHtsController is HederaTokenService, Ownable {
         emit Minted(to, amount); // Reusing event for transfer
     }
 
-    /// @notice Burns tokens from this contract's treasury
-    /// @param amount Amount to burn
-    function burnFromTreasury(uint64 amount) external onlyOwner {
-        if (!tokenInitialized) revert TokenNotInitialized();
-        if (amount == 0) revert InvalidAmount();
-        if (amount > MAX_INT64) revert AmountExceedsInt64();
-
-        int64 signedAmount = int64(uint64(amount));
-
-        int64[] memory serials = new int64[](0);
-        (int rcBurn, ) = burnToken(
-            usdToken,
-            signedAmount,
-            serials
-        );
-
-        if (rcBurn != HederaResponseCodes.SUCCESS) {
-            revert BurnFailed(int64(rcBurn));
-        }
-
-        totalBurned += amount;
-        emit Burned(amount);
-    }
+ 
 
     /// @notice Transfers tokens from an address back to treasury (requires approval)
     /// @param from Address to transfer tokens from
@@ -319,46 +255,6 @@ contract UsdHtsController is HederaTokenService, Ownable {
         }
 
         emit Minted(treasuryAccount, amount); // Reusing event for transfer back
-    }
-
-    /// @notice Transfers tokens from an address and burns them
-    /// @param from Address to transfer tokens from
-    /// @param amount Amount to transfer and burn
-    function pullFromAndBurn(address from, uint64 amount) external onlyOwner {
-        if (from == address(0)) revert InvalidRecipient();
-        if (!tokenInitialized) revert TokenNotInitialized();
-        if (amount == 0) revert InvalidAmount();
-        if (amount > MAX_INT64) revert AmountExceedsInt64();
-
-        int64 signedAmount = int64(amount);
-        uint256 transferAmount = uint256(amount);
-
-        // Transfer from borrower to treasury (requires approval)
-        int64 rcTransfer = this.transferFrom(
-            usdToken,
-            from,
-            treasuryAccount,
-            transferAmount
-        );
-
-        if (rcTransfer != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed(rcTransfer);
-        }
-
-        // Burn from treasury
-        int64[] memory serials = new int64[](0);
-        (int rcBurn, ) = burnToken(
-            usdToken,
-            signedAmount,
-            serials
-        );
-
-        if (rcBurn != HederaResponseCodes.SUCCESS) {
-            revert BurnFailed(int64(rcBurn));
-        }
-
-        totalBurned += amount;
-        emit Burned(amount);
     }
 
     function _readName(address tokenAddr) private view returns (string memory) {

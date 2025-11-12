@@ -521,7 +521,7 @@ async function main() {
   banner("Repaying on Hedera");
   const repayTx = await borrowerCredit.repay(orderId, repayAmount, true, {
     value: repayValueWei,
-    gasLimit: 1_500_000,
+    gasLimit: 3_500_000,
   });
   await repayTx.wait();
   console.log("  Repay succeeded");
