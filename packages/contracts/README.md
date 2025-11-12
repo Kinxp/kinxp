@@ -39,6 +39,10 @@ Both scripts optionally wire LayerZero endpoint IDs if `LZ_EID_*` environment va
 
 If you prefer to create the USD HTS token via the SDK, skip the on-chain `createUsdToken` call in `deploy-hedera.ts`, run your own creation flow (treasury + supply key = controller), then call `setExistingUsdToken()` on the controller.
 
+### Diagnostics & Scenarios
+
+- `pnpm --filter @kinxp/contracts run add-collateral-health` â€” Deploys fresh Ethereum/Hedera contracts, funds an order, exercises the new collateral top-up flow, and prints before/after health (max borrow, liquidation threshold, LTV) straight from the Hedera mirror.
+
 ## User Flow
 
 1. **Open ID (Ethereum)** — `createOrderId()` returns a deterministic `bytes32` orderId.

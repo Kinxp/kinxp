@@ -5,4 +5,5 @@ library MessageTypes {
     uint8 internal constant FUNDED = 0;
     uint8 internal constant REPAID = 1;
     uint8 internal constant LIQUIDATED = 2; // payload (Hedera -> Eth): orderId, reserveId, liquidator, payout, seizedWei
+    uint8 internal constant COLLATERAL_ADDED = 3;
 }

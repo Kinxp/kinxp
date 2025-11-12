@@ -92,6 +92,13 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         address indexed borrower,
         uint256 collateralWei
     );
+    event HederaCollateralIncreased(
+        bytes32 indexed orderId,
+        bytes32 indexed reserveId,
+        address indexed borrower,
+        uint256 addedCollateralWei,
+        uint256 newTotalCollateralWei
+    );
     event Borrowed(
         bytes32 indexed orderId,
         bytes32 indexed reserveId,
@@ -226,7 +233,40 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
                 address(0),
                 true
             );
+        } else if (msgType == MessageTypes.COLLATERAL_ADDED) {
+            (
+                ,
+                bytes32 orderId,
+                bytes32 reserveId,
+                address borrower,
+                uint256 addedWei,
+                uint256 newTotalWei
+            ) = abi.decode(
+                    message,
+                    (uint8, bytes32, bytes32, address, uint256, uint256)
+                );
+            _applyCollateralIncrease(orderId, reserveId, borrower, addedWei, newTotalWei);
         }
+    }
+
+    function _applyCollateralIncrease(
+        bytes32 orderId,
+        bytes32 reserveId,
+        address borrower,
+        uint256 addedWei,
+        uint256 newTotalWei
+    ) internal {
+        if (addedWei == 0) revert BadAmount();
+        Position storage pos = positions[orderId];
+        if (!(pos.open && !pos.liquidated && pos.borrower == borrower)) {
+            revert BadOrder(orderId);
+        }
+        if (pos.reserveId != reserveId) {
+            revert ReserveMismatch(pos.reserveId, reserveId);
+        }
+        require(newTotalWei >= pos.collateralWei + addedWei, "total mismatch");
+        pos.collateralWei = newTotalWei;
+        emit HederaCollateralIncreased(orderId, reserveId, borrower, addedWei, newTotalWei);
     }
 
     /// -----------------------------------------------------------------------
@@ -1053,6 +1093,14 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
         emit HederaOrderOpened(orderId, reserveId, borrower, collateralWei);
         emit OrderManuallyMirrored(orderId, reserveId, borrower, collateralWei);
+    }
+
+    function adminIncreaseCollateral(bytes32 orderId, uint256 addedWei) external onlyOwner {
+        require(addedWei > 0, "collateral=0");
+        Position storage pos = positions[orderId];
+        if (!(pos.open && !pos.liquidated)) revert BadOrder(orderId);
+        uint256 newTotal = pos.collateralWei + addedWei;
+        _applyCollateralIncrease(orderId, pos.reserveId, pos.borrower, addedWei, newTotal);
     }
 
     receive() external payable {}

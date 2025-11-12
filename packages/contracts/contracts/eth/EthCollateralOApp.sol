@@ -45,6 +45,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     event MarkRepaid(bytes32 indexed orderId, bytes32 indexed reserveId);
     event CollateralUnlocked(bytes32 indexed orderId, bytes32 indexed reserveId, uint256 unlockedAmount, uint256 totalUnlocked, bool fullyRepaid);
     event Withdrawn(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user, uint256 amountWei);
+    event CollateralAdded(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user, uint256 addedAmountWei, uint256 newTotalCollateralWei);
     event Liquidated(bytes32 indexed orderId, bytes32 indexed reserveId, uint256 amountWei, address indexed payout);
 
     constructor(address lzEndpoint, bytes32 defaultReserveId_) OApp(lzEndpoint, msg.sender) {
@@ -87,6 +88,21 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         _fundWithNotify(orderId, msg.sender, depositAmountWei);
     }
 
+    /// @notice Adds extra collateral to an already funded order (no Hedera notify).
+    function addCollateral(bytes32 orderId) external payable nonReentrant {
+        _addCollateral(orderId, msg.sender, msg.value);
+    }
+
+    /// @notice Adds extra collateral and notifies Hedera via LayerZero.
+    function addCollateralWithNotify(bytes32 orderId, uint256 topUpAmountWei)
+        external
+        payable
+        nonReentrant
+    {
+        require(hederaEid != 0, "eid unset");
+        _addCollateralWithNotify(orderId, msg.sender, topUpAmountWei);
+    }
+
     /// @notice Quotes the LayerZero fee required to send a FUNDED message.
     function quoteOpenNativeFee(address /* borrower */, uint256 depositAmountWei)
         external
@@ -102,6 +118,33 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         returns (uint256 nativeFee)
     {
         return _quoteOpenFee(reserveId, depositAmountWei);
+    }
+
+    /// @notice Quotes the LayerZero fee for a collateral top-up for a given order.
+    function quoteAddCollateralNativeFee(bytes32 orderId, uint256 topUpAmountWei)
+        external
+        view
+        returns (uint256 nativeFee)
+    {
+        require(hederaEid != 0, "eid unset");
+        require(topUpAmountWei > 0, "no ETH");
+        Order storage o = orders[orderId];
+        require(o.owner != address(0), "order missing");
+        require(o.funded, "order not funded");
+        require(!o.liquidated, "order liquidated");
+        require(!o.repaid, "order repaid");
+
+        bytes memory payload = abi.encode(
+            MessageTypes.COLLATERAL_ADDED,
+            orderId,
+            o.reserveId,
+            o.owner,
+            topUpAmountWei,
+            o.amountWei + topUpAmountWei
+        );
+        bytes memory opts = _getMessageOptions();
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+        return q.nativeFee;
     }
 
     function markRepaid(bytes32) external pure {
@@ -120,6 +163,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
 
         require(o.owner == msg.sender, "not owner");
         require(o.funded, "not funded");
+        require(o.repaid || amountToWithdraw > 0, "not repaid");
         require(amountToWithdraw > 0, "no unlocked collateral");
 
         // 2. Update State (Effects) - BEFORE sending ETH
@@ -288,8 +332,8 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
 
     function _createOrder(address user, bytes32 reserveId) internal returns (bytes32 orderId) {
         uint96 n = ++nonces[user];
-        // ADD block.timestamp to the hash to ensure it is always unique
-        orderId = keccak256(abi.encode(user, n, block.chainid, reserveId, block.timestamp));
+        // Deterministic per user+nonce so frontends can predict orderId before funding.
+        orderId = keccak256(abi.encode(user, n, block.chainid, reserveId));
         orders[orderId] = Order({
             owner: user,
             reserveId: reserveId,
@@ -343,6 +387,61 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         o.amountWei = depositAmountWei;
         o.funded = true;
         emit OrderFunded(orderId, o.reserveId, sender, depositAmountWei);
+
+        _sendLzMessage(hederaEid, payload, opts, q.nativeFee, sender);
+
+        uint256 refund = feeProvided - q.nativeFee;
+        if (refund > 0) {
+            (bool ok, ) = payable(sender).call{value: refund}("");
+            require(ok, "refund fail");
+        }
+    }
+
+    function _addCollateral(bytes32 orderId, address sender, uint256 value) internal {
+        require(value > 0, "no ETH");
+        Order storage o = orders[orderId];
+        require(o.owner == sender, "not owner");
+        require(o.funded, "order not funded");
+        require(!o.liquidated, "order liquidated");
+        require(!o.repaid, "order repaid");
+
+        uint256 newTotal = o.amountWei + value;
+        o.amountWei = newTotal;
+
+        emit CollateralAdded(orderId, o.reserveId, sender, value, newTotal);
+    }
+
+    function _addCollateralWithNotify(
+        bytes32 orderId,
+        address sender,
+        uint256 topUpAmountWei
+    ) internal {
+        require(topUpAmountWei > 0, "no ETH");
+        Order storage o = orders[orderId];
+        require(o.owner == sender, "not owner");
+        require(o.funded, "order not funded");
+        require(!o.liquidated, "order liquidated");
+        require(!o.repaid, "order repaid");
+        require(msg.value >= topUpAmountWei, "insufficient msg.value");
+
+        uint256 newTotal = o.amountWei + topUpAmountWei;
+
+        bytes memory payload = abi.encode(
+            MessageTypes.COLLATERAL_ADDED,
+            orderId,
+            o.reserveId,
+            sender,
+            topUpAmountWei,
+            newTotal
+        );
+        bytes memory opts = _getMessageOptions();
+        MessagingFee memory q = _quote(hederaEid, payload, opts, false);
+
+        uint256 feeProvided = msg.value - topUpAmountWei;
+        require(feeProvided >= q.nativeFee, "insufficient msg.value");
+
+        o.amountWei = newTotal;
+        emit CollateralAdded(orderId, o.reserveId, sender, topUpAmountWei, newTotal);
 
         _sendLzMessage(hederaEid, payload, opts, q.nativeFee, sender);
 

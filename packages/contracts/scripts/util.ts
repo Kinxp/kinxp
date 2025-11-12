@@ -440,6 +440,44 @@ export async function fundOrderEthereum(ethCollateral: EthCollateralOApp, ethSig
   return txFund;
 }
 
+export async function addCollateralEthereum(
+  ethCollateral: EthCollateralOApp,
+  ethSigner: Wallet,
+  orderId: Hex,
+  topUpWei: bigint,
+  hederaCredit?: HederaCreditOApp
+) {
+  if (topUpWei <= 0n) {
+    throw new Error("topUpWei must be greater than zero");
+  }
+  const borrower = ethCollateral.connect(ethSigner);
+  if (SKIP_LAYERZERO) {
+    console.warn("  LayerZero skipped (SKIP_LAYERZERO=true): calling addCollateral without notify");
+    const tx = await borrower.addCollateral(orderId, {
+      value: topUpWei,
+      gasLimit: 400000,
+    });
+    await tx.wait();
+    if (hederaCredit) {
+      console.warn("  Mirroring collateral increase on Hedera via adminIncreaseCollateral");
+      const admin = hederaCredit.connect(hederaOperatorWallet);
+      await (await admin.adminIncreaseCollateral(orderId, topUpWei)).wait();
+    }
+    return tx;
+  }
+
+  const nativeFee: bigint = await ethCollateral.quoteAddCollateralNativeFee(orderId, topUpWei);
+  let totalValue = topUpWei + nativeFee;
+  totalValue += nativeFee / 10n; // buffer for price movements
+
+  const tx = await borrower.addCollateralWithNotify(orderId, topUpWei, {
+    value: totalValue,
+    gasLimit: 700000,
+  });
+  await tx.wait();
+  return tx;
+}
+
 export async function createOrderEthereum(ethCollateral: EthCollateralOApp) {
   const txCreateOrder = await ethCollateral.createOrderId();
   const createReceipt = await txCreateOrder.wait();
