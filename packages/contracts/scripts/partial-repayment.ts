@@ -249,8 +249,7 @@ import {
     const maxBorrowWad = (collateralUsdWad * 7000n) / 10000n; // 70% LTV
     const borrowAmountWad = (maxBorrowWad * 99n) / 100n; // Borrow 99% of max
   
-    // FIX: Convert the borrow amount from 18 decimals (wad) to the token's 6 decimals
-    const scalingFactor = 10n ** BigInt(WAD_DECIMALS - TOKEN_DECIMALS); // 10^12
+    const scalingFactor = 10n ** BigInt(WAD_DECIMALS - TOKEN_DECIMALS);
     const borrowAmount = borrowAmountWad / scalingFactor;
   
     console.log("  Borrow amount:", formatUnits(borrowAmount, TOKEN_DECIMALS), "USD");
@@ -292,31 +291,11 @@ import {
     });
     const repayReceipt = await repayTx.wait();
   
-    const repayEvent = repayReceipt?.logs
-      ?.map((log: any) => {
-        try {
-          return params.hederaCredit.interface.parseLog(log);
-        } catch { return null; }
-      })
-      .find((e: any) => e?.name === "RepayApplied");
-  
-    if (repayEvent) {
-      console.log("  ✓ Repaid:", formatUnits(repayEvent.args.repayBurnAmount, TOKEN_DECIMALS), "USD");
-      console.log("  Remaining debt (ray):", repayEvent.args.remainingDebtRay.toString());
-      console.log("  Fully repaid:", repayEvent.args.fullyRepaid);
-    }
-  
-    const debtAfterRepay = await params.hederaCredit.getOutstandingDebt(orderId);
-    console.log("  Outstanding debt after repay:", formatUnits(debtAfterRepay, TOKEN_DECIMALS), "USD");
-  
     // Step 7: Calculate collateral to unlock
     const repaidPercentageBps = (repayAmount * 10000n) / debtAfterBorrow;
     const collateralToUnlock = (params.collateralWei * repaidPercentageBps) / 10000n;
   
     banner("Step 6: Simulating Ethereum unlock (admin function)");
-    console.log("  Repaid percentage:", Number(repaidPercentageBps) / 100, "%");
-    console.log("  Collateral to unlock:", formatEther(collateralToUnlock), "ETH");
-  
     const unlockTx = await params.ethCollateral.adminMirrorRepayment(
       orderId,
       DEFAULT_RESERVE_ID,
@@ -326,8 +305,20 @@ import {
     await unlockTx.wait();
     console.log("  ✓ Collateral unlocked on Ethereum");
   
-    const ethOrder = await params.ethCollateral.orders(orderId);
-    console.log("  Remaining collateral on Ethereum:", formatEther(ethOrder.amountWei), "ETH");
+    // ADDED: Step 7 - Attempt withdrawal (expected to fail)
+    banner("Step 7: Attempting Withdrawal (Expected to Fail for Partial Repayment)");
+    try {
+      const borrowerEthCollateral = params.ethCollateral.connect(borrowerWallet);
+      const withdrawTx = await borrowerEthCollateral.withdraw(orderId);
+      await withdrawTx.wait();
+      console.error("  ✗ Withdrawal succeeded unexpectedly for a partial repayment.");
+    } catch (err: any) {
+      if (err.message?.includes("not repaid")) {
+        console.log("  ✓ Withdrawal correctly failed as the order is not fully repaid.");
+      } else {
+        console.error("  ✗ Withdrawal failed with an unexpected error:", err.message);
+      }
+    }
   
     banner(`${params.scenarioName} - COMPLETE`);
   }
@@ -353,138 +344,81 @@ import {
     banner(params.scenarioName);
   
     banner("Step 1: Creating and funding order on Ethereum");
-  
     const createTx = await params.ethCollateral.createOrderIdWithReserve(DEFAULT_RESERVE_ID);
     const createReceipt = await createTx.wait();
-  
-    const orderCreatedEvent = createReceipt?.logs
-      ?.map((log: any) => {
-        try {
-          return params.ethCollateral.interface.parseLog(log);
-        } catch { return null; }
-      })
-      .find((e: any) => e?.name === "OrderCreated");
-  
-    if (!orderCreatedEvent) {
-      throw new Error("Could not find OrderCreated event in the transaction receipt.");
-    }
+    const orderCreatedEvent = createReceipt?.logs?.map((log: any) => { try { return params.ethCollateral.interface.parseLog(log); } catch { return null; } }).find((e: any) => e?.name === "OrderCreated");
+    if (!orderCreatedEvent) throw new Error("Could not find OrderCreated event.");
     const orderId = orderCreatedEvent.args.orderId;
     console.log("  ✓ Order created with on-chain ID:", orderId);
   
-    const fundTx = await params.ethCollateral.fundOrder(orderId, {
-      value: params.collateralWei,
-      gasLimit: 500_000
-    });
+    const fundTx = await params.ethCollateral.fundOrder(orderId, { value: params.collateralWei, gasLimit: 500_000 });
     await fundTx.wait();
     console.log("  ✓ Order funded on Ethereum");
   
     banner("Step 2: Mirroring order on Hedera");
-    const mirrorHederaTx = await params.hederaCredit.adminMirrorOrder(
-      orderId,
-      DEFAULT_RESERVE_ID,
-      params.borrowerAddress,
-      params.borrowerAccountAddress,
-      params.collateralWei
-    );
-    await mirrorHederaTx.wait();
+    await params.hederaCredit.adminMirrorOrder(orderId, DEFAULT_RESERVE_ID, params.borrowerAddress, params.borrowerAccountAddress, params.collateralWei).then(tx => tx.wait());
     console.log("  ✓ Order mirrored on Hedera");
   
     // Step 3: Borrow
     const collateralUsdWad = (params.collateralWei * params.scaledPrice) / parseEther("1");
     const maxBorrowWad = (collateralUsdWad * 7000n) / 10000n;
     const borrowAmountWad = (maxBorrowWad * 99n) / 100n;
-    
-    // FIX: Convert the borrow amount from 18 decimals (wad) to the token's 6 decimals
     const scalingFactor = 10n ** BigInt(WAD_DECIMALS - TOKEN_DECIMALS);
     const borrowAmount = borrowAmountWad / scalingFactor;
   
     banner("Step 3: Borrowing");
-    const borrowTx = await params.hederaCredit
-      .connect(borrowerWallet)
-      .borrowWithReserve(
-        DEFAULT_RESERVE_ID,
-        orderId,
-        borrowAmount,
-        params.priceUpdateData,
-        0,
-        { value: params.priceUpdateFee, gasLimit: 2_000_000 }
-      );
-    await borrowTx.wait();
+    await params.hederaCredit.connect(borrowerWallet).borrowWithReserve(DEFAULT_RESERVE_ID, orderId, borrowAmount, params.priceUpdateData, 0, { value: params.priceUpdateFee, gasLimit: 2_000_000 }).then(tx => tx.wait());
     console.log("  ✓ Borrowed:", formatUnits(borrowAmount, TOKEN_DECIMALS), "USD");
   
     const initialDebt = await params.hederaCredit.getOutstandingDebt(orderId);
     console.log("  Initial debt:", formatUnits(initialDebt, TOKEN_DECIMALS), "USD");
-  
-    let remainingCollateral = params.collateralWei;
   
     // Step 4: Multiple repayments
     for (let i = 0; i < params.repayPercentages.length; i++) {
       const percentage = params.repayPercentages[i];
       banner(`Step ${4 + i}: Repayment ${i + 1} (${percentage}% of original debt)`);
   
-      const currentDebt = await params.hederaCredit.getOutstandingDebt(orderId);
-      console.log("  Current debt:", formatUnits(currentDebt, TOKEN_DECIMALS), "USD");
-  
       const repayAmount = (BigInt(percentage) * initialDebt) / 100n;
       console.log("  Repaying:", formatUnits(repayAmount, TOKEN_DECIMALS), "USD");
   
-      const approveTx = await params.hts.approve(
-        params.tokenAddress,
-        CONTROLLER_ADDR,
-        repayAmount,
-        { gasLimit: 2_500_000 }
-      );
-      await approveTx.wait();
+      await params.hts.approve(params.tokenAddress, CONTROLLER_ADDR, repayAmount, { gasLimit: 2_500_000 }).then(tx => tx.wait());
+      const repayReceipt = await params.hederaCredit.connect(borrowerWallet).repay(orderId, repayAmount, false, { gasLimit: 1_500_000 }).then(tx => tx.wait());
+      const repayEvent = repayReceipt?.logs?.map((log: any) => { try { return params.hederaCredit.interface.parseLog(log); } catch { return null; } }).find((e: any) => e?.name === "RepayApplied");
+      const isFullyRepaid = repayEvent?.args?.fullyRepaid ?? (i === params.repayPercentages.length -1); // Assume full repayment on last leg
   
-      const borrowerCreditContract = params.hederaCredit.connect(borrowerWallet);
-      const repayTx = await borrowerCreditContract.repay(orderId, repayAmount, false, {
-        gasLimit: 1_500_000
-      });
-      const repayReceipt = await repayTx.wait();
-  
-      const repayEvent = repayReceipt?.logs
-        ?.map((log: any) => {
-          try {
-            return params.hederaCredit.interface.parseLog(log);
-          } catch { return null; }
-        })
-        .find((e: any) => e?.name === "RepayApplied");
-  
-      const isFullyRepaid = repayEvent?.args?.fullyRepaid ?? false;
       console.log("  ✓ Repaid:", formatUnits(repayEvent?.args?.repayBurnAmount ?? 0, TOKEN_DECIMALS), "USD");
       console.log("  Fully repaid:", isFullyRepaid);
   
-      const repaidPercentageBps = (repayAmount * 10000n) / initialDebt;
-      const collateralToUnlock = (params.collateralWei * repaidPercentageBps) / 10000n;
-      remainingCollateral -= collateralToUnlock;
-  
+      const collateralToUnlock = (params.collateralWei * BigInt(percentage)) / 100n;
       console.log("  Collateral unlocking:", formatEther(collateralToUnlock), "ETH");
   
-      const unlockTx = await params.ethCollateral.adminMirrorRepayment(
-        orderId,
-        DEFAULT_RESERVE_ID,
-        isFullyRepaid,
-        collateralToUnlock
-      );
-      await unlockTx.wait();
+      await params.ethCollateral.adminMirrorRepayment(orderId, DEFAULT_RESERVE_ID, isFullyRepaid, collateralToUnlock).then(tx => tx.wait());
       console.log("  ✓ Unlocked on Ethereum");
-  
-      const debtAfter = await params.hederaCredit.getOutstandingDebt(orderId);
-      console.log("  Debt after repayment:", formatUnits(debtAfter, TOKEN_DECIMALS), "USD");
-  
+      
+      // ADDED: If fully repaid, proceed to withdraw
       if (isFullyRepaid) {
-        console.log("\n  🎉 Position fully repaid!");
+        banner(`Step ${5 + i}: Withdrawing Collateral from Ethereum`);
+        const borrowerEthCollateral = params.ethCollateral.connect(borrowerWallet);
+        const balanceBefore = await borrowerWallet.provider.getBalance(params.borrowerAddress);
+        
+        const orderBeforeWithdraw = await borrowerEthCollateral.orders(orderId);
+        console.log(`  Collateral in contract before withdrawal: ${formatEther(orderBeforeWithdraw.amountWei)} ETH`);
+  
+        console.log(`  Borrower ETH balance before: ${formatEther(balanceBefore)} ETH`);
+        
+        const withdrawTx = await borrowerEthCollateral.withdraw(orderId);
+        await withdrawTx.wait();
+        
+        console.log("  ✓ Withdrawal transaction successful.");
+  
+        const balanceAfter = await borrowerWallet.provider.getBalance(params.borrowerAddress);
+        console.log(`  Borrower ETH balance after: ${formatEther(balanceAfter)} ETH`);
+        
+        const orderAfterWithdraw = await borrowerEthCollateral.orders(orderId);
+        console.log(`  Collateral in contract after withdrawal: ${formatEther(orderAfterWithdraw.amountWei)} ETH`);
         break;
       }
     }
-  
-    banner("Final State Verification");
-    const finalDebt = await params.hederaCredit.getOutstandingDebt(orderId);
-    const ethOrder = await params.ethCollateral.orders(orderId);
-  
-    console.log("  Final debt on Hedera:", formatUnits(finalDebt, TOKEN_DECIMALS), "USD");
-    console.log("  Final collateral on Ethereum:", formatEther(ethOrder.amountWei), "ETH");
-    console.log("  Total unlocked:", formatEther(params.collateralWei - ethOrder.amountWei), "ETH");
   
     banner(`${params.scenarioName} - COMPLETE`);
   }

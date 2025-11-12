@@ -23,11 +23,11 @@ import {MessageTypes} from "../MessageTypes.sol";
 /// @notice Locks ETH collateral per order and coordinates cross-chain repayment signals.
 contract EthCollateralOApp is OApp, ReentrancyGuard {
     using OptionsBuilder for bytes;
-
     struct Order {
         address owner;
         bytes32 reserveId;
         uint256 amountWei;
+        uint256 unlockedWei; 
         bool funded;
         bool repaid;
         bool liquidated;
@@ -107,22 +107,40 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
         revert("use LayerZero message");
     }
 
+    /// @notice Withdraws the MAXIMUM available unlocked collateral for an order.
+    /// @dev This single function handles both partial and full withdrawals by
+    /// withdrawing the entire current `unlockedWei` balance.
+    /// @param orderId The ID of the order to withdraw from.
     function withdraw(bytes32 orderId) external nonReentrant {
         Order storage o = orders[orderId];
+
+        // 1. Determine Amount & Verify Conditions
+        uint256 amountToWithdraw = o.unlockedWei;
+
         require(o.owner == msg.sender, "not owner");
-        require(o.funded && o.repaid, "not repaid");
-        require(!o.liquidated, "liquidated");
+        require(o.funded, "order not funded or already closed");
+        require(amountToWithdraw > 0, "no unlocked collateral to withdraw");
+        // This is a safeguard against inconsistent state. It should never fail if the logic is correct elsewhere.
+        require(amountToWithdraw <= o.amountWei, "consistency check failed: unlocked > total collateral");
 
-        uint256 amt = o.amountWei;
-        o.amountWei = 0;
-        o.funded = false;
+        // 2. Update State (Effects) - BEFORE sending ETH
+        // The entire unlocked balance is being withdrawn, so reset it to zero.
+        o.unlockedWei = 0;
+        // Reduce the total collateral held by the contract by the amount withdrawn.
+        o.amountWei -= amountToWithdraw;
 
-        (bool ok, ) = msg.sender.call{value: amt}("");
+        // If all collateral has been withdrawn, fully close the order.
+        if (o.amountWei == 0) {
+            o.funded = false;
+        }
+
+        // 3. Send ETH (Interaction)
+        (bool ok, ) = msg.sender.call{value: amountToWithdraw}("");
         require(ok, "eth send fail");
 
-        emit Withdrawn(orderId, o.reserveId, msg.sender, amt);
+        emit Withdrawn(orderId, o.reserveId, msg.sender, amountToWithdraw);
     }
-
+    
     function adminLiquidate(bytes32 orderId, address payout, uint256 seizeAmountWei)
         external
         payable
@@ -277,6 +295,7 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
             owner: user,
             reserveId: reserveId,
             amountWei: 0,
+            unlockedWei:0,
             funded: false,
             repaid: false,
             liquidated: false
@@ -400,20 +419,14 @@ contract EthCollateralOApp is OApp, ReentrancyGuard {
     ) external onlyOwner {
         Order storage o = orders[orderId];
         require(o.funded, "order not funded");
-        
+        require(collateralToUnlock <= o.amountWei, "unlock amount exceeds total collateral");
+
+        // Add the unlocked amount to the withdrawable balance
+        o.unlockedWei += collateralToUnlock;
+
         if (fullyRepaid) {
-            // Full repayment - mark position as repaid so user can withdraw all
             o.repaid = true;
-            
             emit MarkRepaid(orderId, reserveId);
-        } else {
-            // Partial repayment - reduce collateral amount (user can withdraw the unlocked portion)
-            require(collateralToUnlock <= o.amountWei, "unlock amount exceeds collateral");
-            
-            o.amountWei -= collateralToUnlock;
-            
-            // NOTE: The unlocked collateral stays in the contract until user calls withdraw()
-            // No existing event for partial repayment - consider adding one if needed
         }
     }
 }
