@@ -8,6 +8,7 @@ interface ProgressViewProps {
   onManualCheck?: () => void;
   isChecking?: boolean;
   lzTxHash?: `0x${string}` | null;
+  onExit?: () => void;
 }
 
 const ProgressView: React.FC<ProgressViewProps> = ({
@@ -15,7 +16,8 @@ const ProgressView: React.FC<ProgressViewProps> = ({
   showManualCheckButton,
   onManualCheck,
   isChecking,
-  lzTxHash
+  lzTxHash,
+  onExit
 }) => {
   // NEW: toggle to hide/show the debug "terminal"
   const [showDebug, setShowDebug] = useState(true);
@@ -50,6 +52,21 @@ const ProgressView: React.FC<ProgressViewProps> = ({
                 Track Cross-Chain Message ↗
             </a>
             <p className="text-xs text-gray-500 mt-1">(This can take several minutes to confirm)</p>
+        </div>
+      )}
+
+      {/* Exit button - allows user to navigate away while transaction continues */}
+      {onExit && (
+        <div className="pt-4 border-t border-gray-700">
+          <p className="text-xs text-center text-gray-500 mb-2">
+            You can continue later.
+          </p>
+          <button
+            onClick={onExit}
+            className="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+          >
+            Continue Later
+          </button>
         </div>
       )}
 

@@ -12,7 +12,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     appState, selectedOrderId, orderId: newlyCreatedOrderId, ethAmount, borrowAmount,
     logs, lzTxHash, error,
     handleCreateOrder, handleFundOrder, handleBorrow, calculateBorrowAmount,
-    handleRepay, handleWithdraw, resetFlow, startPollingForHederaOrder,
+    handleRepay, handleWithdraw, resetFlow, exitProgressView, startPollingForHederaOrder,
     address, setLzTxHash,
   } = useAppContext();
 
@@ -28,10 +28,10 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   // --- MEMOIZED HANDLERS ---
   const onFund = useCallback((amountToFund: string) => handleFundOrder(amountToFund), [handleFundOrder]);
-  const onBorrow = useCallback((amount: string) => { if (selectedOrder) handleBorrow(selectedOrder.orderId, amount); }, [handleBorrow, selectedOrder]);
-  const onRepay = useCallback(() => { if (selectedOrder && borrowAmountForRepay) handleRepay(selectedOrder.orderId, borrowAmountForRepay); }, [handleRepay, selectedOrder, borrowAmountForRepay]);
-  const onWithdraw = useCallback(() => { if (selectedOrder) handleWithdraw(selectedOrder.orderId); }, [handleWithdraw, selectedOrder]);
-  const onCalculateBorrow = useCallback(() => { if (selectedOrder) return calculateBorrowAmount(selectedOrder.orderId); return Promise.resolve(null); }, [calculateBorrowAmount, selectedOrder]);
+  const onBorrow = useCallback((amount: string) => { if (selectedOrder) handleBorrow(amount); }, [handleBorrow, selectedOrder]);
+  const onRepay = useCallback(() => { if (selectedOrder && borrowAmountForRepay) handleRepay(); }, [handleRepay, selectedOrder, borrowAmountForRepay]);
+  const onWithdraw = useCallback(() => { if (selectedOrder) handleWithdraw(); }, [handleWithdraw, selectedOrder]);
+  const onCalculateBorrow = useCallback(() => { if (selectedOrder) return calculateBorrowAmount(); return Promise.resolve(null); }, [calculateBorrowAmount, selectedOrder]);
   
   const handleTrackConfirmation = useCallback(async () => {
     if (!address || !selectedOrder) return;
@@ -42,6 +42,12 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   // --- SIDE EFFECTS ---
   useEffect(() => {
+    // Reset state immediately when order changes to prevent race conditions
+    if (selectedOrder) {
+      setIsCheckingHedera(false);
+      setIsHederaConfirmed(false);
+    }
+    
     const checkHederaStatus = async () => {
       if (selectedOrder && ['Funded', 'Borrowed'].includes(selectedOrder.status)) {
         setIsCheckingHedera(true);
@@ -57,6 +63,10 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
         } finally {
           setIsCheckingHedera(false);
         }
+      } else {
+        // If order is not Funded/Borrowed, ensure state is reset
+        setIsCheckingHedera(false);
+        setIsHederaConfirmed(false);
       }
     };
     checkHederaStatus();
@@ -68,6 +78,6 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     appState, selectedOrder, newlyCreatedOrderId, ethAmount, borrowAmount, logs, lzTxHash, error,
     isCheckingHedera, isHederaConfirmed, collateralEth, borrowAmountForRepay, repayable,
     // Handlers
-    handleCreateOrder, resetFlow, onFund, onBorrow, onRepay, onWithdraw, onCalculateBorrow, handleTrackConfirmation,
+    handleCreateOrder, resetFlow, exitProgressView, onFund, onBorrow, onRepay, onWithdraw, onCalculateBorrow, handleTrackConfirmation,
   };
 }

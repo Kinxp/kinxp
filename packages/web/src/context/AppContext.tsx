@@ -63,6 +63,7 @@ interface AppContextType {
   handleWithdraw: () => void;
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
+  exitProgressView: () => void;
   setSelectedOrderId: (orderId: `0x${string}` | null) => void;
   borrowedOrders: BorrowedOrderMap;
   startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
@@ -312,7 +313,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   
       const depositWei = hOrder.ethAmountWei;
       const alreadyBorrowed6 = hOrder.borrowedUsd ?? 0n; // 6 decimals on-chain
-      if (depositWei === 0n) throw new Error("Collateral amount on Hedera is zero.");
+      if (depositWei === 0n) {
+        addLog(`⚠ Collateral not yet bridged to Hedera. Please wait for cross-chain confirmation.`);
+        return null; // Return null gracefully instead of throwing error
+      }
       addLog(`✓ Collateral confirmed: ${formatUnits(depositWei, 18)} ETH`);
   
       // 3) LTV + safety
@@ -362,6 +366,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setTreasuryAddress(null);
     setPollingStartBlock(0);
   };
+
+  // Exit progress view without fully resetting - allows user to navigate away
+  // while polling continues in the background
+  const exitProgressView = useCallback(() => {
+    // Set state to IDLE or LOAN_ACTIVE depending on whether there's a selected order
+    // This allows the user to navigate away while polling continues
+    if (selectedOrderId) {
+      setAppState(AppState.LOAN_ACTIVE);
+    } else {
+      setAppState(AppState.IDLE);
+    }
+  }, [selectedOrderId]);
 
   const handleReceipt = useCallback(async () => {
     if (receipt) {
@@ -507,6 +523,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     handleWithdraw,
     calculateBorrowAmount,
     resetFlow,
+    exitProgressView,
     setSelectedOrderId,
     borrowedOrders,
     startPollingForHederaOrder,
