@@ -4,7 +4,13 @@ import {
   Contract,
   parseEther,
 } from "ethers";
-import { AccountId, TokenId } from "@hashgraph/sdk";
+import {
+  AccountId,
+  ContractCreateFlow,
+  ContractFunctionParameters,
+  EntityIdHelper,
+  TokenId,
+} from "@hashgraph/sdk";
 import {
   associateAccountWithTokenSdk,
   banner,
@@ -23,17 +29,20 @@ import {
   canonicalAddressFromAlias,
   borrowerHederaKey,
   deployEthCollateralOApp,
+  deployHederaController,
+  deployReserveRegistry,
+  configureDefaultReserve,
+  deployHederaCreditOApp,
+  linkContractsWithLayerZero,
 } from "./util";
-
-const CONTROLLER_ADDR = "0x00000000000000000000000000000000006e7060";
-const HEDERA_CREDIT_ADDR = "0x00000000000000000000000000000000006e7067";
-const TOKEN_CONTRACT_ADDR = process.env.CONTRACT_TOKEN!;
+import { artifacts, ethers as hreEthers } from "hardhat";
 
 const HTS_ADDRESS = "0x0000000000000000000000000000000000000167";
 const HTS_ABI = ["function approve(address token, address spender, uint256 amount) external returns (int64)"];
 
 const TOKEN_DECIMALS = 6;
 const WAD_DECIMALS = 18;
+const CONTROLLER_BOOTSTRAP_SUPPLY = 1_000_000_000_000n; // 1,000,000 tokens (6 decimals)
 
 async function main() {
   banner("PARTIAL REPAYMENT TEST SUITE");
@@ -48,17 +57,57 @@ async function main() {
 
   await ensureOperatorHasHbar(hederaOperatorWalletAddress);
 
-  // Hedera contracts
-  const { ethers: hreEthers } = await import("hardhat");
-  const hederaCredit = await hreEthers.getContractAt("HederaCreditOApp", HEDERA_CREDIT_ADDR, hederaOperatorWallet);
-  const controller   = await hreEthers.getContractAt("UsdHtsController",   CONTROLLER_ADDR,   hederaOperatorWallet);
-  const tokenContract= await hreEthers.getContractAt("SimpleHtsToken", TOKEN_CONTRACT_ADDR,   hederaOperatorWallet);
+  banner("Deploying SimpleHtsToken & HTS asset");
+  const {
+    simpleTokenAddr,
+    tokenAddress,
+    tokenId,
+    tokenContract,
+  } = await deploySimpleToken();
+  console.log("  → SimpleHtsToken contract:", simpleTokenAddr);
+  console.log("  → Token address:", tokenAddress);
+  console.log("  → Token ID:", tokenId.toString());
+
+  banner("Deploying UsdHtsController");
+  const { controllerAddr, controller } = await deployHederaController(hederaClient, hederaOperatorWallet);
+  await (await controller.setUsdToken(tokenAddress, TOKEN_DECIMALS)).wait();
+  await (
+    await hederaOperatorWallet.sendTransaction({
+      to: controllerAddr,
+      value: ethers.parseEther("10"),
+    })
+  ).wait();
+  await (await controller.associateToken({ gasLimit: 2_500_000 })).wait();
+  console.log("  → Controller address:", controllerAddr);
+  await (
+    await tokenContract.mintTo(controllerAddr, CONTROLLER_BOOTSTRAP_SUPPLY)
+  ).wait();
+  console.log(
+    "  → Controller bootstrapped with",
+    formatUnits(CONTROLLER_BOOTSTRAP_SUPPLY, TOKEN_DECIMALS),
+    "tokens"
+  );
+
+  banner("Deploying ReserveRegistry");
+  const { registryAddr, registry } = await deployReserveRegistry(hederaClient, hederaOperatorWallet);
+  await configureDefaultReserve(registry, controllerAddr, hederaOperatorWalletAddress);
+  console.log("  → ReserveRegistry address:", registryAddr);
+
+  banner("Deploying HederaCreditOApp");
+  const { hederaCreditAddr, hederaCredit } = await deployHederaCreditOApp(
+    hederaOperatorWallet,
+    hederaClient,
+    registryAddr
+  );
+  console.log("  → HederaCredit address:", hederaCreditAddr);
+  await transferOwnership(controller, hederaCreditAddr);
   const hts          = new Contract(HTS_ADDRESS, HTS_ABI, borrowerWallet);
 
   // Ethereum contract (Sepolia) — util deploys and hooks to ethSigner
   banner("Deploying a single EthCollateralOApp for the entire test suite");
   const { ethCollateralAddr, ethCollateral } = await deployEthCollateralOApp();
   console.log("  → EthCollateralOApp deployed at:", ethCollateralAddr);
+  await linkContractsWithLayerZero(ethCollateral, hederaCreditAddr, hederaCredit, ethCollateralAddr);
 
   // Use ethSigner as the ETH-side borrower/owner for this test
   const borrowerSepolia = ethSigner;
@@ -67,11 +116,6 @@ async function main() {
   console.log("ETH borrower balance:", formatEther(await borrowerSepolia.provider!.getBalance(await borrowerSepolia.getAddress())), "ETH");
 
   // Token info (Hedera)
-  const tokenAddress = await tokenContract.token();
-  const tokenId = TokenId.fromSolidityAddress(tokenAddress);
-  console.log("Token address:", tokenAddress);
-  console.log("Token ID:", tokenId.toString());
-
   // Associate borrower with token (Hedera)
   banner("Associating borrower with token (if needed)");
   try {
@@ -84,22 +128,10 @@ async function main() {
 
   // Controller token balance
   banner("Checking controller token balance");
-  const controllerBalance = await getTokenBalance(tokenAddress, CONTROLLER_ADDR);
+  const controllerBalance = await getTokenBalance(tokenAddress, controllerAddr);
   console.log("  Controller balance:", formatUnits(controllerBalance, TOKEN_DECIMALS), "tokens");
 
   // Ensure controller owner
-  banner("Ensuring HederaCredit owns controller");
-  try {
-    await transferOwnership(controller, HEDERA_CREDIT_ADDR);
-    console.log("  ✓ Ownership transferred");
-  } catch (err: any) {
-    if (err.message?.includes("already owner") || err.message?.includes("caller is not the owner")) {
-      console.log("  ✓ Ownership already set or managed by another account.");
-    } else {
-      console.warn("  ⚠ Transfer failed:", formatRevertError(err));
-    }
-  }
-
   // Price
   banner("Fetching Pyth price");
   const { priceUpdateData, price, expo } = await fetchPythUpdate();
@@ -112,9 +144,9 @@ async function main() {
     scenarioName: "SCENARIO 1: Repay 25% of Debt",
     hederaCredit,
     ethCollateral,
-    controller,
     hts,
     tokenAddress,
+    controllerAddr,
     borrowerHedera: borrowerHederaEvm,
     borrowerSepolia,
     priceUpdateData,
@@ -128,9 +160,9 @@ async function main() {
     scenarioName: "SCENARIO 2: Repay 50% of Debt",
     hederaCredit,
     ethCollateral,
-    controller,
     hts,
     tokenAddress,
+    controllerAddr,
     borrowerHedera: borrowerHederaEvm,
     borrowerSepolia,
     priceUpdateData,
@@ -147,7 +179,7 @@ interface ScenarioParams {
   scenarioName: string;
   hederaCredit: any;
   ethCollateral: any;
-  controller: any;
+  controllerAddr: string;
   hts: Contract;
   tokenAddress: string;
   borrowerHedera: string;     // Hedera address for credit side
@@ -169,6 +201,37 @@ async function logOrderState(ethCollateral: any, orderId: string, label: string)
   console.log(`     Funded: ${order.funded}`);
   console.log(`     Repaid: ${order.repaid}`);
   console.log(`     Liquidated: ${order.liquidated}`);
+}
+
+async function deploySimpleToken() {
+  const tokenArtifact = await artifacts.readArtifact("SimpleHtsToken");
+  const contractCreate = new ContractCreateFlow()
+    .setGas(3_000_000)
+    .setBytecode(tokenArtifact.bytecode)
+    .setConstructorParameters(new ContractFunctionParameters());
+  const response = await contractCreate.execute(hederaClient);
+  const receipt = await response.getReceipt(hederaClient);
+  const contractId = receipt.contractId!;
+  const simpleTokenAddr =
+    "0x" +
+    EntityIdHelper.toSolidityAddress([
+      contractId.realm!,
+      contractId.shard!,
+      contractId.num!,
+    ]);
+  const tokenContract = await hreEthers.getContractAt(
+    "SimpleHtsToken",
+    simpleTokenAddr,
+    hederaOperatorWallet
+  );
+  const txCreate = await tokenContract.createToken({
+    value: parseEther("15"),
+    gasLimit: 2_500_000,
+  });
+  await txCreate.wait();
+  const tokenAddress = await tokenContract.token();
+  const tokenId = TokenId.fromSolidityAddress(tokenAddress);
+  return { simpleTokenAddr, tokenAddress, tokenId, tokenContract };
 }
 
 async function runScenario(params: ScenarioParams) {
@@ -236,7 +299,7 @@ async function runScenario(params: ScenarioParams) {
   banner("Step 4: Approving controller");
   const repayAmount = (BigInt(params.repayPercentage) * debtAfterBorrow) / 100n;
   console.log("  Repay amount:", formatUnits(repayAmount, TOKEN_DECIMALS), "USD");
-  await (await params.hts.approve(params.tokenAddress, CONTROLLER_ADDR, repayAmount, { gasLimit: 2_500_000 })).wait();
+  await (await params.hts.approve(params.tokenAddress, params.controllerAddr, repayAmount, { gasLimit: 2_500_000 })).wait();
   console.log("  ✓ Approved");
 
   // ---------- Step 5: Partial Repayment ----------
