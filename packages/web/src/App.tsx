@@ -7,6 +7,7 @@ import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import DashboardPage from './pages/DashboardPage';
 import AnalyticsPage from './pages/AnalyticsPage'; 
 import HomePage from './pages/HomePage';
+import FutureDemoPage from './pages/FutureDemoPage';
 
 import Header from './components/Header';
 import { Toaster } from 'react-hot-toast';
@@ -32,6 +33,7 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
+              <Route path="/demo" element={<FutureDemoPage />} />
             </Routes>
         </main>
       </div>

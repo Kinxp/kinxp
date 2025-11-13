@@ -37,6 +37,14 @@ const Header: React.FC = () => {
             >
               Analytics
             </NavLink>
+            <NavLink 
+              to="/demo" 
+              className={({ isActive }) => 
+                `px-3 py-2 text-sm font-medium rounded-md ${isActive ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700/50'}`
+              }
+            >
+              Future Demo
+            </NavLink>
         </div>
         {isConnected ? (
           <div className="flex items-center gap-4">
