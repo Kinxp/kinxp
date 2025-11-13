@@ -127,11 +127,48 @@ pnpm --filter @kinxp/web dev
 pnpm --filter @kinxp/contracts build
 ```
 
+## LiquidityPoolV1 Delivery 3 Demo
+
+Delivery 3 adds an end-to-end Hedera testnet demo that wires a cross-chain deposit gateway into `LiquidityPoolV1`.
+
+**Contracts**
+
+- `LiquidityPoolV1.sol` now accepts ERC-20 (HTS) deposits/withdrawals, but still mints HTS LP + reward tokens, tracks `rewardPerShare`, and exposes `depositFor` so trusted callers can credit other accounts.
+- `CrossChainDepositGateway.sol` holds the underlying token, keeps the pool approved, and forwards LayerZero-style payloads (or the `adminDeposit` helper) into the pool. The constructor associates the gateway with the HTS underlying so it can receive/move balances.
+
+**Hedera script (`packages/contracts/scripts/liquidity-pool-v1.ts`)**
+
+1. Creates a fresh HTS underlying token and deploys `LiquidityPoolV1`.
+2. Deploys `CrossChainDepositGateway`, points the pool at it via `setDepositGateway`, and creates LP/reward tokens (HTS mint/burn is still handled inside the pool).
+3. Associates the borrower (and the contracts) with the underlying/LP/reward tokens, mints liquidity to the gateway treasury, and transfers that balance to the gateway account.
+4. Simulates a bridged deposit by calling `gateway.adminDeposit(borrower, amount)` which internally triggers `pool.depositFor`.
+5. Sets a reward rate, waits ~10 seconds, claims rewards, and withdraws half of the LP position.
+6. Prints final pool stats plus the borrower's reward token balance and exits with code `0` when the balance falls within the tolerance window (expected roughly 10-20 million units with 6 decimals after a 10s wait).
+
+Run it against Hedera testnet with your `.env` populated (including `LZ_ENDPOINT_HEDERA`, Hedera RPC/Mirror URLs, and operator keys):
+
+```bash
+pnpm --filter @kinxp/contracts lp:v1
+```
+
+Watch for the final block:
+
+```
+Final pool stats:
+  totalUnderlying: 500000n
+  totalLpShares : 500000n
+  exchangeRate  : 1000000000000000000n
+  reward balance: 15000000n
+✅ Liquidity pool rewards test completed successfully.
+```
+
+If the reward balance ever drops to zero or falls wildly outside the tolerated range, the script logs the mismatch and exits with a non-zero status so CI/user runs can fail fast.
+
 ### Useful env knobs (contracts scripts)
 
-- `BORROW_TARGET_BPS` (default `8000` = 80%) — how aggressively the helper script borrows vs. the max LTV.
-- `ORIGINATION_FEE_BPS` (default `0`) — origination fee in basis points. Leave at zero for local testing so the borrower can repay exactly what they received; set a fee when you want to skim protocol revenue.
-- `SKIP_LAYERZERO` (default `false`) — set to `true` in local tests to bypass LayerZero polling and mirror/mark repayments manually when the Hedera executor is offline.
+- `BORROW_TARGET_BPS` (default `8000` = 80%) – how aggressively the helper script borrows vs. the max LTV.
+- `ORIGINATION_FEE_BPS` (default `0`) – origination fee in basis points. Leave at zero for local testing so the borrower can repay exactly what they received; set a fee when you want to skim protocol revenue.
+- `SKIP_LAYERZERO` (default `false`) – set to `true` in local tests to bypass LayerZero polling and mirror/mark repayments manually when the Hedera executor is offline.
 
 ## Status & scope
 

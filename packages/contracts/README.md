@@ -7,6 +7,7 @@ Locked ETH on Ethereum funds a USD HTS credit line on Hedera. Repayment on Heder
 - `contracts/eth/EthCollateralOApp.sol` — Locks ETH per `orderId`, emits events for Blockscout, and (optionally) receives LayerZero `REPAID` messages so users can withdraw without trusting an operator.
 - `contracts/hedera/UsdHtsController.sol` — Owns the USD token treasury/supply key. Mints to borrowers, burns on repayment, and exposes a treasury payout helper. Talks directly to the HTS precompile (`0x167`).
 - `contracts/hedera/HederaCreditOApp.sol` — Pulls ETH/USD price from Pyth, enforces LTV, mints USD through the controller, burns on repayment, and can notify Ethereum over LayerZero once an order is fully repaid.
+- `contracts/hedera/LiquidityPoolV1.sol` — Hedera-native liquidity pool with HTS LP shares and reward emissions. The pool can self-deploy LP + reward tokens, distribute rewards per share, and supports claiming via HTS mint/transfers. See `scripts/liquidity-pool-v1.ts` for a full testnet walkthrough.
 - `contracts/hedera/hedera-hts/IHederaTokenService.sol` — Minimal HTS system contract interface (create/mint/burn/transfer).
 
 `scripts/create-hts-usd.ts` is an optional stub if you prefer creating the USD HTS token with the Hedera SDK instead of Solidity.

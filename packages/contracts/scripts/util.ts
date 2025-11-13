@@ -19,6 +19,7 @@ import {
 import { Buffer } from "buffer";
 import {
   Contract,
+  Interface,
   formatUnits,
   getAddress,
   JsonRpcProvider,
@@ -40,6 +41,7 @@ const HBAR_WEI_PER_TINYBAR = 10_000_000_000n;
 const ethEndpoint = requireAddress("LZ_ENDPOINT_ETHEREUM");
 const ethEid = requireEid("LZ_EID_ETHEREUM");
 const hederaEndpoint = requireAddress("LZ_ENDPOINT_HEDERA");
+export const hederaLayerZeroEndpoint = hederaEndpoint;
 const hederaEid = requireEid("LZ_EID_HEDERA");
 
 const pythContract = requireAddress("PYTH_CONTRACT_HEDERA");
@@ -101,6 +103,7 @@ export const ORIGINATION_FEE_BPS = originationFeeBps;
 export const DEFAULT_RESERVE_ID = ethers.encodeBytes32String("ETH-hUSD") as Hex;
 const reserveRegistryInterface = ReserveRegistry__factory.createInterface();
 const controllerInterface = UsdHtsController__factory.createInterface();
+const genericErrorInterface = new Interface(["error HederaTokenError(int64 code)"]);
 
 export const sepoliaTx = (h: string) => `https://sepolia.etherscan.io/tx/${h}`;
 export const layerzeroTx = (h: string) => `https://testnet.layerzeroscan.com/tx/${h}`;
@@ -109,6 +112,7 @@ export const hashscanTx = (h: string) => `https://hashscan.io/testnet/transactio
 export const ERC20_ABI = [
   "function balanceOf(address) view returns (uint256)",
   "function decimals() view returns (uint8)",
+  "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
   "function transfer(address to, uint256 amount) returns (bool)",
 ];
@@ -968,7 +972,7 @@ export function formatRevertError(err: any): string {
 
   const dataHex = extractData(err) || extractData(err?.error);
   if (dataHex) {
-    for (const iface of [reserveRegistryInterface, controllerInterface]) {
+    for (const iface of [reserveRegistryInterface, controllerInterface, genericErrorInterface]) {
       try {
         const decoded = iface.parseError(dataHex);
         return `${decoded.name}(${decoded.args.join(", ")})`;

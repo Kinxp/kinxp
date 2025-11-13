@@ -10,7 +10,8 @@
     "deploy-token": "hardhat run scripts/deploy-token.ts --network hedera",
     "mint-tokens": "hardhat run scripts/mint-tokens.ts --network hedera",
     "p-repayment": "hardhat run scripts/partial-repayment.ts --network sepolia",
-    "add-collateral": "hardhat run scripts/add-collateral-health.ts --network sepolia"
+    "add-collateral": "hardhat run scripts/add-collateral-health.ts --network sepolia",
+    "lp:v1": "hardhat run scripts/liquidity-pool-v1.ts --network hedera"
   },
   "devDependencies": {
     "@hashgraph/sdk": "^2.75.0",
