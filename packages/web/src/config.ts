@@ -7,6 +7,7 @@ import ethCollateralAbi from './abis/EthCollateralOApp.json';
 import hederaCreditAbi from './abis/HederaCreditOApp.json';
 import usdControllerAbi from './abis/UsdHtsController.json';
 import husdTokenAbi from './abis/SimpleHtsToken.json';
+import liquidityPoolAbi from './abis/LiquidityPoolV1.json';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE ?? 'https://kinxp.loca.lt';
 
@@ -19,6 +20,9 @@ export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 // Sepolia Blockscout API endpoint
 export const SEPOLIA_BLOCKSCOUT_API_URL = '/sepolia-blockscout-api/api';
 export const USE_MOCK_API = (import.meta.env.VITE_USE_MOCK_API ?? 'false') === 'true';
+
+// Polling interval in milliseconds for blockchain state updates
+export const POLLING_INTERVAL = 5000; // 5 seconds
 // --- CONTRACT ADDRESSES ---
 // Load from environment variables with fallback to hardcoded values for development
 export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0xeCEd920d7cF6b6f9986821daD85f2fC76279E12E').toLowerCase() as `0x${string}`;
@@ -34,6 +38,9 @@ export const CROSS_CHAIN_GATEWAY_ADDR = (import.meta.env.VITE_CROSS_CHAIN_GATEWA
 export const UNDERLYING_TOKEN_ADDR = (import.meta.env.VITE_UNDERLYING_TOKEN || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;
 export const LP_TOKEN_ADDR = (import.meta.env.VITE_LP_TOKEN || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;
 export const REWARD_TOKEN_ADDR = (import.meta.env.VITE_REWARD_TOKEN || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;
+
+// ABIs from JSON files
+export const LIQUIDITY_POOL_ABI = liquidityPoolAbi.abi as Abi;
 // Calculate the correct topic hash for the 'MarkRepaid' event
 export const MARK_REPAID_TOPIC = keccak256(toHex('MarkRepaid(bytes32)'));
 export const ORDER_CREATED_TOPIC = keccak256(toHex('OrderCreated(bytes32,bytes32,address)'));
@@ -89,31 +96,10 @@ export const ERC20_ABI = parseAbi([
   'event Approval(address indexed owner, address indexed spender, uint256 value)'
 ]);
 
-export const LIQUIDITY_POOL_ABI = parseAbi([
-  // Core Functions
-  'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
-  'function withdraw(uint256 assets, address receiver, address owner) returns (uint256 shares)',
-  'function mint(uint256 shares, address receiver) returns (uint256 assets)',
-  'function redeem(uint256 shares, address receiver, address owner) returns (uint256 assets)',
-  'function claimRewards() returns (uint256)',
-  
-  // Getters
-  'function totalAssets() view returns (uint256)',
-  'function convertToShares(uint256 assets) view returns (uint256)',
-  'function convertToAssets(uint256 shares) view returns (uint256)',
-  'function maxDeposit(address) view returns (uint256)',
-  'function maxMint(address) view returns (uint256)',
-  'function maxWithdraw(address owner) view returns (uint256)',
-  'function maxRedeem(address owner) view returns (uint256)',
-  'function asset() view returns (address)',
-  'function totalSupply() view returns (uint256)',
-  'function balanceOf(address account) view returns (uint256)',
-  'function rewards(address account) view returns (uint256)',
-  'function rewardRate() view returns (uint256)',
-  'function rewardsToken() view returns (address)'
-]);
+// Liquidity Pool ABI is imported from the JSON file
 
-export const CROSS_CHAIN_GATEWAY_ABI = parseAbi([
+// Cross Chain Gateway ABI
+export const CROSS_CHAIN_GATEWAY_ABI = [
   // Core Functions
   'function deposit(address receiver) payable',
   'function withdraw(uint256 amount, address receiver)',
@@ -125,7 +111,7 @@ export const CROSS_CHAIN_GATEWAY_ABI = parseAbi([
   'function totalDeposits() view returns (uint256)',
   'function depositsOf(address account) view returns (uint256)',
   'function isAdmin(address account) view returns (bool)'
-]);
+] as const;
 
 // Reserve Registry ABI
 export const RESERVE_REGISTRY_ABI = parseAbi([
@@ -154,6 +140,7 @@ export const NETWORK_CONFIG = {
       lpToken: LP_TOKEN_ADDR,
       rewardToken: REWARD_TOKEN_ADDR,
     },
+    // ABIs are available via direct imports
   },
   [HEDERA_CHAIN_ID]: {
     name: 'Hedera Testnet',

@@ -4,6 +4,8 @@ import { ethers } from 'ethers';
 import {
   ETH_COLLATERAL_OAPP_ADDR, ETH_COLLATERAL_ABI,
   HEDERA_CREDIT_OAPP_ADDR, HEDERA_CREDIT_ABI,
+  LIQUIDITY_POOL_ADDR, LIQUIDITY_POOL_ABI,
+  UNDERLYING_TOKEN_ADDR, LP_TOKEN_ADDR, REWARD_TOKEN_ADDR,
   ETH_CHAIN_ID, HEDERA_CHAIN_ID, POLLING_INTERVAL,
   HEDERA_BLOCKSCOUT_API_URL, SEPOLIA_BLOCKSCOUT_API_URL
 } from '../config';
@@ -22,6 +24,10 @@ const NETWORKS = {
     },
     contracts: {
       collateral: ETH_COLLATERAL_OAPP_ADDR,
+      liquidityPool: LIQUIDITY_POOL_ADDR,
+      underlyingToken: UNDERLYING_TOKEN_ADDR,
+      lpToken: LP_TOKEN_ADDR,
+      rewardToken: REWARD_TOKEN_ADDR,
       abi: ETH_COLLATERAL_ABI
     }
   },
@@ -48,6 +54,7 @@ interface NetworkConnections {
   provider: ethers.BrowserProvider | ethers.JsonRpcProvider;
   signer: ethers.Signer;
   contract?: ethers.Contract;
+  liquidityPool?: ethers.Contract;
   isConnected: boolean;
   chainId: string;
 }
@@ -58,6 +65,7 @@ const connections: Record<NetworkName, NetworkConnections> = {
     provider: null as any,
     signer: null as any,
     contract: null as any,
+    liquidityPool: null as any,
     isConnected: false,
     chainId: `0x${ETH_CHAIN_ID.toString(16)}`
   },
@@ -182,29 +190,47 @@ export async function connectNetwork(networkName: NetworkName): Promise<{
     connection.isConnected = true;
     connection.chainId = `0x${chainId.toString(16)}`;
 
-    // Initialize contract if not already done
-    if (networkName === 'ethereum' && !ethCollateralContract) {
-      ethCollateralContract = new ethers.Contract(
-        network.contracts.collateral,
-        network.contracts.abi,
+    // Initialize contracts if we have a signer
+    if (signer) {
+      const contracts = NETWORKS[networkName].contracts as any;
+      
+      // Main contract with explicit ABI
+      const mainContractAbi = [
+        // Common ERC20 functions
+        'function name() view returns (string)',
+        'function symbol() view returns (string)',
+        'function decimals() view returns (uint8)',
+        'function totalSupply() view returns (uint256)',
+        'function balanceOf(address) view returns (uint256)',
+        'function transfer(address to, uint256 value) returns (bool)',
+        'function approve(address spender, uint256 amount) returns (bool)',
+        'function allowance(address owner, address spender) view returns (uint256)',
+        'function transferFrom(address from, address to, uint256 value) returns (bool)'
+      ];
+      
+      connections[networkName].contract = new ethers.Contract(
+        contracts.collateral || contracts.credit,
+        mainContractAbi,
         signer
-      ) as ethers.Contract;
-      connection.contract = ethCollateralContract;
-    } else if (networkName === 'hedera' && !hederaCreditContract) {
-      // For Hedera, we might need to use a different approach since it's not natively supported by MetaMask
-      const hederaProvider = new ethers.JsonRpcProvider(network.rpcUrl);
-      // In a real app, you would need to handle Hedera key management properly
-      const hederaSigner = signer;
+      );
       
-      hederaCreditContract = new ethers.Contract(
-        network.contracts.credit,
-        network.contracts.abi,
-        hederaSigner
-      ) as ethers.Contract;
-      
-      connection.contract = hederaCreditContract;
-      connection.provider = hederaProvider;
-      connection.signer = hederaSigner;
+      // Liquidity Pool contract if available
+      if (contracts.liquidityPool) {
+        connections[networkName].liquidityPool = new ethers.Contract(
+          contracts.liquidityPool,
+          [
+            'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
+            'function withdraw(uint256 assets, address receiver, address owner) returns (uint256 shares)',
+            'function claimRewards() returns (uint256)',
+            'function totalAssets() view returns (uint256)',
+            'function totalSupply() view returns (uint256)',
+            'function rewardRate() view returns (uint256)',
+            'function asset() view returns (address)',
+            'function rewardsToken() view returns (address)'
+          ],
+          signer
+        );
+      }
     }
 
     activeNetwork = networkName;
@@ -271,12 +297,7 @@ export function getActiveNetwork(): NetworkName | null {
  * Get the contract instance for a network
  */
 export function getContract(networkName: NetworkName): ethers.Contract | null {
-  if (networkName === 'ethereum') {
-    return ethCollateralContract;
-  } else if (networkName === 'hedera') {
-    return hederaCreditContract;
-  }
-  return null;
+  return connections[networkName]?.contract || null;
 }
 
 // Set up event listeners for network changes
@@ -427,6 +448,108 @@ export async function repayOnHedera(orderId: string, repayAmount: string): Promi
     const tx = await hederaContract.repay(orderId, amountInSmallestUnit, true, { value: nativeFee });
     await tx.wait();
     return tx.hash;
+}
+
+// --- Liquidity Pool Functions ---
+
+export async function depositToLiquidityPool(amount: string, receiver: string): Promise<string> {
+  const networkName = 'ethereum';
+  const { signer } = connections[networkName];
+  
+  // Get the underlying token contract
+  const tokenContract = new ethers.Contract(
+    UNDERLYING_TOKEN_ADDR,
+    [
+      'function approve(address spender, uint256 amount) returns (bool)',
+      'function allowance(address owner, address spender) view returns (uint256)'
+    ],
+    signer
+  );
+
+  // Approve the liquidity pool to spend tokens
+  const allowance = await tokenContract.allowance(await signer.getAddress(), LIQUIDITY_POOL_ADDR);
+  if (allowance.lt(amount)) {
+    const approveTx = await tokenContract.approve(LIQUIDITY_POOL_ADDR, ethers.MaxUint256);
+    await approveTx.wait();
+  }
+
+  // Deposit to the liquidity pool with explicit ABI
+  const liquidityPool = new ethers.Contract(
+    LIQUIDITY_POOL_ADDR, 
+    [
+      'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
+      'function withdraw(uint256 assets, address receiver, address owner) returns (uint256 shares)',
+      'function claimRewards() returns (uint256)',
+      'function totalAssets() view returns (uint256)',
+      'function totalSupply() view returns (uint256)',
+      'function rewardRate() view returns (uint256)',
+      'function asset() view returns (address)',
+      'function rewardsToken() view returns (address)'
+    ],
+    signer
+  );
+  const tx = await liquidityPool.deposit(amount, receiver);
+  const receipt = await tx.wait();
+  return receipt.hash;
+}
+
+export async function withdrawFromLiquidityPool(assets: string, receiver: string, owner: string): Promise<string> {
+  const networkName = 'ethereum';
+  const { signer } = connections[networkName];
+  
+  const liquidityPool = new ethers.Contract(
+    LIQUIDITY_POOL_ADDR,
+    ['function withdraw(uint256 assets, address receiver, address owner) returns (uint256 shares)'],
+    signer
+  );
+  const tx = await liquidityPool.withdraw(assets, receiver, owner);
+  const receipt = await tx.wait();
+  return receipt.hash;
+}
+
+export async function claimRewards(): Promise<string> {
+  const networkName = 'ethereum';
+  const { signer } = connections[networkName];
+  
+  const liquidityPool = new ethers.Contract(
+    LIQUIDITY_POOL_ADDR,
+    ['function claimRewards() returns (uint256)'],
+    signer
+  );
+  const tx = await liquidityPool.claimRewards();
+  const receipt = await tx.wait();
+  return receipt.hash;
+}
+
+export async function getLiquidityPoolInfo() {
+  const networkName = 'ethereum';
+  const connection = connections[networkName];
+  
+  if (!connection.liquidityPool) {
+    throw new Error('Liquidity pool contract not initialized');
+  }
+  
+  const [
+    totalAssets,
+    totalSupply,
+    rewardRate,
+    assetAddress,
+    rewardsTokenAddress
+  ] = await Promise.all([
+    connection.liquidityPool.totalAssets(),
+    connection.liquidityPool.totalSupply(),
+    connection.liquidityPool.rewardRate(),
+    connection.liquidityPool.asset(),
+    connection.liquidityPool.rewardsToken()
+  ]);
+  
+  return {
+    totalAssets: totalAssets.toString(),
+    totalSupply: totalSupply.toString(),
+    rewardRate: rewardRate.toString(),
+    assetAddress,
+    rewardsTokenAddress
+  };
 }
 
 // --- Polling Functions ---

@@ -48,6 +48,10 @@ function readBorrowedOrdersFromStorage(): BorrowedOrderMap {
 
 // Define the shape (interface) of our global context
 interface AppContextType {
+  // Wallet & Connection
+  isConnected: boolean;
+  address: `0x${string}` | undefined;
+  connectWallet: () => Promise<void>;
   appState: AppState;
   logs: string[];
   orderId: `0x${string}` | null;
@@ -69,7 +73,6 @@ interface AppContextType {
   borrowedOrders: BorrowedOrderMap;
   startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
   startPollingForEthRepay: (orderId: `0x${string}`) => void;
-  address: `0x${string}` | undefined; 
   setLzTxHash: (hash: `0x${string}` | null) => void; 
 }
 
@@ -77,7 +80,24 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 // Create the Provider component. It will wrap the parts of our app that need access to the context.
-export const AppProvider = ({ children }: { children: ReactNode }) => {
+export function AppProvider({ children }: { children: ReactNode }) {
+  // Wallet connection state
+  const { isConnected, address, chainId } = useAccount();
+  const { switchChain } = useSwitchChain();
+  
+  const connectWallet = useCallback(async () => {
+    try {
+      // This will trigger the wallet connection via wagmi
+      // The actual connection is handled by the wagmi config
+      if (typeof window !== 'undefined' && window.ethereum) {
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+      }
+    } catch (error) {
+      console.error('Error connecting wallet:', error);
+      throw error;
+    }
+  }, []);
+
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [logs, setLogs] = useState<string[]>([]);
   const [orderId, setOrderId] = useState<`0x${string}` | null>(null); // For the linear "create" flow
@@ -94,8 +114,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const hederaPollingRef = useRef<NodeJS.Timeout | null>(null);
   const ethPollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  const { isConnected, chainId, address } = useAccount();
-  const { switchChain } = useSwitchChain();
   const { data: hash, error: writeError, isPending: isWritePending, writeContract, reset: resetWriteContract } = useWriteContract();
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash });
   const hederaPublicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
@@ -142,8 +160,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const send = () => writeContract(config);
     if (chainId !== chainIdToSwitch) {
       addLog(`Switching network to Chain ID ${chainIdToSwitch}...`);
-      switchChain({ chainId: chainIdToSwitch }, { onSuccess: send, onError: (err) => { addLog(`❌ Network switch failed: ${err.message}`); setAppState(AppState.IDLE); }});
-    } else { send(); }
+      switchChain({ chainId: chainIdToSwitch }, { 
+        onSuccess: send, 
+        onError: (err) => { 
+          addLog(`❌ Network switch failed: ${err.message}`); 
+          setAppState(AppState.IDLE); 
+        } 
+      });
+    } else { 
+      send(); 
+    }
   }, [chainId, writeContract, addLog, switchChain]);
 
   const handleCreateOrder = useCallback((amount: string) => {
@@ -557,6 +583,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 }, [isConfirming, isWritePending, receipt, writeError, addLog]);
 
   const value = {
+    // Wallet & Connection
+    isConnected,
+    address,
+    connectWallet,
     appState,
     logs,
     orderId,
@@ -582,7 +612,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setLzTxHash,
   };
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      {children}
+    </AppContext.Provider>
+  );
 };
 
 export const useAppContext = () => {
