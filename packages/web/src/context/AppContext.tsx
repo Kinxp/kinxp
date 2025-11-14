@@ -58,6 +58,7 @@ interface AppContextType {
   lzTxHash: `0x${string}` | null;
   handleCreateOrder: (amount: string) => void;
   handleFundOrder: (amountToFund: string) => void;
+  handleAddCollateral: (amountEth: string) => Promise<void>;
   handleBorrow: (amountToBorrow: string) => Promise<void>;
   handleRepay: () => Promise<void>;
   handleWithdraw: () => void;
@@ -161,6 +162,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [activeOrderId, parseEther(amountToFund)], value: totalValue });
   }, [address, activeOrderId, sendTxOnChain, addLog]);
 
+  const handleAddCollateral = useCallback(async (amountEth: string) => {
+    if (!activeOrderId) return;
+    setLogs([`▶ Adding ${amountEth} ETH collateral to order ${activeOrderId.slice(0, 10)}...`]);
+    setAppState(AppState.FUNDING_IN_PROGRESS);
+    try {
+      const amountWei = parseEther(amountEth);
+      addLog('   Quoting LayerZero fee for collateral top-up...');
+      const nativeFee = await readContract(wagmiConfig, {
+        address: ETH_COLLATERAL_OAPP_ADDR,
+        abi: ETH_COLLATERAL_ABI,
+        functionName: 'quoteAddCollateralNativeFee',
+        args: [activeOrderId, amountWei],
+        chainId: ETH_CHAIN_ID,
+      }) as bigint;
+      addLog(`✓ Fee quoted: ${formatUnits(nativeFee, 18)} ETH`);
+      const buffer = nativeFee === 0n ? parseEther('0.00005') : nativeFee / 10n;
+      const totalValue = amountWei + nativeFee + buffer;
+      addLog('▶ Sending addCollateralWithNotify transaction...');
+      sendTxOnChain(ETH_CHAIN_ID, {
+        address: ETH_COLLATERAL_OAPP_ADDR,
+        abi: ETH_COLLATERAL_ABI,
+        functionName: 'addCollateralWithNotify',
+        args: [activeOrderId, amountWei],
+        value: totalValue,
+      });
+    } catch (e) {
+      const message = (e as { shortMessage?: string; message?: string })?.shortMessage
+        || (e as { message?: string })?.message
+        || 'Failed to add collateral';
+      addLog(`❌ ${message}`);
+      setError(message);
+      setAppState(AppState.ERROR);
+    }
+  }, [activeOrderId, addLog, sendTxOnChain]);
+
   const handleBorrow = useCallback(async (amountToBorrow: string) => {
     if (!activeOrderId) return;
     setUserBorrowAmount(amountToBorrow);
@@ -244,6 +280,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
     setAppState(AppState.CROSSING_TO_HEDERA);
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
+    setOrderId(prev => prev ?? idToPoll);
+    setSelectedOrderId(prev => {
+      if (!prev || prev === idToPoll) {
+        return idToPoll;
+      }
+      return prev;
+    });
     let attempts = 0; const maxAttempts = 60;
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
     hederaPollingRef.current = setInterval(async () => {
@@ -452,13 +495,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [isWritePending, isConfirming, writeError, receipt, handleReceipt, addLog, hash]);
 
   useEffect(() => {
-    if (appState === AppState.CROSSING_TO_HEDERA && orderId && pollingStartBlock > 0) {
-      startPollingForHederaOrder(orderId);
+    if (appState === AppState.CROSSING_TO_HEDERA && orderId) {
+      startPollingForHederaOrder(orderId, lzTxHash);
     }
     if (appState === AppState.CROSSING_TO_ETHEREUM && activeOrderId) {
       startPollingForEthRepay(activeOrderId);
     }
-  }, [appState, orderId, activeOrderId, pollingStartBlock, startPollingForHederaOrder, startPollingForEthRepay]);
+  }, [appState, orderId, activeOrderId, lzTxHash, startPollingForHederaOrder, startPollingForEthRepay]);
 
   useEffect(() => {
     if (appState === AppState.LOAN_ACTIVE && !treasuryAddress) {
@@ -467,6 +510,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
     }
   }, [appState, treasuryAddress, resolveTreasuryAddress, addLog]);
+
+  useEffect(() => {
+    if (selectedOrderId && selectedOrderId !== orderId) {
+      setOrderId(selectedOrderId);
+    }
+  }, [selectedOrderId]);
 
   useEffect(() => {
     if (!activeOrderId) return;
@@ -518,6 +567,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     lzTxHash,
     handleCreateOrder,
     handleFundOrder,
+    handleAddCollateral,
     handleBorrow,
     handleRepay,
     handleWithdraw,

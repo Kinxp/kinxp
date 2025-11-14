@@ -19,6 +19,15 @@ const formatCurrency = (value: number) => {
   }).format(value);
 };
 
+// Helper to format ETH values with fixed precision (at least 10 decimal places)
+const formatEth = (wei: bigint) => {
+  if (wei === 0n) return '0.0000000000 ETH';
+  const decimal = formatUnits(wei, 18);
+  const [intPart, fracPart = '0'] = decimal.split('.');
+  const normalizedFrac = `${fracPart}${'0'.repeat(10)}`.slice(0, 10);
+  return `${Number(intPart).toLocaleString('en-US')}.${normalizedFrac} ETH`;
+};
+
 // Custom Tooltip component for the chart
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
@@ -46,53 +55,47 @@ const HomePage: React.FC = () => {
     const fetchProtocolData = async () => {
       setIsLoading(true);
       setError(null);
-      try {
-        // --- THIS IS THE FIX ---
-        // Use Promise.allSettled to ensure we get results even if one API fails.
-        const results = await Promise.allSettled([
-          fetchAllHistoricalFunding(),
-          fetchAllHistoricalBorrows(),
-          fetchPythUpdateData(),
-        ]);
 
-        // Now, we check the status of each promise individually.
-        const fundingResult = results[0];
-        if (fundingResult.status === 'fulfilled') {
-          setFundingData(fundingResult.value);
-        } else {
-          console.error("Failed to fetch funding data:", fundingResult.reason);
-          // We can still continue without this data.
-        }
+      const [fundingRes, borrowRes, priceRes] = await Promise.allSettled([
+        fetchAllHistoricalFunding(),
+        fetchAllHistoricalBorrows(),
+        fetchPythUpdateData(),
+      ]);
 
-        const borrowResult = results[1];
-        if (borrowResult.status === 'fulfilled') {
-          setBorrowData(borrowResult.value);
-        } else {
-          console.error("Failed to fetch borrow data:", borrowResult.reason);
-          // This is expected if the Hedera API is down.
-        }
-
-        const priceResult = results[2];
-        if (priceResult.status === 'fulfilled') {
-          setEthPrice(priceResult.value.scaledPrice);
-        } else {
-          console.error("Failed to fetch Pyth price data:", priceResult.reason);
-          // Price is critical, so we might throw an error if it fails.
-          throw new Error("Could not load critical market data.");
-        }
-
-      } catch (err: any) {
-        setError(err.message || "Could not load all protocol statistics.");
-      } finally {
-        setIsLoading(false);
+      if (fundingRes.status === 'fulfilled') {
+        setFundingData(fundingRes.value);
+      } else {
+        console.warn('Funding history unavailable', fundingRes.reason);
       }
+
+      if (borrowRes.status === 'fulfilled') {
+        setBorrowData(borrowRes.value);
+      } else {
+        console.warn('Borrow history unavailable', borrowRes.reason);
+      }
+
+      if (priceRes.status === 'fulfilled') {
+        setEthPrice(priceRes.value.scaledPrice);
+      } else {
+        console.warn('Pyth price unavailable', priceRes.reason);
+        setEthPrice(0n);
+      }
+
+      if (fundingRes.status === 'rejected' && borrowRes.status === 'rejected') {
+        setError('Could not load protocol history from explorers.');
+      }
+
+      setIsLoading(false);
     };
+
     fetchProtocolData();
   }, []);
 
   // useMemo hooks to efficiently process the raw data into displayable metrics
   const kpiData = useMemo(() => {
-    if (isLoading || error || !ethPrice) return { tvl: 0, totalBorrows: 0, totalOrders: 0 };
+    if (isLoading || error || !ethPrice) {
+      return { tvl: 0, totalBorrows: 0, totalOrders: 0, totalEthWei: 0n };
+    }
 
     const totalCollateralWei = fundingData.reduce((acc, event) => acc + event.amountWei, 0n);
     const tvl = parseFloat(formatUnits(totalCollateralWei * ethPrice, 36));
@@ -101,7 +104,7 @@ const HomePage: React.FC = () => {
 
     const totalOrders = new Set(fundingData.map(e => e.timestamp)).size;
 
-    return { tvl, totalBorrows, totalOrders };
+    return { tvl, totalBorrows, totalOrders, totalEthWei: totalCollateralWei };
   }, [isLoading, error, fundingData, borrowData, ethPrice]);
 
   const accumulatedTvlData = useMemo(() => {
@@ -153,6 +156,7 @@ const HomePage: React.FC = () => {
             <>
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700/50"><p className="text-sm text-gray-400">Total Value Locked</p><p className="text-3xl font-bold text-white">{formatCurrency(kpiData.tvl)}</p></div>
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700/50"><p className="text-sm text-gray-400">Total Borrows</p><p className="text-3xl font-bold text-cyan-400">{formatCurrency(kpiData.totalBorrows)}</p></div>
+                <div className="bg-gray-800 rounded-xl p-6 border border-gray-700/50"><p className="text-sm text-gray-400">Total ETH Locked</p><p className="text-3xl font-bold text-white">{formatEth(kpiData.totalEthWei)}</p></div>
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700/50"><p className="text-sm text-gray-400">Supported Chains</p><p className="text-3xl font-bold text-white">2</p></div>
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700/50"><p className="text-sm text-gray-400">Total Orders</p><p className="text-3xl font-bold text-white">{kpiData.totalOrders}</p></div>
             </>
@@ -163,22 +167,32 @@ const HomePage: React.FC = () => {
       <section className="bg-gray-800 rounded-2xl p-6">
         <h2 className="text-xl font-semibold mb-4">Protocol Growth (TVL Over Time)</h2>
         {isLoading ? (
-            <div className="h-[400px] flex justify-center items-center gap-2 text-gray-400"><SpinnerIcon /><span>Loading Chart Data...</span></div>
+          <div className="h-[400px] flex justify-center items-center gap-2 text-gray-400"><SpinnerIcon /><span>Loading Chart Data...</span></div>
         ) : error ? (
-            <div className="h-[400px] flex justify-center items-center text-red-400">{error}</div>
+          <div className="h-[400px] flex justify-center items-center text-red-400">{error}</div>
+        ) : accumulatedTvlData.length === 0 ? (
+          <div className="h-[400px] flex flex-col justify-center items-center text-gray-400 gap-2">
+            <SpinnerIcon />
+            <span>No funding activity detected yet. Charts will appear once orders are funded.</span>
+          </div>
         ) : (
-            <div style={{ width: '100%', height: 400 }}>
-              <ResponsiveContainer>
-                <AreaChart data={accumulatedTvlData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                    <defs><linearGradient id="colorTvl" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2dd4bf" stopOpacity={0.4}/><stop offset="95%" stopColor="#2dd4bf" stopOpacity={0}/></linearGradient></defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
-                  <XAxis dataKey="date" stroke="#9ca3af" tick={{fontSize: 12}} />
-                  <YAxis stroke="#9ca3af" tickFormatter={(value) => formatCurrency(value)} tick={{fontSize: 12}} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="tvl" name="TVL (USD)" stroke="#2dd4bf" strokeWidth={2} fill="url(#colorTvl)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+          <div style={{ width: '100%', height: 400 }}>
+            <ResponsiveContainer>
+              <AreaChart data={accumulatedTvlData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                <defs>
+                  <linearGradient id="colorTvl" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2dd4bf" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#2dd4bf" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
+                <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 12 }} />
+                <YAxis stroke="#9ca3af" tickFormatter={(value) => formatCurrency(value)} tick={{ fontSize: 12 }} />
+                <Tooltip content={<CustomTooltip />} />
+                <Area type="monotone" dataKey="tvl" name="TVL (USD)" stroke="#2dd4bf" strokeWidth={2} fill="url(#colorTvl)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         )}
       </section>
     </div>

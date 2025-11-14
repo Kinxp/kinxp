@@ -1,8 +1,8 @@
 import React from 'react';
-import { MockReserveInfo } from '../../types/demo';
+import { ReserveInfo } from '../../types';
 
 interface ReserveInfoPanelProps {
-  reserve: MockReserveInfo;
+  reserve: ReserveInfo;
 }
 
 const ReserveInfoPanel: React.FC<ReserveInfoPanelProps> = ({ reserve }) => {

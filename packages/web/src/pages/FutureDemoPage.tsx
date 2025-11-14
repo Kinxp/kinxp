@@ -1,6 +1,19 @@
-import React, { useState, useMemo } from 'react';
-import { formatUnits, parseEther, parseUnits } from 'viem';
-import { MockOrderSummary, MockReserveInfo, MockReserveConfig } from '../types/demo';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { formatUnits } from 'viem';
+import { useAccount } from 'wagmi';
+import { readContract } from 'wagmi/actions';
+import { config as wagmiConfig } from '../wagmi';
+import { fetchAllUserOrders } from '../services/blockscoutService';
+import {
+  RESERVE_REGISTRY_ABI,
+  RESERVE_REGISTRY_ADDR,
+  HEDERA_CHAIN_ID,
+  ETH_CHAIN_ID,
+  ETH_COLLATERAL_ABI,
+  ETH_COLLATERAL_OAPP_ADDR,
+} from '../config';
+import { AppState, ReserveInfo, UserOrderSummary } from '../types';
+import { useAppContext } from '../context/AppContext';
 import ReserveBadge from '../components/demo/ReserveBadge';
 import ReserveInfoPanel from '../components/demo/ReserveInfoPanel';
 import AddCollateralView from '../components/demo/AddCollateralView';
@@ -8,179 +21,326 @@ import EnhancedWithdrawView from '../components/demo/EnhancedWithdrawView';
 import BorrowView from '../components/actionpanel/manageorder/BorrowView';
 import RepayView from '../components/actionpanel/manageorder/RepayView';
 import CreateOrderView from '../components/dashboard/CreateOrderView';
+import FundOrderView from '../components/actionpanel/FundOrderView';
 
-// ============================================================================
-// MOCK DATA - Will be replaced with real contract calls after deployment
-// 
-// TO UPDATE WHEN CONTRACTS ARE DEPLOYED:
-// 1. Replace MOCK_RESERVES with ReserveRegistry.getReserveConfig() calls
-// 2. Replace MOCK_ORDERS with real contract reads (EthCollateralOApp.orders() + HederaCreditOApp.getOutstandingDebt())
-// 3. Replace mock handlers with real contract write calls
-// 4. Update contract addresses in config.ts
-// ============================================================================
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
 
-const MOCK_RESERVES: MockReserveInfo[] = [
-  {
-    reserveId: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef' as `0x${string}`,
-    label: 'Standard Reserve',
-    maxLtvBps: 7500, // 75%
-    liquidationThresholdBps: 8000, // 80%
-    baseRateBps: 500, // 5% APR
-    originationFeeBps: 100, // 1%
-    controller: '0x00000000000000000000000000000000006ca0cb',
-    active: true,
-  },
-  {
-    reserveId: '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890' as `0x${string}`,
-    label: 'Conservative Reserve',
-    maxLtvBps: 6000, // 60%
-    liquidationThresholdBps: 7000, // 70%
-    baseRateBps: 300, // 3% APR
-    originationFeeBps: 50, // 0.5%
-    controller: '0x00000000000000000000000000000000006ca0cb',
-    active: true,
-  },
-];
+type DecoratedOrder = UserOrderSummary & {
+  reserve?: ReserveInfo;
+};
 
-const DEFAULT_RESERVE = MOCK_RESERVES[0];
-
-const MOCK_ORDERS: MockOrderSummary[] = [
-  {
-    orderId: '0x1111111111111111111111111111111111111111111111111111111111111111' as `0x${string}`,
-    reserveId: DEFAULT_RESERVE.reserveId,
-    amountWei: parseEther('0.5'),
-    unlockedWei: 0n,
-    status: 'Borrowed',
-    borrowedUsd: parseUnits('1500', 6),
-    outstandingDebt: parseUnits('1505.25', 6), // Includes accrued interest
-    reserveLabel: DEFAULT_RESERVE.label,
-    lastBorrowRateBps: 500,
-    createdAt: Date.now() - 7 * 24 * 60 * 60 * 1000, // 7 days ago
-  },
-  {
-    orderId: '0x2222222222222222222222222222222222222222222222222222222222222222' as `0x${string}`,
-    reserveId: DEFAULT_RESERVE.reserveId,
-    amountWei: parseEther('1.0'),
-    unlockedWei: parseEther('0.3'), // Partial repayment made
-    status: 'Borrowed',
-    borrowedUsd: parseUnits('2000', 6),
-    outstandingDebt: parseUnits('2010.50', 6),
-    reserveLabel: DEFAULT_RESERVE.label,
-    lastBorrowRateBps: 500,
-    createdAt: Date.now() - 14 * 24 * 60 * 60 * 1000, // 14 days ago
-  },
-  {
-    orderId: '0x3333333333333333333333333333333333333333333333333333333333333333' as `0x${string}`,
-    reserveId: DEFAULT_RESERVE.reserveId,
-    amountWei: parseEther('0.25'),
-    unlockedWei: parseEther('0.25'), // Fully repaid
-    status: 'ReadyToWithdraw',
-    borrowedUsd: 0n,
-    outstandingDebt: 0n,
-    reserveLabel: DEFAULT_RESERVE.label,
-    createdAt: Date.now() - 30 * 24 * 60 * 60 * 1000, // 30 days ago
-  },
-  {
-    orderId: '0x4444444444444444444444444444444444444444444444444444444444444444' as `0x${string}`,
-    reserveId: DEFAULT_RESERVE.reserveId,
-    amountWei: parseEther('0.1'),
-    unlockedWei: 0n,
-    status: 'Funded',
-    borrowedUsd: 0n,
-    outstandingDebt: 0n,
-    reserveLabel: DEFAULT_RESERVE.label,
-    createdAt: Date.now() - 1 * 24 * 60 * 60 * 1000, // 1 day ago
-  },
-];
+const PROCESSING_STATES = new Set<AppState>([
+  AppState.ORDER_CREATING,
+  AppState.FUNDING_IN_PROGRESS,
+  AppState.CROSSING_TO_HEDERA,
+  AppState.BORROWING_IN_PROGRESS,
+  AppState.RETURNING_FUNDS,
+  AppState.REPAYING_IN_PROGRESS,
+  AppState.CROSSING_TO_ETHEREUM,
+  AppState.WITHDRAWING_IN_PROGRESS,
+]);
 
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
 const FutureDemoPage: React.FC = () => {
-  const [selectedOrderId, setSelectedOrderId] = useState<`0x${string}` | null>(null);
+  const { address } = useAccount();
+  const {
+    handleCreateOrder,
+    handleFundOrder,
+    handleBorrow,
+    handleAddCollateral,
+    handleRepay,
+    handleWithdraw,
+    calculateBorrowAmount,
+    selectedOrderId,
+    setSelectedOrderId,
+    appState,
+    ethAmount,
+    lzTxHash,
+    startPollingForHederaOrder,
+  } = useAppContext();
+
   const [activeTab, setActiveTab] = useState<'orders' | 'create'>('orders');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [orders, setOrders] = useState<UserOrderSummary[]>([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(false);
+  const [reserves, setReserves] = useState<Record<string, ReserveInfo>>({});
+  const [defaultReserveId, setDefaultReserveId] = useState<`0x${string}` | null>(null);
+  const [isLoadingReserves, setIsLoadingReserves] = useState(false);
+  const fetchedReserveIdsRef = useRef<Set<string>>(new Set());
 
-  const selectedOrder = useMemo(() => {
-    return selectedOrderId 
-      ? MOCK_ORDERS.find(o => o.orderId === selectedOrderId) || null
-      : null;
-  }, [selectedOrderId]);
+  const isProcessing = PROCESSING_STATES.has(appState);
 
-  const selectedReserve = useMemo(() => {
-    if (!selectedOrder) return DEFAULT_RESERVE;
-    return MOCK_RESERVES.find(r => r.reserveId === selectedOrder.reserveId) || DEFAULT_RESERVE;
-  }, [selectedOrder]);
-
-  // Group orders by status
-  const { activeOrders, withdrawableOrders, fundableOrders } = useMemo(() => {
-    return {
-      activeOrders: MOCK_ORDERS.filter(o => o.status === 'Borrowed' || o.status === 'Funded'),
-      withdrawableOrders: MOCK_ORDERS.filter(o => o.status === 'ReadyToWithdraw'),
-      fundableOrders: MOCK_ORDERS.filter(o => o.status === 'Created'),
-    };
+  const storeReserve = useCallback((reserve: ReserveInfo) => {
+    setReserves(prev => ({ ...prev, [reserve.reserveId.toLowerCase()]: reserve }));
   }, []);
 
-  // Mock handlers (will be replaced with real contract calls)
-  const handleCreateOrder = (amount: string) => {
-    console.log('Mock: Creating order with', amount, 'ETH');
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      alert(`Mock: Order created! (In production, this would create a real order)`);
-    }, 1000);
-  };
+  const fetchReserveConfig = useCallback(
+    async (reserveId: `0x${string}` | undefined) => {
+      if (!reserveId || reserveId === ZERO_BYTES32) return;
+      const key = reserveId.toLowerCase();
+      if (fetchedReserveIdsRef.current.has(key)) return;
+      fetchedReserveIdsRef.current.add(key);
 
-  const handleAddCollateral = (amountEth: string) => {
-    console.log('Mock: Adding collateral', amountEth, 'ETH to order', selectedOrderId);
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      alert(`Mock: Collateral added! (In production, this would call addCollateralWithNotify)`);
-    }, 1500);
-  };
+      setIsLoadingReserves(true);
+      try {
+        const bundle = await readContract(wagmiConfig, {
+          address: RESERVE_REGISTRY_ADDR,
+          abi: RESERVE_REGISTRY_ABI,
+          functionName: 'getReserveConfig',
+          args: [reserveId],
+          chainId: HEDERA_CHAIN_ID,
+        }) as readonly [
+          {
+            reserveId: `0x${string}`;
+            label: string;
+            controller: `0x${string}`;
+            protocolTreasury: `0x${string}`;
+            debtTokenDecimals: number;
+            active: boolean;
+            frozen: boolean;
+          },
+          {
+            maxLtvBps: number;
+            liquidationThresholdBps: number;
+            liquidationBonusBps: number;
+            closeFactorBps: number;
+            reserveFactorBps: number;
+            liquidationProtocolFeeBps: number;
+          },
+          {
+            baseRateBps: number;
+            slope1Bps: number;
+            slope2Bps: number;
+            optimalUtilizationBps: number;
+            originationFeeBps: number;
+          },
+          unknown
+        ];
 
-  const handleWithdraw = () => {
-    console.log('Mock: Withdrawing from order', selectedOrderId);
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      alert(`Mock: Withdrawal processed! (In production, this would call withdraw)`);
-    }, 1000);
-  };
+        const [metadata, risk, interest] = bundle;
 
-  const handleBorrow = (amount: string) => {
-    console.log('Mock: Borrowing', amount, 'hUSD');
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      alert(`Mock: Borrow successful! (In production, this would call borrow)`);
-    }, 1500);
-  };
+        const reserve: ReserveInfo = {
+          reserveId,
+          label: metadata.label,
+          maxLtvBps: Number(risk.maxLtvBps),
+          liquidationThresholdBps: Number(risk.liquidationThresholdBps),
+          baseRateBps: Number(interest.baseRateBps),
+          originationFeeBps: Number(interest.originationFeeBps),
+          controller: metadata.controller,
+          active: Boolean(metadata.active) && !Boolean(metadata.frozen),
+        };
 
-  const handleRepay = () => {
-    console.log('Mock: Repaying order', selectedOrderId);
-    setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      alert(`Mock: Repayment processed! (In production, this would call repay)`);
-    }, 1500);
-  };
+        storeReserve(reserve);
+      } catch (error) {
+        console.error(`Failed to fetch reserve config for ${reserveId}`, error);
+      } finally {
+        setIsLoadingReserves(false);
+      }
+    },
+    [storeReserve]
+  );
 
-  const mockCalculateBorrowAmount = async () => {
-    if (!selectedOrder) return null;
-    // Mock calculation
-    const ethPrice = 3300; // Mock price
-    const collateralUsd = Number(formatUnits(selectedOrder.amountWei, 18)) * ethPrice;
-    const maxBorrow = (collateralUsd * selectedReserve.maxLtvBps) / 10000;
-    const alreadyBorrowed = Number(formatUnits(selectedOrder.borrowedUsd || 0n, 6));
-    const remaining = Math.max(0, maxBorrow - alreadyBorrowed);
+  const loadDefaultReserve = useCallback(async () => {
+    let reserveId: `0x${string}` | null = null;
+
+    try {
+      const registryReserveId = await readContract(wagmiConfig, {
+        address: RESERVE_REGISTRY_ADDR,
+        abi: RESERVE_REGISTRY_ABI,
+        functionName: 'defaultReserveId',
+        chainId: HEDERA_CHAIN_ID,
+      }) as `0x${string}`;
+
+      if (registryReserveId && registryReserveId !== ZERO_BYTES32) {
+        reserveId = registryReserveId;
+      }
+    } catch (error) {
+      console.warn('Could not load default reserve from registry', error);
+    }
+
+    if (!reserveId) {
+      try {
+        const fallbackReserveId = await readContract(wagmiConfig, {
+          address: ETH_COLLATERAL_OAPP_ADDR,
+          abi: ETH_COLLATERAL_ABI,
+          functionName: 'defaultReserveId',
+          chainId: ETH_CHAIN_ID,
+        }) as `0x${string}`;
+
+        if (fallbackReserveId && fallbackReserveId !== ZERO_BYTES32) {
+          reserveId = fallbackReserveId;
+        }
+      } catch (fallbackError) {
+        console.warn('Could not load default reserve from Ethereum fallback', fallbackError);
+      }
+    }
+
+    if (reserveId) {
+      setDefaultReserveId(reserveId);
+      await fetchReserveConfig(reserveId);
+    }
+  }, [fetchReserveConfig]);
+
+  useEffect(() => {
+    loadDefaultReserve();
+  }, [loadDefaultReserve]);
+
+  const loadOrders = useCallback(async () => {
+    if (!address) {
+      setOrders([]);
+      setSelectedOrderId(null);
+      return;
+    }
+
+    setIsLoadingOrders(true);
+    try {
+      const userOrders = await fetchAllUserOrders(address);
+      setOrders(userOrders);
+
+      if (userOrders.length > 0) {
+        const alreadySelected = userOrders.some(order => order.orderId === selectedOrderId);
+        if (!alreadySelected) {
+          setSelectedOrderId(userOrders[0].orderId);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch user orders for Future Demo page:', error);
+    } finally {
+      setIsLoadingOrders(false);
+    }
+  }, [address, selectedOrderId, setSelectedOrderId]);
+
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
+
+  useEffect(() => {
+    if (!address) return;
+    if (!PROCESSING_STATES.has(appState)) {
+      loadOrders();
+    }
+  }, [address, appState, loadOrders]);
+
+  useEffect(() => {
+    orders.forEach(order => {
+      if (order.reserveId) {
+        fetchReserveConfig(order.reserveId);
+      }
+    });
+  }, [orders, fetchReserveConfig]);
+
+  const decoratedOrders: DecoratedOrder[] = useMemo(() => {
+    return orders.map(order => {
+      const reserve = order.reserveId ? reserves[order.reserveId.toLowerCase()] : undefined;
+      return { ...order, reserve };
+    });
+  }, [orders, reserves]);
+
+  const selectedOrder = useMemo(() => {
+    return selectedOrderId ? decoratedOrders.find(order => order.orderId === selectedOrderId) || null : null;
+  }, [decoratedOrders, selectedOrderId]);
+
+  const defaultReserve = useMemo(() => {
+    if (defaultReserveId) {
+      const stored = reserves[defaultReserveId.toLowerCase()];
+      if (stored) return stored;
+    }
+    const firstReserve = Object.values(reserves)[0];
+    return firstReserve ?? null;
+  }, [defaultReserveId, reserves]);
+
+  const selectedReserve = useMemo(() => {
+    return selectedOrder?.reserve ?? defaultReserve ?? null;
+  }, [selectedOrder, defaultReserve]);
+
+  const { activeOrders, withdrawableOrders, fundableOrders } = useMemo(() => {
     return {
-      amount: remaining.toFixed(2),
-      price: ethPrice.toFixed(2),
+      activeOrders: decoratedOrders.filter(order => order.status === 'Borrowed' || order.status === 'Funded'),
+      withdrawableOrders: decoratedOrders.filter(order => order.status === 'ReadyToWithdraw'),
+      fundableOrders: decoratedOrders.filter(order => order.status === 'Created'),
     };
-  };
+  }, [decoratedOrders]);
+
+  const handleAddCollateralSafe = useCallback(
+    async (amountEth: string) => {
+      if (!amountEth) return;
+      try {
+        await handleAddCollateral(amountEth);
+      } catch (error) {
+        console.error('Failed to add collateral from demo page', error);
+      }
+    },
+    [handleAddCollateral]
+  );
+
+  const handleBorrowSafe = useCallback(
+    async (amount: string) => {
+      if (!amount) return;
+      try {
+        await handleBorrow(amount);
+      } catch (error) {
+        console.error('Failed to borrow from demo page', error);
+      }
+    },
+    [handleBorrow]
+  );
+
+  const handleFundOrderSafe = useCallback(
+    (amount: string) => {
+      if (!amount || Number(amount) <= 0) return;
+      handleFundOrder(amount);
+    },
+    [handleFundOrder]
+  );
+
+  const borrowAmountForOrder = useMemo(() => {
+    if (!selectedOrder) return '0';
+    if (selectedOrder.outstandingDebt !== undefined && selectedOrder.outstandingDebt > 0n) {
+      return formatUnits(selectedOrder.outstandingDebt, 6);
+    }
+    if (selectedOrder.borrowedUsd !== undefined && selectedOrder.borrowedUsd > 0n) {
+      return formatUnits(selectedOrder.borrowedUsd, 6);
+    }
+    return '0';
+  }, [selectedOrder]);
+
+  const fundAmountForOrder = useMemo(() => {
+    if (!selectedOrder) return ethAmount;
+    const fromContract = formatUnits(selectedOrder.amountWei ?? 0n, 18);
+    if (Number(fromContract) > 0) {
+      return fromContract;
+    }
+    return ethAmount;
+  }, [selectedOrder, ethAmount]);
+
+  const handleBorrowSubmit = useCallback(
+    (amount: string) => {
+      void handleBorrowSafe(amount);
+    },
+    [handleBorrowSafe],
+  );
+
+  const handleAddCollateralSubmit = useCallback(
+    (amount: string) => {
+      void handleAddCollateralSafe(amount);
+    },
+    [handleAddCollateralSafe],
+  );
+
+  const handleRepayClick = useCallback(() => {
+    void handleRepay();
+  }, [handleRepay]);
+
+  const handleWithdrawClick = useCallback(() => {
+    handleWithdraw();
+  }, [handleWithdraw]);
+
+  const handleManualLayerZeroCheck = useCallback(() => {
+    if (!selectedOrder) return;
+    startPollingForHederaOrder(selectedOrder.orderId, lzTxHash ?? undefined);
+  }, [selectedOrder, startPollingForHederaOrder, lzTxHash]);
 
   return (
     <div className="space-y-6">
@@ -191,7 +351,7 @@ const FutureDemoPage: React.FC = () => {
             <h1 className="text-2xl font-bold text-gray-100 mb-2">Future Demo - Enhanced Features</h1>
             <p className="text-sm text-gray-400">
               Preview of the enhanced UI with reserve system, partial withdrawals, and collateral management.
-              <span className="ml-2 text-amber-400">⚠️ Using mock data - will be replaced with real contracts</span>
+              <span className="ml-2 text-cyan-300">Live data sourced from the deployed contracts.</span>
             </p>
           </div>
           <div className="flex gap-2">
@@ -228,19 +388,64 @@ const FutureDemoPage: React.FC = () => {
             </div>
           ) : (
             <>
-              {/* Reserve Info Panel */}
-              {selectedOrder && (
+              {selectedOrder && selectedReserve && (
                 <ReserveInfoPanel reserve={selectedReserve} />
+              )}
+
+              {!selectedOrder && (isLoadingOrders || isLoadingReserves) && (
+                <div className="bg-gray-800/50 rounded-xl p-6 text-center text-gray-400 animate-pulse">
+                  {address ? 'Loading your orders...' : 'Connect your wallet to load orders.'}
+                </div>
               )}
 
               {/* Action Panel based on order status */}
               {selectedOrder && (
                 <div className="bg-gray-800 rounded-2xl p-6">
                   {selectedOrder.status === 'Funded' && (
-                    <BorrowView
+                    selectedOrder.hederaReady ? (
+                      <BorrowView
+                        orderId={selectedOrder.orderId}
+                        onBorrow={handleBorrowSubmit}
+                        calculateBorrowAmount={calculateBorrowAmount}
+                      />
+                    ) : (
+                      <div className="bg-gray-900/60 border border-indigo-500/30 rounded-2xl p-6 text-center space-y-4">
+                        <h3 className="text-xl font-bold text-indigo-200">Bridging in Progress</h3>
+                        <p className="text-sm text-gray-400">
+                          Your collateral has been funded on Ethereum and is now crossing to Hedera via LayerZero.
+                          This usually takes a couple of minutes. Once confirmed, borrowing will unlock automatically.
+                        </p>
+                        <div className="flex flex-col items-center gap-2 text-gray-300">
+                          <span className="animate-spin h-6 w-6 rounded-full border-2 border-indigo-400 border-t-transparent" />
+                          <span className="text-xs text-gray-500">
+                            Waiting for Hedera confirmation...
+                          </span>
+                        </div>
+                        {lzTxHash && (
+                          <a
+                            href={`https://testnet.layerzeroscan.com/tx/${lzTxHash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block text-xs font-mono text-cyan-400 hover:text-cyan-300 break-all"
+                          >
+                            View LayerZero tx: {lzTxHash}
+                          </a>
+                        )}
+                        <button
+                          onClick={handleManualLayerZeroCheck}
+                          className="inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+                        >
+                          Re-check Hedera Status
+                        </button>
+                      </div>
+                    )
+                  )}
+
+                  {selectedOrder.status === 'Created' && (
+                    <FundOrderView
                       orderId={selectedOrder.orderId}
-                      onBorrow={handleBorrow}
-                      calculateBorrowAmount={mockCalculateBorrowAmount}
+                      ethAmount={fundAmountForOrder ?? '0'}
+                      onFund={handleFundOrderSafe}
                     />
                   )}
 
@@ -249,18 +454,16 @@ const FutureDemoPage: React.FC = () => {
                       {/* Repay View */}
                       <RepayView
                         orderId={selectedOrder.orderId}
-                        borrowAmount={selectedOrder.outstandingDebt 
-                          ? formatUnits(selectedOrder.outstandingDebt, 6) 
-                          : formatUnits(selectedOrder.borrowedUsd || 0n, 6)}
+                        borrowAmount={borrowAmountForOrder}
                         collateralEth={formatUnits(selectedOrder.amountWei, 18)}
-                        onRepay={handleRepay}
+                        onRepay={handleRepayClick}
                       />
 
                       {/* Add Collateral View */}
                       <AddCollateralView
                         orderId={selectedOrder.orderId}
                         currentCollateralWei={selectedOrder.amountWei}
-                        onAddCollateral={handleAddCollateral}
+                        onAddCollateral={handleAddCollateralSubmit}
                         isProcessing={isProcessing}
                       />
                     </div>
@@ -270,8 +473,8 @@ const FutureDemoPage: React.FC = () => {
                     <EnhancedWithdrawView
                       orderId={selectedOrder.orderId}
                       totalCollateralWei={selectedOrder.amountWei}
-                      unlockedWei={selectedOrder.unlockedWei}
-                      onWithdraw={handleWithdraw}
+                      unlockedWei={selectedOrder.unlockedWei ?? 0n}
+                      onWithdraw={handleWithdrawClick}
                       isProcessing={isProcessing}
                     />
                   )}
@@ -280,7 +483,13 @@ const FutureDemoPage: React.FC = () => {
 
               {!selectedOrder && (
                 <div className="bg-gray-800/50 rounded-xl p-6 text-center text-gray-400">
-                  Select an order from the right to manage it.
+                  {!address
+                    ? 'Connect your wallet to view and manage orders.'
+                    : isLoadingOrders
+                      ? 'Loading your orders...'
+                      : orders.length === 0
+                        ? 'No orders yet. Create one to get started.'
+                        : 'Select an order from the right to manage it.'}
                 </div>
               )}
             </>
@@ -289,6 +498,11 @@ const FutureDemoPage: React.FC = () => {
 
         {/* Right Column: Order Lists */}
         <div className="space-y-6">
+          {isLoadingOrders && (
+            <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 text-gray-400 animate-pulse">
+              Loading orders…
+            </div>
+          )}
           {/* Active Orders */}
           {activeOrders.length > 0 && (
             <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
@@ -298,7 +512,7 @@ const FutureDemoPage: React.FC = () => {
                   <OrderCard
                     key={order.orderId}
                     order={order}
-                    reserve={MOCK_RESERVES.find(r => r.reserveId === order.reserveId) || DEFAULT_RESERVE}
+                    reserve={order.reserve ?? defaultReserve ?? undefined}
                     isSelected={selectedOrderId === order.orderId}
                     onSelect={() => setSelectedOrderId(order.orderId)}
                   />
@@ -316,7 +530,7 @@ const FutureDemoPage: React.FC = () => {
                   <OrderCard
                     key={order.orderId}
                     order={order}
-                    reserve={MOCK_RESERVES.find(r => r.reserveId === order.reserveId) || DEFAULT_RESERVE}
+                    reserve={order.reserve ?? defaultReserve ?? undefined}
                     isSelected={selectedOrderId === order.orderId}
                     onSelect={() => setSelectedOrderId(order.orderId)}
                   />
@@ -334,7 +548,7 @@ const FutureDemoPage: React.FC = () => {
                   <OrderCard
                     key={order.orderId}
                     order={order}
-                    reserve={MOCK_RESERVES.find(r => r.reserveId === order.reserveId) || DEFAULT_RESERVE}
+                    reserve={order.reserve ?? defaultReserve ?? undefined}
                     isSelected={selectedOrderId === order.orderId}
                     onSelect={() => setSelectedOrderId(order.orderId)}
                   />
@@ -353,8 +567,8 @@ const FutureDemoPage: React.FC = () => {
 // ============================================================================
 
 interface OrderCardProps {
-  order: MockOrderSummary;
-  reserve: MockReserveInfo;
+  order: DecoratedOrder;
+  reserve?: ReserveInfo | null;
   isSelected: boolean;
   onSelect: () => void;
 }
@@ -369,11 +583,13 @@ const OrderCard: React.FC<OrderCardProps> = ({ order, reserve, isSelected, onSel
     Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
   };
 
-  const totalEth = formatUnits(order.amountWei, 18);
-  const unlockedEth = formatUnits(order.unlockedWei, 18);
-  const borrowedUsd = order.outstandingDebt 
+  const amountWei = order.amountWei ?? 0n;
+  const unlockedWei = order.unlockedWei ?? 0n;
+  const totalEth = formatUnits(amountWei, 18);
+  const unlockedEth = formatUnits(unlockedWei, 18);
+  const borrowedUsd = order.outstandingDebt
     ? formatUnits(order.outstandingDebt, 6)
-    : order.borrowedUsd 
+    : order.borrowedUsd
       ? formatUnits(order.borrowedUsd, 6)
       : '0';
 
@@ -392,14 +608,14 @@ const OrderCard: React.FC<OrderCardProps> = ({ order, reserve, isSelected, onSel
             <p className="font-mono text-sm text-gray-200 truncate">
               {order.orderId.slice(0, 10)}...{order.orderId.slice(-8)}
             </p>
-            <ReserveBadge reserveLabel={order.reserveLabel || reserve.label} />
+            <ReserveBadge reserveLabel={reserve?.label ?? 'Reserve'} maxLtvBps={reserve?.maxLtvBps} />
           </div>
           <div className="space-y-1 text-xs">
             <div className="flex justify-between">
               <span className="text-gray-400">Collateral:</span>
               <span className="text-gray-200 font-mono">{totalEth} ETH</span>
             </div>
-            {order.unlockedWei > 0n && (
+            {unlockedWei > 0n && (
               <div className="flex justify-between">
                 <span className="text-gray-400">Unlocked:</span>
                 <span className="text-cyan-400 font-mono">{unlockedEth} ETH</span>

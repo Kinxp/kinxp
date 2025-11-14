@@ -30,10 +30,25 @@ export interface OrderData {
     orderId: `0x${string}`;
     amountWei: bigint;
     status: OrderStatus;
+    reserveId?: `0x${string}`;
+    unlockedWei?: bigint;
     borrowedUsd?: bigint;
+    outstandingDebt?: bigint;
+    lastBorrowRateBps?: number;
+    createdAt?: number;
+    hederaReady?: boolean;
   }
 
-
+  export interface ReserveInfo {
+    reserveId: `0x${string}`;
+    label: string;
+    maxLtvBps: number;
+    liquidationThresholdBps: number;
+    baseRateBps: number;
+    originationFeeBps: number;
+    controller: `0x${string}`;
+    active: boolean;
+  }
 
   export enum AppState {
     IDLE, ORDER_CREATING, ORDER_CREATED, FUNDING_IN_PROGRESS, CROSSING_TO_HEDERA,
