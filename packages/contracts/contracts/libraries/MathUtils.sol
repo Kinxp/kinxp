@@ -47,6 +47,17 @@ library MathUtils {
         return amountRay / 10 ** (27 - decimals);
     }
 
+    /// @notice Converts a RAY value back into token units with `decimals`, rounding up.
+    function fromRayCeil(uint256 amountRay, uint8 decimals) internal pure returns (uint256) {
+        if (decimals > 27) revert("DECIMALS_TOO_HIGH");
+        uint256 divisor = 10 ** (27 - decimals);
+        if (amountRay % divisor == 0) {
+            return amountRay / divisor;
+        } else {
+            return (amountRay / divisor) + 1;
+        }
+    }
+
     /// @notice Converts a per-year rate expressed in basis points into a RAY rate.
     function bpsToRay(uint256 bps) internal pure returns (uint256) {
         // bps => percentage => multiply by 1e23 to convert to RAY (1e27 / 1e4).

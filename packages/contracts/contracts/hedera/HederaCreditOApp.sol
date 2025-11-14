@@ -80,7 +80,6 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     mapping(bytes32 => Position) public positions;
     mapping(bytes32 => ReserveState) public reserveStates;
     mapping(bytes32 => OracleState) public oracleStates;
-    bool public debugStopAfterMint = false;
 
     /// -----------------------------------------------------------------------
     ///                                 EVENTS
@@ -117,6 +116,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
     );
     event InterestAccrued(
         bytes32 indexed reserveId,
+        uint256 oldTotalDebtRay,
         uint256 newTotalDebtRay,
         uint256 protocolFeesRay,
         uint32 borrowRateBps
@@ -177,10 +177,6 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         pyth = IPyth(pythContract);
         defaultReserveId = defaultReserveId_;
         _transferOwnership(owner_);
-    }
-
-    function setDebugStopAfterMint(bool enabled) external onlyOwner {
-        debugStopAfterMint = enabled;
     }
 
     /// -----------------------------------------------------------------------
@@ -391,24 +387,13 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         //     }
         // }
 
-        if (debugStopAfterMint) {
-            emit BorrowDebug(
-                orderId,
-                "post_mint",
-                desiredTokens,
-                feeAmount,
-                msg.sender
-            );
-            return netAmount;
-        }
-
         // Update scaled debt
         uint256 amountRay = MathUtils.toRay(desiredTokens, decimals);
         uint256 scaledDelta = MathUtils.rayDiv(
             amountRay,
             uint256(state.variableBorrowIndex)
         );
-        if (scaledDelta > type(uint128).max) revert DebtOverflow();
+        if (uint256(pos.scaledDebtRay) + scaledDelta > type(uint128).max) revert DebtOverflow();
 
         pos.scaledDebtRay += uint128(scaledDelta);
         state.totalVariableDebtRay += amountRay;
@@ -454,46 +439,56 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
         uint8 decimals = cfg.metadata.debtTokenDecimals;
 
-        // Get current outstanding debt before repayment
-        uint256 totalDebtRay = _positionDebtRay(pos, reserveStates[pos.reserveId]);
-        if (totalDebtRay == 0) revert BadAmount();
-        
-        uint256 totalDebtTokens = MathUtils.fromRay(totalDebtRay, decimals);
-
-        // Clamp repayment to total debt
-        uint64 repayAmount = usdAmount;
-        if (repayAmount > totalDebtTokens) {
-            repayAmount = uint64(totalDebtTokens);
-        }
-
-        // CHANGE: Transfer tokens from borrower to controller treasury (no burning)
-        // User must approve controller first
-        ctrl.pullFrom(pos.borrower, repayAmount);
-
-        // Update debt tracking
-        uint256 repayRay = MathUtils.toRay(repayAmount, decimals);
-        ReserveState storage state = reserveStates[pos.reserveId];
-        
-        uint256 scaledRepayment = MathUtils.rayDiv(
-            repayRay,
-            uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
+        ReserveState storage state = _accrueReserve(
+            pos.reserveId,
+            cfg.risk,
+            cfg.interest
         );
 
-        if (scaledRepayment >= pos.scaledDebtRay) {
+        // Get current outstanding debt before repayment
+        uint256 totalDebtRay = _positionDebtRay(pos, state);
+        if (totalDebtRay == 0) revert BadAmount();
+        
+        // round up the debt to avoid remaining dust debt
+        uint256 totalDebtTokens = MathUtils.fromRayCeil(totalDebtRay, decimals);
+
+        // Clamp repayment to total debt
+        uint64 repayAmount;
+        if (usdAmount > totalDebtTokens) {
+            repayAmount = totalDebtTokens > type(uint64).max ? type(uint64).max : uint64(totalDebtTokens);
+        }
+
+        ctrl.pullFrom(pos.borrower, repayAmount);
+
+        uint256 repayRay;
+        if (repayAmount >= totalDebtTokens) {
             // Full repayment
-            scaledRepayment = pos.scaledDebtRay;
-            repayRay = MathUtils.rayMul(
-                uint256(pos.scaledDebtRay),
-                uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
-            );
+            repayRay = totalDebtRay;
             pos.scaledDebtRay = 0;
+            state.totalVariableDebtRay -= repayRay;
+            fullyRepaid = true;
         } else {
             // Partial repayment
-            pos.scaledDebtRay -= uint128(scaledRepayment);
+            repayRay = MathUtils.toRay(repayAmount, decimals);
+            
+            uint256 scaledRepayment = MathUtils.rayDiv(
+                repayRay,
+                uint256(state.variableBorrowIndex == 0 ? uint128(RAY) : state.variableBorrowIndex)
+            );
+
+            if (scaledRepayment >= pos.scaledDebtRay) {
+                // Full repayment (fallback)
+                scaledRepayment = pos.scaledDebtRay;
+                repayRay = totalDebtRay;
+                pos.scaledDebtRay = 0;
+            } else {
+                // Partial repayment
+                pos.scaledDebtRay -= uint128(scaledRepayment);
+            }
+            
+            state.totalVariableDebtRay -= repayRay;
+            fullyRepaid = (pos.scaledDebtRay == 0);
         }
-        
-        state.totalVariableDebtRay -= repayRay;
-        fullyRepaid = (pos.scaledDebtRay == 0);
 
         emit RepayApplied(
             orderId,
@@ -503,7 +498,6 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
             fullyRepaid
         );
 
-        // CHANGE: Notify Ethereum on any repayment if notifyEthereum is true (not just full repay)
         if (notifyEthereum && ethEid != 0) {
             // Calculate the percentage of debt repaid
             uint256 repaidPercentageBps = (repayRay * 10_000) / totalDebtRay;
@@ -996,6 +990,7 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
 
         emit InterestAccrued(
             reserveId,
+            principalRay,
             updatedDebtRay,
             state.accruedProtocolFeesRay,
             state.lastBorrowRateBps

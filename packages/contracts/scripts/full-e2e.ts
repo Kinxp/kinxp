@@ -163,7 +163,6 @@ async function main() {
     borrowerAccountAddress,
     depositWei
   );
-  await (await hederaCredit.setDebugStopAfterMint(false)).wait();
   console.log("  ✓ Order synced to Hedera");
 
   // ──────────────────────────────────────────────────────────────────────────────
@@ -248,7 +247,7 @@ async function main() {
   try {
     const associateTx = await (controller as any).associateToken();
     await associateTx.wait();
-    console.log("  ✓ Controller associated with token ", associateTx);
+    console.log("  ✓ Controller associated with token");
   } catch (err) {
     console.error("  ✗ Failed to associate:", formatRevertError(err));
     throw err;
@@ -387,7 +386,8 @@ async function main() {
     console.warn("  ⚠ Borrower balance is zero; skipping fee top-up and repayment for debug run.");
   }
 
-  const repayAmount = borrowAmount;
+  // Repay more than we borrowed to cover interest
+  const repayAmount = borrowAmount + (borrowAmount / 10n);
 
   banner("Checking balances AFTER borrow");
   await printBalances(
@@ -415,6 +415,7 @@ async function main() {
     borrowerAccountAddress,
     controllerAddr
   );
+  console.log("  Repay amount:", formatUnits(repayAmount, 6), "hUSD");
 
   const decimals = Number(await controller.usdDecimals());
   // const tokenIdForAllowance = TokenId.fromSolidityAddress(tokenAddress).toString();
