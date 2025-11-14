@@ -4,98 +4,353 @@ import { ethers } from 'ethers';
 import {
   ETH_COLLATERAL_OAPP_ADDR, ETH_COLLATERAL_ABI,
   HEDERA_CREDIT_OAPP_ADDR, HEDERA_CREDIT_ABI,
-  ETH_CHAIN_ID, HEDERA_CHAIN_ID, POLLING_INTERVAL
+  ETH_CHAIN_ID, HEDERA_CHAIN_ID, POLLING_INTERVAL,
+  HEDERA_BLOCKSCOUT_API_URL, SEPOLIA_BLOCKSCOUT_API_URL
 } from '../config';
 
-// Define a type for our providers and signers for clarity
-interface WalletConnections {
-  ethProvider: ethers.BrowserProvider;
-  ethSigner: ethers.Signer;
-  hederaProvider: ethers.JsonRpcProvider;
-  hederaSigner: ethers.Signer;
+// Network configuration
+const NETWORKS = {
+  ethereum: {
+    chainId: ETH_CHAIN_ID,
+    name: 'Ethereum',
+    rpcUrl: 'https://sepolia.infura.io/v3/YOUR-INFURA-KEY', // Replace with your Infura key
+    explorerUrl: 'https://sepolia.etherscan.io',
+    nativeCurrency: {
+      name: 'Ether',
+      symbol: 'ETH',
+      decimals: 18,
+    },
+    contracts: {
+      collateral: ETH_COLLATERAL_OAPP_ADDR,
+      abi: ETH_COLLATERAL_ABI
+    }
+  },
+  hedera: {
+    chainId: HEDERA_CHAIN_ID,
+    name: 'Hedera',
+    rpcUrl: 'https://testnet.hashio.io/api',
+    explorerUrl: 'https://hashscan.io/testnet',
+    nativeCurrency: {
+      name: 'HBAR',
+      symbol: 'HBAR',
+      decimals: 18,
+    },
+    contracts: {
+      credit: HEDERA_CREDIT_OAPP_ADDR,
+      abi: HEDERA_CREDIT_ABI
+    }
+  }
+} as const;
+
+type NetworkName = keyof typeof NETWORKS;
+
+interface NetworkConnections {
+  provider: ethers.BrowserProvider | ethers.JsonRpcProvider;
+  signer: ethers.Signer;
+  contract?: ethers.Contract;
+  isConnected: boolean;
+  chainId: string;
 }
 
-let connections: WalletConnections | null = null;
-let ethContract: ethers.Contract;
-let hederaContract: ethers.Contract;
+// Store connections for each network
+const connections: Record<NetworkName, NetworkConnections> = {
+  ethereum: {
+    provider: null as any,
+    signer: null as any,
+    contract: null as any,
+    isConnected: false,
+    chainId: `0x${ETH_CHAIN_ID.toString(16)}`
+  },
+  hedera: {
+    provider: null as any,
+    signer: null as any,
+    contract: null as any,
+    isConnected: false,
+    chainId: `0x${HEDERA_CHAIN_ID.toString(16)}`
+  }
+};
 
-// Function to connect to user's wallet (e.g., MetaMask)
-export async function connectWallet(): Promise<string> {
-    // 1. Check if window.ethereum exists immediately
-    if (typeof window.ethereum === 'undefined') {
-      // This is a critical error. The user likely doesn't have a wallet installed.
-      console.error("Wallet provider (window.ethereum) not found.");
-      throw new Error("Wallet not found. Please install a web3 wallet like MetaMask.");
-    }
+// Contract instances
+let ethCollateralContract: ethers.Contract | null = null;
+let hederaCreditContract: ethers.Contract | null = null;
+
+// Active network state
+let activeNetwork: NetworkName | null = null;
+
+/**
+ * Error class for network-related errors
+ */
+class NetworkError extends Error {
+  constructor(message: string, public code?: string) {
+    super(message);
+    this.name = 'NetworkError';
+  }
+}
+
+/**
+ * Helper to check if a network is supported
+ */
+function isNetworkSupported(chainId: string): NetworkName | null {
+  const chainIdNum = parseInt(chainId, 16);
+  return chainIdNum === ETH_CHAIN_ID ? 'ethereum' :
+         chainIdNum === HEDERA_CHAIN_ID ? 'hedera' : null;
+}
+
+/**
+ * Helper to get the network name from chainId
+ */
+function getNetworkName(chainId: string | number): NetworkName {
+  const networkName = Object.entries(NETWORKS).find(
+    ([_, network]) => network.chainId === (typeof chainId === 'string' ? parseInt(chainId, 16) : chainId)
+  )?.[0] as NetworkName | undefined;
   
-    try {
-      // 2. Use the provider to request the connection. This is what triggers the MetaMask popup.
-      const ethProvider = new ethers.BrowserProvider(window.ethereum, 'any');
-      await ethProvider.send("eth_requestAccounts", []);
-      
-      // 3. If the above line succeeds, the wallet is connected. Now we get the signer.
-      const ethSigner = await ethProvider.getSigner();
-      const address = await ethSigner.getAddress();
-      
-      // 4. Set up Hedera provider with the now-connected signer's address
-      const hederaProvider = new ethers.JsonRpcProvider('https://testnet.hashio.io/api');
-      
-      // IMPORTANT: For Hedera JSON-RPC, you often need to create a new Wallet instance
-      // with the private key to sign transactions, as `getSigner` might not work directly
-      // for a different network. In a real app with MetaMask, you would request the user
-      // to switch networks. For this script-like flow, we'll assume the same private key
-      // can be used, which is NOT a real-world production pattern.
-      // For now, we will connect the contract with the hederaProvider directly and let MetaMask
-      // handle signing when the network is switched.
-      const hederaSigner = ethSigner; // Simplification for now
-  
-      connections = { ethProvider, ethSigner, hederaProvider, hederaSigner };
-  
-      // Instantiate contracts
-      ethContract = new ethers.Contract(ETH_COLLATERAL_OAPP_ADDR, ETH_COLLATERAL_ABI, ethSigner);
-      hederaContract = new ethers.Contract(HEDERA_CREDIT_OAPP_ADDR, HEDERA_CREDIT_ABI, hederaSigner);
-  
-      console.log("Wallet connected successfully:", address);
-      return address;
-  
-    } catch (error: any) {
-      // 5. Catch any errors during the process
-      console.error("Error connecting wallet:", error);
-      if (error.code === 4001) {
-        // EIP-1193 userRejectedRequest error
-        throw new Error("Connection request rejected by user.");
-      }
-      // Re-throw a more generic error for other issues
-      throw new Error(`Failed to connect wallet: ${error.message || 'An unknown error occurred.'}`);
-    }
+  if (!networkName) {
+    throw new NetworkError(`Unsupported chainId: ${chainId}`);
+  }
+  return networkName;
+}
+
+/**
+ * Connect to a specific network
+ */
+export async function connectNetwork(networkName: NetworkName): Promise<{
+  address: string;
+  network: NetworkName;
+  chainId: string;
+}> {
+  if (typeof window.ethereum === 'undefined') {
+    throw new NetworkError('Web3 wallet not found. Please install MetaMask or another Web3 wallet.');
   }
 
-// Helper to ensure the user is on the correct network
-async function ensureNetwork(chainId: number) {
-    // Use window.ethereum directly for robust network switching
-    if (!window.ethereum) throw new Error("Wallet not found.");
+  const network = NETWORKS[networkName];
+  const connection = connections[networkName];
+
+  try {
+    // Request account access if needed
+    await window.ethereum.request({ method: 'eth_requestAccounts' });
     
+    // Check if the correct network is already connected
     const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
-    const targetChainId = ethers.hexlify(chainId);
-  
-    if (currentChainId !== targetChainId) {
+    
+    if (currentChainId !== network.chainId) {
       try {
-        // This is the standard EIP-3326 method to switch chains
+        // Try to switch to the correct network
         await window.ethereum.request({
           method: 'wallet_switchEthereumChain',
-          params: [{ chainId: targetChainId }],
+          params: [{ chainId: `0x${network.chainId.toString(16)}` }],
         });
       } catch (switchError: any) {
-        // This error code indicates that the chain has not been added to MetaMask.
+        // This error code indicates that the chain has not been added to MetaMask
         if (switchError.code === 4902) {
-          // In a production app, you would add logic here to add the chain details.
-          // For now, we'll just throw an informative error.
-          throw new Error(`Network not found. Please add Chain ID ${chainId} (${targetChainId}) to your wallet.`);
+          try {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: `0x${network.chainId.toString(16)}`,
+                chainName: network.name,
+                nativeCurrency: network.nativeCurrency,
+                rpcUrls: [network.rpcUrl],
+                blockExplorerUrls: [network.explorerUrl],
+              }],
+            });
+          } catch (addError) {
+            throw new NetworkError(
+              `Failed to add ${network.name} network to your wallet. ` +
+              'Please add it manually in your wallet settings.',
+              'NETWORK_ADD_FAILED'
+            );
+          }
+        } else {
+          throw new NetworkError(
+            `Failed to switch to ${network.name} network. ` +
+            'Please switch manually in your wallet.',
+            'NETWORK_SWITCH_FAILED'
+          );
         }
-        throw switchError; // Re-throw other errors (e.g., user rejected the switch)
       }
     }
+
+    // Set up the provider and signer
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    const address = await signer.getAddress();
+    const chainId = await signer.getChainId();
+
+    // Update connection state
+    connection.provider = provider;
+    connection.signer = signer;
+    connection.isConnected = true;
+    connection.chainId = `0x${chainId.toString(16)}`;
+
+    // Initialize contract if not already done
+    if (networkName === 'ethereum' && !ethCollateralContract) {
+      ethCollateralContract = new ethers.Contract(
+        network.contracts.collateral,
+        network.contracts.abi,
+        signer
+      ) as ethers.Contract;
+      connection.contract = ethCollateralContract;
+    } else if (networkName === 'hedera' && !hederaCreditContract) {
+      // For Hedera, we might need to use a different approach since it's not natively supported by MetaMask
+      const hederaProvider = new ethers.JsonRpcProvider(network.rpcUrl);
+      // In a real app, you would need to handle Hedera key management properly
+      const hederaSigner = signer;
+      
+      hederaCreditContract = new ethers.Contract(
+        network.contracts.credit,
+        network.contracts.abi,
+        hederaSigner
+      ) as ethers.Contract;
+      
+      connection.contract = hederaCreditContract;
+      connection.provider = hederaProvider;
+      connection.signer = hederaSigner;
+    }
+
+    activeNetwork = networkName;
+    console.log(`Connected to ${network.name} at address:`, address);
+
+    return {
+      address,
+      network: networkName,
+      chainId: connection.chainId
+    };
+  } catch (error: any) {
+    console.error(`Error connecting to ${networkName}:`, error);
+    
+    if (error.code === 4001) {
+      throw new NetworkError('Connection request was rejected by user.', 'USER_REJECTED');
+    }
+    
+    throw new NetworkError(
+      error.message || `Failed to connect to ${networkName}`,
+      error.code || 'CONNECTION_ERROR'
+    );
   }
+}
+
+/**
+ * Disconnect from the current network
+ */
+export async function disconnectNetwork(networkName: NetworkName): Promise<void> {
+  const connection = connections[networkName];
+  
+  if (connection) {
+    // Reset connection state
+    connection.isConnected = false;
+    // Don't clear provider/signer as they might be needed for reconnection
+    
+    if (networkName === activeNetwork) {
+      activeNetwork = null;
+    }
+    
+    console.log(`Disconnected from ${networkName}`);
+  }
+}
+
+/**
+ * Get the current connection status for a network
+ */
+export function getConnectionStatus(networkName: NetworkName) {
+  return {
+    isConnected: connections[networkName]?.isConnected || false,
+    address: connections[networkName]?.signer?.address,
+    chainId: connections[networkName]?.chainId,
+    network: NETWORKS[networkName].name
+  };
+}
+
+/**
+ * Get the active network
+ */
+export function getActiveNetwork(): NetworkName | null {
+  return activeNetwork;
+}
+
+/**
+ * Get the contract instance for a network
+ */
+export function getContract(networkName: NetworkName): ethers.Contract | null {
+  if (networkName === 'ethereum') {
+    return ethCollateralContract;
+  } else if (networkName === 'hedera') {
+    return hederaCreditContract;
+  }
+  return null;
+}
+
+// Set up event listeners for network changes
+if (typeof window !== 'undefined' && window.ethereum) {
+  window.ethereum.on('chainChanged', (chainId: string) => {
+    const networkName = isNetworkSupported(chainId);
+    if (networkName) {
+      console.log(`Switched to ${networkName} network`);
+      // Update active network
+      activeNetwork = networkName;
+      // Update connection state
+      connections[networkName].chainId = chainId;
+      // Emit an event or update your app's state here
+      window.dispatchEvent(new Event('networkChanged'));
+    } else {
+      console.warn('Unsupported network detected:', chainId);
+      activeNetwork = null;
+    }
+  });
+
+  window.ethereum.on('accountsChanged', (accounts: string[]) => {
+    console.log('Accounts changed:', accounts);
+    // Update the signer in all connections
+    Object.entries(connections).forEach(async ([networkName, connection]) => {
+      if (connection.provider && 'getSigner' in connection.provider) {
+        try {
+          const signer = await connection.provider.getSigner();
+          connection.signer = signer;
+          
+          // Update contract instances with new signer
+          if (networkName === 'ethereum' && ethCollateralContract) {
+            ethCollateralContract = ethCollateralContract.connect(signer) as ethers.Contract;
+          } else if (networkName === 'hedera' && hederaCreditContract) {
+            hederaCreditContract = hederaCreditContract.connect(signer) as ethers.Contract;
+          }
+          
+          console.log(`Updated signer for ${networkName}:`, await signer.getAddress());
+        } catch (error) {
+          console.error(`Failed to update signer for ${networkName}:`, error);
+          connection.isConnected = false;
+        }
+      }
+    });
+    
+    // Emit an event or update your app's state here
+    window.dispatchEvent(new Event('accountsChanged'));
+  });
+}
+
+/**
+ * Ensure the user is connected to the specified network
+ * @param networkName The target network name ('ethereum' or 'hedera')
+ * @returns The connected account address
+ */
+async function ensureNetwork(networkName: NetworkName): Promise<string> {
+  if (!connections[networkName]?.isConnected) {
+    const result = await connectNetwork(networkName);
+    return result.address;
+  }
+  
+  // Verify the network is still correct
+  const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+  const targetChainId = `0x${NETWORKS[networkName].chainId.toString(16)}`;
+  
+  if (currentChainId !== targetChainId) {
+    // If not on the correct network, reconnect
+    const result = await connectNetwork(networkName);
+    return result.address;
+  }
+  
+  // Return the connected address
+  const signer = connections[networkName].signer;
+  return signer?.getAddress() || '';
+}
 
 // --- Ethereum Actions ---
 
