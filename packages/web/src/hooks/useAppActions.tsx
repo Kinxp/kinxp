@@ -24,24 +24,47 @@ export function useAppActions(onActionSuccess?: (receipt: any) => void) {
   const { switchChain } = useSwitchChain();
 
   // Wagmi hooks for writing contracts and waiting for receipts
-  const { data: hash, writeContract, isPending: isWritePending, reset: resetWriteContract } = useWriteContract();
+  const { 
+    data: hash, 
+    writeContract, 
+    isPending: isWritePending, 
+    reset: resetWriteContract,
+    error: writeError 
+  } = useWriteContract();
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash });
 
   // Generic function to send a transaction, handling network switching
-  const sendTxOnChain = useCallback((chainIdToSwitch: number, config: any) => {
+  const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
     setActionError(null);
-    const send = () => writeContract(config);
+    const send = async () => {
+      try {
+        return await writeContract(config);
+      } catch (error) {
+        console.error('Transaction error:', error);
+        throw error;
+      }
+    };
+    
     if (chainId !== chainIdToSwitch) {
       toast('Please switch networks in your wallet.');
-      switchChain({ chainId: chainIdToSwitch }, { onSuccess: send, onError: (err) => setActionError(err.message) });
-    } else { send(); }
+      return new Promise((resolve, reject) => {
+        switchChain({ chainId: chainIdToSwitch }, { 
+          onSuccess: () => send().then(resolve).catch(reject), 
+          onError: (err) => {
+            setActionError(err.message);
+            reject(err);
+          } 
+        });
+      });
+    } 
+    return send();
   }, [chainId, writeContract, switchChain]);
 
   // This central useEffect handles all feedback for the transaction lifecycle
   useEffect(() => {
     let toastId: string | undefined;
-    if (isConfirming) {
-      toastId = toast.loading('Confirming transaction...');
+    if (isWritePending || isConfirming) {
+      toastId = toast.loading('Processing transaction...');
     }
     if (receipt) {
       toast.dismiss(toastId);
@@ -51,13 +74,18 @@ export function useAppActions(onActionSuccess?: (receipt: any) => void) {
     }
     if (writeError) {
       toast.dismiss(toastId);
-      const message = writeError.shortMessage || 'Transaction failed.';
-      toast.error(message);
-      setActionError(message);
+      const errorMessage = writeError instanceof Error 
+        ? writeError.message 
+        : typeof writeError === 'object' && writeError !== null && 'message' in writeError 
+          ? String(writeError.message)
+          : 'Transaction failed';
+      
+      toast.error(errorMessage);
+      setActionError(errorMessage);
       resetWriteContract();
     }
     return () => { if (toastId) toast.dismiss(toastId) };
-  }, [isConfirming, receipt, writeError, onActionSuccess, resetWriteContract]);
+  }, [isWritePending, isConfirming, receipt, writeError, onActionSuccess, resetWriteContract]);
 
 
   // --- WRAPPED ACTION HANDLERS ---
@@ -81,27 +109,116 @@ export function useAppActions(onActionSuccess?: (receipt: any) => void) {
       const { priceUpdateData } = await fetchPythUpdateData();
       const requiredFeeInTinybars = await readContract(wagmiConfig, { address: PYTH_CONTRACT_ADDR, abi: PYTH_ABI, functionName: 'getUpdateFee', args: [priceUpdateData], chainId: HEDERA_CHAIN_ID }) as bigint;
       const valueInWei = requiredFeeInTinybars * WEI_PER_TINYBAR;
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [orderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
-    } catch (e: any) { setActionError(e.shortMessage || e.message); }
+      await sendTxOnChain(HEDERA_CHAIN_ID, { 
+        address: HEDERA_CREDIT_OAPP_ADDR, 
+        abi: HEDERA_CREDIT_ABI, 
+        functionName: 'borrow', 
+        args: [orderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], 
+        value: valueInWei, 
+        gas: 1_500_000n 
+      });
+    } catch (e) { 
+      const error = e as Error;
+      setActionError(error.message); 
+      throw error;
+    }
   }, [sendTxOnChain]);
 
   const handleRepay = useCallback(async (orderId: `0x${string}`, repayAmount: string, treasuryAddress: `0x${string}`) => {
     toast('Returning funds to treasury...');
-    sendTxOnChain(HEDERA_CHAIN_ID, { address: HUSD_TOKEN_ADDR, abi: ERC20_ABI, functionName: 'transfer', args: [treasuryAddress, parseUnits(repayAmount, 6)] });
-  }, [sendTxOnChain]);
-
-  const handleRepayAndCross = useCallback(async (orderId: `0x${string}`, repayAmount: string) => {
-    toast('Notifying Ethereum of repayment...');
     try {
-      const feeInTinybars = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'quoteRepayFee', args: [orderId], chainId: HEDERA_CHAIN_ID }) as bigint;
-      const valueInWei = feeInTinybars * WEI_PER_TINYBAR;
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'repay', args: [orderId, parseUnits(repayAmount, 6), true], value: valueInWei, gas: 1_500_000n });
-    } catch (e: any) { setActionError(e.shortMessage || e.message); }
+      await sendTxOnChain(HEDERA_CHAIN_ID, { 
+        address: HUSD_TOKEN_ADDR, 
+        abi: ERC20_ABI, 
+        functionName: 'transfer', 
+        args: [treasuryAddress, parseUnits(repayAmount, 6)] 
+      });
+    } catch (e) {
+      const error = e as Error;
+      setActionError(error.message);
+      throw error;
+    }
   }, [sendTxOnChain]);
 
-  const handleWithdraw = useCallback((orderId: `0x${string}`) => {
+  const handleRepayAndCross = useCallback(async (orderId: `0x${string}`, repayAmount: string, txHash?: string, reserveId?: string, borrower?: string) => {
+    const useRelay = process.env.NEXT_PUBLIC_USE_MIRROR_RELAY === 'true';
+    
+    if (useRelay) {
+      toast('Using mirror relay to process repayment...');
+      try {
+        if (!txHash || !reserveId || !borrower) {
+          throw new Error('Missing required parameters for relay');
+        }
+        
+        const result = await fetch('/api/mirror/relay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId,
+            txHash,
+            collateralToUnlock: '0', // Set appropriate value or get from UI
+            fullyRepaid: true,
+            reserveId,
+            borrower
+          })
+        });
+        
+        const data = await result.json();
+        if (!result.ok) {
+          throw new Error(data.error || 'Failed to process repayment through relay');
+        }
+        
+        toast.success('Repayment processed successfully through relay');
+        return data.txHash;
+      } catch (e: any) {
+        console.error('Relay error:', e);
+        setActionError(e.shortMessage || e.message || 'Failed to process repayment through relay');
+        throw e; // Re-throw to allow UI to handle the error
+      }
+    } else {
+      // Original direct contract call
+      toast('Notifying Ethereum of repayment...');
+      try {
+        const feeInTinybars = await readContract(wagmiConfig, { 
+          address: HEDERA_CREDIT_OAPP_ADDR, 
+          abi: HEDERA_CREDIT_ABI, 
+          functionName: 'quoteRepayFee', 
+          args: [orderId], 
+          chainId: HEDERA_CHAIN_ID 
+        }) as bigint;
+        
+        const valueInWei = feeInTinybars * WEI_PER_TINYBAR;
+        const txHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
+          address: HEDERA_CREDIT_OAPP_ADDR, 
+          abi: HEDERA_CREDIT_ABI, 
+          functionName: 'repay', 
+          args: [orderId, parseUnits(repayAmount, 6), true], 
+          value: valueInWei, 
+          gas: 1_500_000n 
+        });
+        
+        return txHash;
+      } catch (e: any) { 
+        setActionError(e.shortMessage || e.message);
+        throw e; // Re-throw to allow UI to handle the error
+      }
+    }
+  }, [sendTxOnChain]);
+
+  const handleWithdraw = useCallback(async (orderId: `0x${string}`) => {
     toast('Withdrawing collateral...');
-    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [orderId] });
+    try {
+      await sendTxOnChain(ETH_CHAIN_ID, { 
+        address: ETH_COLLATERAL_OAPP_ADDR, 
+        abi: ETH_COLLATERAL_ABI, 
+        functionName: 'withdraw', 
+        args: [orderId] 
+      });
+    } catch (e) {
+      const error = e as Error;
+      setActionError(error.message);
+      throw error;
+    }
   }, [sendTxOnChain]);
 
 

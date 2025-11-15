@@ -16,7 +16,7 @@ const LiquidityPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [poolInfo, setPoolInfo] = useState<any>(null);
   const [userPosition, setUserPosition] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState('deposit');
+  const [activeTab, setActiveTab] = useState<'deposit' | 'withdraw'>('deposit');
   const [amount, setAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const navigate = useNavigate();

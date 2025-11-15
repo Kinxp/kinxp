@@ -11,6 +11,7 @@ interface ManageOrderViewProps {
   selectedOrder: UserOrderSummary;
   isCheckingHedera: boolean;
   isHederaConfirmed: boolean;
+  isRelaying: boolean;
   ethAmount: string;
   borrowAmountForRepay: string | null;
   collateralEth: string | null;
@@ -21,6 +22,7 @@ interface ManageOrderViewProps {
   onRepay: () => void;
   onWithdraw: () => void;
   handleTrackConfirmation: () => void;
+  handleRelayConfirmation: () => Promise<void>;
 }
 
 export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
@@ -47,12 +49,77 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
         );
       }
       return (
-        <div className="text-center space-y-4 p-4">
-          <h3 className="font-semibold text-lg">Waiting for Cross-Chain Confirmation</h3>
-          <p className="text-sm text-gray-400">Your funds are on Sepolia, but the message has not yet arrived on Hedera.</p>
-          <button onClick={props.handleTrackConfirmation} className="w-full bg-cyan-600 hover:bg-cyan-700 font-bold py-3 px-4 rounded-lg">
-            Track Confirmation
-          </button>
+        <div className="space-y-4 p-4">
+          <div className="text-center space-y-2 mb-4">
+            <h3 className="font-semibold text-lg">Waiting for Cross-Chain Confirmation</h3>
+            <p className="text-sm text-gray-400">Your funds are on Sepolia, but the message has not yet arrived on Hedera.</p>
+          </div>
+          
+          <div className="space-y-3">
+            <button 
+              onClick={props.handleTrackConfirmation} 
+              className="w-full bg-cyan-600 hover:bg-cyan-700 font-bold py-3 px-4 rounded-lg transition-colors"
+              disabled={props.isCheckingHedera}
+            >
+              {props.isCheckingHedera ? 'Checking...' : 'Track Confirmation'}
+            </button>
+            
+            <div className="relative flex items-center my-4">
+              <div className="flex-grow border-t border-gray-700"></div>
+              <span className="flex-shrink mx-4 text-sm text-gray-500">OR</span>
+              <div className="flex-grow border-t border-gray-700"></div>
+            </div>
+            
+            <button 
+              onClick={props.handleRelayConfirmation}
+              disabled={props.isRelaying}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {props.isRelaying ? 'Processing...' : 'Use Relay to Speed Up'}
+            </button>
+            
+            <p className="text-xs text-gray-500 text-center mt-2">
+              The relay will help deliver your cross-chain message faster.
+            </p>
+          </div>
+        </div>
+      );
+
+    case 'Funded':
+      return (
+        <div className="space-y-4 p-4">
+          <div className="text-center space-y-2 mb-4">
+            <h3 className="font-semibold text-lg">Waiting for Cross-Chain Confirmation</h3>
+            <p className="text-sm text-gray-400">Your funds are on Sepolia, but the message has not yet arrived on Hedera.</p>
+          </div>
+          
+          <div className="space-y-3">
+            <button 
+              onClick={props.handleTrackConfirmation} 
+              className="w-full bg-cyan-600 hover:bg-cyan-700 font-bold py-3 px-4 rounded-lg transition-colors"
+              disabled={props.isCheckingHedera}
+            >
+              {props.isCheckingHedera ? 'Checking...' : 'Track Confirmation'}
+            </button>
+            
+            <div className="relative flex items-center my-4">
+              <div className="flex-grow border-t border-gray-700"></div>
+              <span className="flex-shrink mx-4 text-sm text-gray-500">OR</span>
+              <div className="flex-grow border-t border-gray-700"></div>
+            </div>
+            
+            <button 
+              onClick={props.handleRelayConfirmation}
+              disabled={props.isRelaying}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {props.isRelaying ? 'Processing...' : 'Use Relay to Speed Up'}
+            </button>
+            
+            <p className="text-xs text-gray-500 text-center mt-2">
+              The relay will help deliver your cross-chain message faster.
+            </p>
+          </div>
         </div>
       );
 

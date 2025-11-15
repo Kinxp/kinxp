@@ -156,21 +156,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, [persistBorrowedOrders]);
 
-  const sendTxOnChain = useCallback((chainIdToSwitch: number, config: any) => {
-    const send = () => writeContract(config);
+  const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
+    const send = async () => {
+      const result = await writeContract(config);
+      
+      // Store the transaction hash for funded orders
+      if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
+        const txHashKey = `fundTxHash_${activeOrderId}`;
+        localStorage.setItem(txHashKey, result);
+      }
+      
+      return result;
+    };
+    
     if (chainId !== chainIdToSwitch) {
       addLog(`Switching network to Chain ID ${chainIdToSwitch}...`);
-      switchChain({ chainId: chainIdToSwitch }, { 
-        onSuccess: send, 
-        onError: (err) => { 
-          addLog(`❌ Network switch failed: ${err.message}`); 
-          setAppState(AppState.IDLE); 
-        } 
-      });
-    } else { 
-      send(); 
+      await switchChain({ chainId: chainIdToSwitch });
     }
-  }, [chainId, writeContract, addLog, switchChain]);
+    
+    return send();
+  }, [chainId, writeContract, addLog, switchChain, activeOrderId]);
 
   const handleCreateOrder = useCallback((amount: string) => {
     setLogs(['▶ Creating order on Ethereum...']);

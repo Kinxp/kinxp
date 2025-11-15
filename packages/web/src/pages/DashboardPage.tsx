@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAccount } from 'wagmi';
 import { parseUnits } from 'viem';
 import { fetchAllUserOrders } from '../services/blockscoutService';
@@ -74,7 +74,7 @@ const DashboardPage = () => {
   }, [decoratedOrders]);
 
   const handleSelectOrder = (orderId: `0x${string}`) => {
-    setSelectedOrderId(prev => (prev === orderId ? null : orderId));
+    setSelectedOrderId(selectedOrderId === orderId ? null : orderId);
   };
   
   return (

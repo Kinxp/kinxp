@@ -30,3 +30,4 @@ typechain-types
 #Env
 .env
 .vercel
+packages/web/.env

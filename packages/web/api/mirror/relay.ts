@@ -211,12 +211,21 @@ collateralToUnlock,
       wallet
     );
 
-    // 5. Call adminMirrorOrder on HederaCreditOApp to mirror the order
+    // Get the collateral amount from the order
+    // The order.amountWei field contains the total collateral in wei
+    const collateralAmount = order.amountWei || order.amountWei === 0 ? 
+      order.amountWei.toString() : 
+      (order as any).collateralWei?.toString() || '0';
+
+    if (collateralAmount === '0') {
+      throw new Error('Order has no collateral amount');
+    }
+
     console.log('Calling adminMirrorOrder with:', {
       orderId,
       reserveId,
       borrower,
-      collateralToUnlock: BigInt(collateralToUnlock).toString()
+      collateralAmount
     });
     
     const mirrorTx = await hederaCredit.adminMirrorOrder(
@@ -224,7 +233,7 @@ collateralToUnlock,
       reserveId,
       borrower,
       borrower, // Using same as canonical address
-      BigInt(collateralToUnlock)
+      BigInt(collateralAmount)
     );
 
     console.log('Transaction submitted, waiting for confirmation...');

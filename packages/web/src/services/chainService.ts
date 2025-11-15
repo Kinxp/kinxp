@@ -377,7 +377,7 @@ async function ensureNetwork(networkName: NetworkName): Promise<string> {
 
 export async function createOrderIdOnEthereum(): Promise<string> {
   if (!connections || !ethContract) throw new Error("Wallet not connected.");
-  await ensureNetwork(ETH_CHAIN_ID);
+  await ensureNetwork('ethereum');
   
   const tx = await ethContract.createOrderId();
   const receipt = await tx.wait();
@@ -392,7 +392,7 @@ export async function createOrderIdOnEthereum(): Promise<string> {
 
 export async function fundOrderOnEthereum(orderId: string, amountEth: string): Promise<string> {
     if (!connections || !ethContract) throw new Error("Wallet not connected.");
-    await ensureNetwork(ETH_CHAIN_ID);
+    await ensureNetwork('ethereum');
 
     const amountWei = ethers.parseEther(amountEth);
     const userAddress = await connections.ethSigner.getAddress();
@@ -410,7 +410,7 @@ export async function fundOrderOnEthereum(orderId: string, amountEth: string): P
 
 export async function withdrawEth(orderId: string): Promise<string> {
     if (!connections || !ethContract) throw new Error("Wallet not connected.");
-    await ensureNetwork(ETH_CHAIN_ID);
+    await ensureNetwork('ethereum');
     const tx = await ethContract.withdraw(orderId);
     await tx.wait();
     return tx.hash;
@@ -419,7 +419,7 @@ export async function withdrawEth(orderId: string): Promise<string> {
 // --- Hedera Actions ---
 export async function borrowFromHedera(orderId: string, borrowAmount: string): Promise<string> {
     if (!connections || !hederaContract) throw new Error("Wallet not connected.");
-    await ensureNetwork(HEDERA_CHAIN_ID);
+    await ensureNetwork('hedera');
     
     // In a real app, you would fetch the Pyth data and calculate the borrow amount
     // For now, we'll use a placeholder amount and empty price data.
@@ -437,7 +437,7 @@ export async function borrowFromHedera(orderId: string, borrowAmount: string): P
 
 export async function repayOnHedera(orderId: string, repayAmount: string): Promise<string> {
     if (!connections || !hederaContract) throw new Error("Wallet not connected.");
-    await ensureNetwork(HEDERA_CHAIN_ID);
+    await ensureNetwork('hedera');
 
     const amountInSmallestUnit = ethers.parseUnits(repayAmount, 6); // 6 decimals
     const nativeFee = await hederaContract.quoteRepayFee(orderId);
