@@ -156,26 +156,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, [persistBorrowedOrders]);
 
-  const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
-    const send = async () => {
-      const result = await writeContract(config);
-      
-      // Store the transaction hash for funded orders
-      if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
-        const txHashKey = `fundTxHash_${activeOrderId}`;
-        localStorage.setItem(txHashKey, result);
-      }
-      
-      return result;
+const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
+  const send = async () => {
+    const gasLimits: Record<string, bigint> = {
+      'approve': 1_000_000n,
+      'repay': 2_000_000n,
+      'borrow': 1_500_000n,
+      'fundOrderWithNotify': 1_500_000n,
+      'addCollateralWithNotify': 1_500_000n,
+      'withdraw': 1_000_000n,
+      'createOrderId': 1_000_000n
     };
-    
-    if (chainId !== chainIdToSwitch) {
-      addLog(`Switching network to Chain ID ${chainIdToSwitch}...`);
-      await switchChain({ chainId: chainIdToSwitch });
+    // For token approvals, increase gas limit
+    if (!config.gas) {
+      config.gas = gasLimits[config.functionName] || 2_000_000n;
     }
     
-    return send();
-  }, [chainId, writeContract, addLog, switchChain, activeOrderId]);
+    const result = await writeContract(config);
+    
+    // Store the transaction hash for funded orders
+    if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
+      const txHashKey = `fundTxHash_${activeOrderId}`;
+      localStorage.setItem(txHashKey, result);
+    }
+    
+    return result;
+  };
+  
+  if (chainId !== chainIdToSwitch) {
+    addLog(`Switching network to Chain ID ${chainIdToSwitch}...`);
+    await switchChain({ chainId: chainIdToSwitch });
+  }
+  
+  return send();
+}, [chainId, writeContract, addLog, switchChain, activeOrderId]);
 
   const handleCreateOrder = useCallback((amount: string) => {
     setLogs(['▶ Creating order on Ethereum...']);
@@ -276,38 +290,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeOrderId, borrowAmount, sendTxOnChain, addLog]);
 
-  const handleRepay = useCallback(async (repayAmount: string) => {
-    if (!activeOrderId || !address) {
-      throw new Error('No active order or wallet connected');
+  // Get the public client for the Hedera network
+  const publicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
+  
+  // State for transaction hashes
+  const [approveTxHash, setApproveTxHash] = useState<`0x${string}` | null>(null);
+  const [repayTxHash, setRepayTxHash] = useState<`0x${string}` | null>(null);
+  const [currentToast, setCurrentToast] = useState<string>('');
+  
+  // Handle approval transaction
+  const { data: approveReceipt, isError: isApproveError } = useWaitForTransactionReceipt({
+    hash: approveTxHash || undefined,
+    confirmations: 1,
+    chainId: HEDERA_CHAIN_ID
+  });
+  
+  // Handle repay transaction
+  const { data: repayReceipt, isError: isRepayError } = useWaitForTransactionReceipt({
+    hash: repayTxHash || undefined,
+    confirmations: 1,
+    chainId: HEDERA_CHAIN_ID
+  });
+  
+  // Effect for handling approval confirmation
+  useEffect(() => {
+    if (approveReceipt && approveReceipt.status === 'success') {
+      toast.dismiss(currentToast);
+      setCurrentToast(String(toast.success('Token transfer approved!')));
+    } else if (isApproveError) {
+      toast.dismiss(currentToast);
+      setCurrentToast(String(toast.error('Token approval transaction failed')));
     }
+  }, [approveReceipt, isApproveError]);
+  
+  // Effect for handling repay confirmation
+  useEffect(() => {
+    if (repayReceipt && repayReceipt.status === 'success') {
+      toast.dismiss(currentToast);
+      setCurrentToast(String(toast.success('Repayment completed successfully!')));
+      setLzTxHash(repayReceipt.transactionHash);
+      setAppState(AppState.REPAYING_IN_PROGRESS);
+    } else if (isRepayError) {
+      toast.dismiss(currentToast);
+      setCurrentToast(String(toast.error('Repayment transaction failed')));
+    }
+  }, [repayReceipt, isRepayError]);
+
+  const handleRepay = useCallback(async (repayAmount: string) => {
+    if (!activeOrderId || !address) return false;
     
-    let currentToast: string | undefined;
     try {
-      // For Hedera tokens, we know the decimals from config
-      const tokenDecimals = 6; // hUSD has 6 decimals
-      
+      // Validate repayAmount
+      if (!repayAmount || isNaN(Number(repayAmount)) || Number(repayAmount) <= 0) {
+        throw new Error('Please enter a valid positive amount to repay');
+      }
+
       // Convert human-readable amount to smallest unit (1 HUSD = 1,000,000 units)
-      const amountToRepay = parseUnits(repayAmount, tokenDecimals);
-      console.log(repayAmount,amountToRepay)
+      const amountToRepay = parseUnits(repayAmount, 6);
+      console.log('Repaying amount:', repayAmount, '->', amountToRepay.toString());
 
       if (amountToRepay <= 0n) {
         throw new Error('Repayment amount must be greater than zero');
       }
       
       setAppState(AppState.RETURNING_FUNDS);
-      currentToast = String(toast.loading('Preparing transaction...'));
+      setCurrentToast(String(toast.loading('Preparing transaction...')));
       
       // Get controller address
-      currentToast = String(toast.loading('Fetching contract details...', { id: currentToast }));
       const controllerAddress = await readContract(wagmiConfig, {
         address: HEDERA_CREDIT_OAPP_ADDR,
         abi: HEDERA_CREDIT_ABI,
         functionName: 'controller',
         chainId: HEDERA_CHAIN_ID
       }) as `0x${string}`;
-      
-      // Check current allowance
-      currentToast = String(toast.loading('Checking token allowance...', { id: currentToast }));
+            
+      // Check current allowance for HEDERA_CREDIT_OAPP_ADDR
+      setCurrentToast(String(toast.loading('Checking token allowance...')));
       const currentAllowance = await readContract(wagmiConfig, {
         address: HUSD_TOKEN_ADDR,
         abi: ERC20_ABI,
@@ -316,70 +374,80 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chainId: HEDERA_CHAIN_ID
       }) as bigint;
       
+      console.log('Current allowance:', {
+        currentAllowance: currentAllowance.toString(),
+        amountToRepay: amountToRepay.toString(),
+        spender: HEDERA_CREDIT_OAPP_ADDR
+      });
+      
       // Only approve if needed
       if (currentAllowance < amountToRepay) {
         // First transaction: Approve
-        currentToast = String(toast.loading('Please approve token transfer in your wallet...', { id: currentToast }));
+        setCurrentToast(String(toast.loading('Please approve token transfer in your wallet...')));
         const approveHash = await sendTxOnChain(HEDERA_CHAIN_ID, {
           address: HUSD_TOKEN_ADDR,
           abi: ERC20_ABI,
           functionName: 'approve',
-          args: [controllerAddress, amountToRepay],
-          gas: 200_000n
+args: [controllerAddress, amountToRepay]
         });
-        
-        // Wait for approval transaction to be confirmed
-        currentToast = String(toast.loading('Waiting for approval confirmation...', { id: currentToast }));
-        const { data: approveReceipt, error: approveError } = useWaitForTransactionReceipt({
-          hash: approveHash,
-          chainId: HEDERA_CHAIN_ID,
-          confirmations: 1
+        setApproveTxHash(approveHash);
+        // Wait for the approval to be confirmed
+        await new Promise<void>((resolve, reject) => {
+          const checkApproval = () => {
+            if (approveReceipt) {
+              if (approveReceipt.status === 'success') {
+                resolve();
+              } else {
+                reject(new Error('Token approval transaction failed'));
+              }
+            } else if (isApproveError) {
+              reject(new Error('Token approval transaction failed'));
+            } else {
+              setTimeout(checkApproval, 100);
+            }
+          };
+          checkApproval();
         });
-        
-        if (approveError) {
-          throw new Error(`Approval failed: ${approveError.message}`);
-        }
-        
-        if (!approveReceipt || approveReceipt.status !== 'success') {
-          throw new Error('Token approval transaction failed');
-        }
-        currentToast = String(toast.success('Token transfer approved!', { id: currentToast }));
       }
       
       // Second transaction: Repay
-      currentToast = String(toast.loading('Preparing repayment transaction...', { id: currentToast }));
-      const nativeFee = await readContract(wagmiConfig, { 
-        address: HEDERA_CREDIT_OAPP_ADDR, 
-        abi: HEDERA_CREDIT_ABI, 
-        functionName: 'quoteRepayFee', 
-        args: [activeOrderId], 
-        chainId: HEDERA_CHAIN_ID 
-      }) as bigint;
-      
-      currentToast = String(toast.loading('Please confirm repayment in your wallet...', { id: currentToast }));
+      console.log('Repay parameters:', {
+        orderId: activeOrderId,
+        amountToRepay: amountToRepay.toString(),
+        controllerAddress,
+        currentAllowance: currentAllowance.toString(),
+        chainId: HEDERA_CHAIN_ID
+      });
+      setCurrentToast(String(toast.loading('Please confirm repayment in your wallet...')));
       const repayHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
         address: HEDERA_CREDIT_OAPP_ADDR, 
         abi: HEDERA_CREDIT_ABI, 
         functionName: 'repay', 
-        args: [activeOrderId, amountToRepay, true], 
-        value: nativeFee,
-        gas: 1_500_000n 
+        args: [activeOrderId, amountToRepay, true],
+        value: 0n
       });
+      setRepayTxHash(repayHash);
       
-      // Wait for repay transaction to be confirmed
-      currentToast = String(toast.loading('Processing repayment...', { id: currentToast }));
-      const { data: repayReceipt, error: repayError } = useWaitForTransactionReceipt({
-        hash: repayHash,
-        chainId: HEDERA_CHAIN_ID,
-        confirmations: 1
+      // Wait for the repay to be confirmed
+      await new Promise<void>((resolve, reject) => {
+        const checkRepay = () => {
+          if (repayReceipt) {
+            if (repayReceipt.status === 'success') {
+              resolve();
+            } else {
+              reject(new Error('Repayment transaction failed'));
+            }
+          } else if (isRepayError) {
+            reject(new Error('Repayment transaction failed'));
+          } else {
+            setTimeout(checkRepay, 100);
+          }
+        };
+        checkRepay();
       });
-      
-      if (repayError) {
-        throw new Error(`Repayment failed: ${repayError.message}`);
-      }
       
       if (!repayReceipt || repayReceipt.status !== 'success') {
-        throw new Error('Repayment transaction failed');
+        throw new Error('Repayment transaction not confirmed');
       }
       
       setLzTxHash(repayHash);
@@ -393,12 +461,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
                     err?.message?.replace('Contract Call:', '').trim() || 
                     'Failed to process repayment';
       
+      console.error('Repay error:', { error: err, message });
       toast.error(`❌ ${message}`, { id: currentToast });
       setError(message);
       setAppState(AppState.ERROR);
       throw new Error(message);
     }
-  }, [activeOrderId, address, sendTxOnChain]);
+  }, [activeOrderId, address, sendTxOnChain, publicClient, setAppState, setError, setLzTxHash]);
+  
   const handleWithdraw = useCallback(() => {
     if (!activeOrderId) return;
     setAppState(AppState.WITHDRAWING_IN_PROGRESS);

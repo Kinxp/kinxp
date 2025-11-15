@@ -28,12 +28,23 @@ export const POLLING_INTERVAL = 5000; // 5 seconds
 export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0xeCEd920d7cF6b6f9986821daD85f2fC76279E12E').toLowerCase() as `0x${string}`;
 export const HEDERA_CREDIT_OAPP_ADDR = (import.meta.env.VITE_HEDERA_CREDIT_OAPP || '0x00000000000000000000000000000000006eac30').toLowerCase() as `0x${string}`;
 export const RESERVE_REGISTRY_ADDR = '0x00000000000000000000000000000000006eac2d' as `0x${string}`;
-// HUSD token ID in Hedera format (0.0.7119051)
+// HUSD token ID in Hedera format (0.0.0.7253040)
 // Can be set via VITE_HUSD_TOKEN_ID environment variable
-export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7119051';
+export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7253040';
+
 // HUSD token address in EVM format (for contract calls)
 // Can be set via VITE_HUSD_TOKEN_ADDR environment variable
-export const HUSD_TOKEN_ADDR = (import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006ca0cb').toLowerCase() as `0x${string}`;
+const HUSD_TOKEN_ADDR_RAW = import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006eac30';
+
+// Ensure the address is properly formatted as an EVM address
+export const HUSD_TOKEN_ADDR = (() => {
+  // Remove any comments or extra spaces
+  const cleanAddr = HUSD_TOKEN_ADDR_RAW.split('#')[0].trim();
+  // Ensure it starts with 0x and is lowercase
+  return cleanAddr.toLowerCase().startsWith('0x') 
+    ? (cleanAddr.toLowerCase() as `0x${string}`)
+    : (`0x${cleanAddr}` as `0x${string}`);
+})();
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase() as `0x${string}`;
 
 // New contract addresses
