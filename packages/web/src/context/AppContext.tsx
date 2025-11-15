@@ -281,16 +281,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       throw new Error('No active order or wallet connected');
     }
     
+    let currentToast: string | undefined;
     try {
-      const tokenDecimals = await readContract(wagmiConfig, {
-        address: HUSD_TOKEN_ADDR,
-        abi: ERC20_ABI,
-        functionName: 'decimals',
-        chainId: HEDERA_CHAIN_ID
-      }) as number;
-      console.log(tokenDecimals)
+      // For Hedera tokens, we know the decimals from config
+      const tokenDecimals = 6; // hUSD has 6 decimals
+      
       // Convert human-readable amount to smallest unit (1 HUSD = 1,000,000 units)
-      const amountToRepay = parseUnits(repayAmount, 18);
+      const amountToRepay = parseUnits(repayAmount, tokenDecimals);
       console.log(repayAmount,amountToRepay)
 
       if (amountToRepay <= 0n) {
@@ -298,10 +295,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       
       setAppState(AppState.RETURNING_FUNDS);
-      let currentToast = toast.loading('Preparing transaction...');
+      currentToast = String(toast.loading('Preparing transaction...'));
       
       // Get controller address
-      toast.loading('Fetching contract details...', { id: currentToast });
+      currentToast = String(toast.loading('Fetching contract details...', { id: currentToast }));
       const controllerAddress = await readContract(wagmiConfig, {
         address: HEDERA_CREDIT_OAPP_ADDR,
         abi: HEDERA_CREDIT_ABI,
@@ -310,7 +307,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }) as `0x${string}`;
       
       // Check current allowance
-      toast.loading('Checking token allowance...', { id: currentToast });
+      currentToast = String(toast.loading('Checking token allowance...', { id: currentToast }));
       const currentAllowance = await readContract(wagmiConfig, {
         address: HUSD_TOKEN_ADDR,
         abi: ERC20_ABI,
@@ -322,7 +319,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Only approve if needed
       if (currentAllowance < amountToRepay) {
         // First transaction: Approve
-        toast.loading('Please approve token transfer in your wallet...', { id: currentToast });
+        currentToast = String(toast.loading('Please approve token transfer in your wallet...', { id: currentToast }));
         const approveHash = await sendTxOnChain(HEDERA_CHAIN_ID, {
           address: HUSD_TOKEN_ADDR,
           abi: ERC20_ABI,
@@ -332,7 +329,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         
         // Wait for approval transaction to be confirmed
-        toast.loading('Waiting for approval confirmation...', { id: currentToast });
+        currentToast = String(toast.loading('Waiting for approval confirmation...', { id: currentToast }));
         const { data: approveReceipt, error: approveError } = useWaitForTransactionReceipt({
           hash: approveHash,
           chainId: HEDERA_CHAIN_ID,
@@ -346,11 +343,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!approveReceipt || approveReceipt.status !== 'success') {
           throw new Error('Token approval transaction failed');
         }
-        toast.success('Token transfer approved!', { id: currentToast });
+        currentToast = String(toast.success('Token transfer approved!', { id: currentToast }));
       }
       
       // Second transaction: Repay
-      toast.loading('Preparing repayment transaction...', { id: currentToast });
+      currentToast = String(toast.loading('Preparing repayment transaction...', { id: currentToast }));
       const nativeFee = await readContract(wagmiConfig, { 
         address: HEDERA_CREDIT_OAPP_ADDR, 
         abi: HEDERA_CREDIT_ABI, 
@@ -359,7 +356,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chainId: HEDERA_CHAIN_ID 
       }) as bigint;
       
-      toast.loading('Please confirm repayment in your wallet...', { id: currentToast });
+      currentToast = String(toast.loading('Please confirm repayment in your wallet...', { id: currentToast }));
       const repayHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
         address: HEDERA_CREDIT_OAPP_ADDR, 
         abi: HEDERA_CREDIT_ABI, 
@@ -370,7 +367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       
       // Wait for repay transaction to be confirmed
-      toast.loading('Processing repayment...', { id: currentToast });
+      currentToast = String(toast.loading('Processing repayment...', { id: currentToast }));
       const { data: repayReceipt, error: repayError } = useWaitForTransactionReceipt({
         hash: repayHash,
         chainId: HEDERA_CHAIN_ID,
