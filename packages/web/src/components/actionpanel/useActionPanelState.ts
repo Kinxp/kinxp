@@ -22,8 +22,8 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     appState, selectedOrderId, orderId: newlyCreatedOrderId, ethAmount, borrowAmount,
     logs, lzTxHash, error,
     handleCreateOrder, handleFundOrder, handleBorrow, calculateBorrowAmount,
-    handleRepay, handleWithdraw, resetFlow, exitProgressView, startPollingForHederaOrder,
-    address, setLzTxHash,
+    handleRepay, handleWithdraw, handleAddCollateral, resetFlow, exitProgressView, 
+    startPollingForHederaOrder, address, setLzTxHash,
   } = useAppContext();
 
   const [isCheckingHedera, setIsCheckingHedera] = useState(false);
@@ -47,6 +47,12 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     return Promise.reject(new Error('Invalid order or amount'));
   }, [handleRepay, selectedOrder]);
   const onWithdraw = useCallback(() => { if (selectedOrder) handleWithdraw(); }, [handleWithdraw, selectedOrder]);
+  const onAddCollateral = useCallback((amount: string) => { 
+    if (selectedOrder && amount) {
+      return handleAddCollateral(amount);
+    }
+    return Promise.reject(new Error('Invalid order or amount'));
+  }, [handleAddCollateral, selectedOrder]);
   const onCalculateBorrow = useCallback(() => { if (selectedOrder) return calculateBorrowAmount(); return Promise.resolve(null); }, [calculateBorrowAmount, selectedOrder]);
   
   const handleTrackConfirmation = useCallback(async () => {
@@ -135,7 +141,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
   return {
     appState, selectedOrder, newlyCreatedOrderId, ethAmount, borrowAmount, logs, lzTxHash, error,
     handleCreateOrder, resetFlow, exitProgressView, onFund, onBorrow, onRepay, onWithdraw, onCalculateBorrow, 
-    handleTrackConfirmation, handleRelayConfirmation,
+    onAddCollateral, handleTrackConfirmation, handleRelayConfirmation,
     isCheckingHedera, isHederaConfirmed, isRelaying,
     collateralEth, borrowAmountForRepay, repayable
   };

@@ -4,6 +4,7 @@ import FundOrderView from './FundOrderView';
 import BorrowView from './manageorder/BorrowView';
 import RepayView from './manageorder/RepayView';
 import WithdrawView from './manageorder/WithdrawView';
+import AddCollateralView from './manageorder/AddCollateralView';
 import { SpinnerIcon } from '../Icons';
 
 // This component receives all the props it needs to make decisions
@@ -21,6 +22,7 @@ interface ManageOrderViewProps {
   onCalculateBorrow: () => Promise<any>;
   onRepay: () => void;
   onWithdraw: () => void;
+  onAddCollateral: (amount: string) => void;
   handleTrackConfirmation: () => void;
   handleRelayConfirmation: () => Promise<void>;
 }
@@ -38,11 +40,31 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       if (props.isHederaConfirmed) {
         return (
           <div className="space-y-4">
-            <BorrowView orderId={props.selectedOrder.orderId} onBorrow={props.onBorrow} calculateBorrowAmount={props.onCalculateBorrow} activeBorrowAmount={props.borrowAmountForRepay} />
+            <BorrowView 
+              orderId={props.selectedOrder.orderId} 
+              onBorrow={props.onBorrow} 
+              calculateBorrowAmount={props.onCalculateBorrow} 
+            />
+            
+            {/* Add Collateral Section */}
+            <div className="my-4 border-t border-gray-700" />
+            <AddCollateralView
+              orderId={props.selectedOrder.orderId}
+              currentCollateralWei={BigInt(props.selectedOrder.amountWei)}
+              onAddCollateral={props.onAddCollateral}
+              isProcessing={false} // You might want to manage this state
+            />
+            
+            {/* Repay Section */}
             {props.repayable && (
               <>
                 <div className="my-4 border-t border-gray-700" />
-                <RepayView orderId={props.selectedOrder.orderId} borrowAmount={props.borrowAmountForRepay} collateralEth={props.collateralEth} onRepay={props.onRepay} />
+                <RepayView 
+                  orderId={props.selectedOrder.orderId} 
+                  borrowAmount={props.borrowAmountForRepay} 
+                  collateralEth={props.collateralEth} 
+                  onRepay={props.onRepay} 
+                />
               </>
             )}
           </div>
