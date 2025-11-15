@@ -100,6 +100,9 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [riskResult, setRiskResult] = useState<NormalizedRisk | null>(null);
   const [riskError, setRiskError] = useState<string | null>(null);
+  const [repayAmount, setRepayAmount] = useState(borrowAmount || '');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleAnalyzeRisk = async () => {
     if (!borrowAmount || !collateralEth) {
@@ -222,16 +225,84 @@ const RepayView: React.FC<RepayViewProps> = ({ orderId, borrowAmount, collateral
         )}
       </div>
 
-      <button
-        onClick={onRepay}
-        disabled={!borrowAmount}
-        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        Return & Repay {borrowAmount ? `${borrowAmount} hUSD` : ''}
-      </button>
-      <p className="text-xs text-gray-500">
-        We'll return your hUSD to the treasury and then submit the repay transaction.
-      </p>
+      <div className="space-y-3">
+        <div className="flex items-center space-x-2">
+          <input
+            type="number"
+            value={repayAmount}
+            onChange={(e) => setRepayAmount(e.target.value)}
+            min="0"
+            max={borrowAmount || '0'}
+            step="0.01"
+            className="flex-1 bg-gray-700 text-white rounded-lg px-3 py-2 text-right"
+            placeholder="Enter amount to repay"
+          />
+          <span className="text-gray-400">hUSD</span>
+        </div>
+        
+        {borrowAmount && parseFloat(repayAmount) > 0 && (
+          <div className="text-right text-sm text-gray-400">
+            Max: {borrowAmount} hUSD
+          </div>
+        )}
+        
+        {borrowAmount && parseFloat(repayAmount) > 0 && parseFloat(repayAmount) < parseFloat(borrowAmount) && (
+          <div className="bg-yellow-900/30 border border-yellow-800/50 rounded-lg p-2 text-center">
+            <p className="text-xs text-yellow-300">
+              Partial repayment: {((parseFloat(repayAmount) / parseFloat(borrowAmount)) * 100).toFixed(2)}% of total debt
+            </p>
+          </div>
+        )}
+        
+        <button
+          onClick={async () => {
+            if (!repayAmount || parseFloat(repayAmount) <= 0) {
+              setError('Please enter a valid amount to repay');
+              return;
+            }
+            if (borrowAmount && parseFloat(repayAmount) > parseFloat(borrowAmount)) {
+              setError('Repayment amount cannot exceed the total debt');
+              return;
+            }
+            setError(null);
+            setIsProcessing(true);
+            try {
+              await onRepay(repayAmount);
+            } catch (err) {
+              console.error('Repay failed:', err);
+              setError(err instanceof Error ? err.message : 'Failed to process repayment');
+            } finally {
+              setIsProcessing(false);
+            }
+          }}
+          disabled={!repayAmount || parseFloat(repayAmount) <= 0 || isProcessing || !borrowAmount}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {isProcessing ? (
+            <span className="flex items-center justify-center">
+              <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              Processing...
+            </span>
+          ) : (
+            `Repay ${repayAmount} hUSD`
+          )}
+        </button>
+        
+        {error && (
+          <div className="text-red-400 text-sm text-center p-2 bg-red-900/20 rounded-lg">
+            {error}
+          </div>
+        )}
+        
+        <p className="text-xs text-gray-500">
+          {parseFloat(repayAmount) === parseFloat(borrowAmount || '0') 
+            ? 'The full amount will be repaid and your position will be closed.'
+            : 'A partial repayment will reduce your debt and free up collateral.'}
+        </p>
+      </div>
     </div>
   );
 };

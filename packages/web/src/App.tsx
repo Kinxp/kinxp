@@ -19,11 +19,15 @@ function App() {
       <Router>
       <div className="bg-gray-900 min-h-screen text-white font-sans">
         <Toaster 
-            position="top-right"
+            position="bottom-right"
             toastOptions={{
                 style: {
-                    background: '#2d3748', // gray-800
-                    color: '#e2e8f0', // gray-300
+                    background: '#1e293b', // slate-800
+                    color: '#f8fafc', // slate-50
+                    padding: '16px',
+                    borderRadius: '8px',
+                    maxWidth: '400px',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
                 },
             }}
         />

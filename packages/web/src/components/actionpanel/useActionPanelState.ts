@@ -40,7 +40,12 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
   // --- MEMOIZED HANDLERS ---
   const onFund = useCallback((amountToFund: string) => handleFundOrder(amountToFund), [handleFundOrder]);
   const onBorrow = useCallback((amount: string) => { if (selectedOrder) handleBorrow(amount); }, [handleBorrow, selectedOrder]);
-  const onRepay = useCallback(() => { if (selectedOrder && borrowAmountForRepay) handleRepay(); }, [handleRepay, selectedOrder, borrowAmountForRepay]);
+  const onRepay = useCallback((amount: string) => { 
+    if (selectedOrder && amount) {
+      return handleRepay(amount);
+    }
+    return Promise.reject(new Error('Invalid order or amount'));
+  }, [handleRepay, selectedOrder]);
   const onWithdraw = useCallback(() => { if (selectedOrder) handleWithdraw(); }, [handleWithdraw, selectedOrder]);
   const onCalculateBorrow = useCallback(() => { if (selectedOrder) return calculateBorrowAmount(); return Promise.resolve(null); }, [calculateBorrowAmount, selectedOrder]);
   

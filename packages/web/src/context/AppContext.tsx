@@ -64,7 +64,7 @@ interface AppContextType {
   handleFundOrder: (amountToFund: string) => void;
   handleAddCollateral: (amountEth: string) => Promise<void>;
   handleBorrow: (amountToBorrow: string) => Promise<void>;
-  handleRepay: () => Promise<void>;
+  handleRepay: (repayAmount: string) => Promise<boolean>;
   handleWithdraw: () => void;
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
@@ -267,37 +267,141 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const repayAndCross = useCallback(async () => {
     if (!activeOrderId || !borrowAmount) return;
-    setAppState(AppState.REPAYING_IN_PROGRESS);
-    addLog('▶ 2/2: Calling repay to burn tokens and notify Ethereum...');
     try {
-      addLog('   Quoting LayerZero fee for repay...');
-      const feeInTinybars = await readContract(wagmiConfig, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'quoteRepayFee', args: [activeOrderId], chainId: HEDERA_CHAIN_ID }) as bigint;
-      addLog(`✓ LayerZero fee quoted: ${formatUnits(feeInTinybars, 8)} HBAR`);
-      const valueInWei = feeInTinybars * WEI_PER_TINYBAR;
-      addLog('   Sending repay transaction...');
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'repay', args: [activeOrderId, parseUnits(borrowAmount, 6), true], value: valueInWei, gas: 1_500_000n });
+      // Use the handleRepay function which now handles the entire flow
+      await handleRepay(borrowAmount);
     } catch (e: any) {
-      addLog(`❌ An error occurred during the repay process: ${e.message}`);
-      setError(`Repay failed: ${e.message}`);
-      setAppState(AppState.ERROR);
+      // Error is already handled in handleRepay
+      console.error('Repay and cross failed:', e);
     }
   }, [activeOrderId, borrowAmount, sendTxOnChain, addLog]);
 
-  const handleRepay = useCallback(async () => {
-    if (!activeOrderId || !address || !borrowAmount) return;
+  const handleRepay = useCallback(async (repayAmount: string) => {
+    if (!activeOrderId || !address) {
+      throw new Error('No active order or wallet connected');
+    }
+    
     try {
-      const treasury = await resolveTreasuryAddress();
-      addLog('▶ 1/2: Returning hUSD to the Hedera treasury...');
+      const tokenDecimals = await readContract(wagmiConfig, {
+        address: HUSD_TOKEN_ADDR,
+        abi: ERC20_ABI,
+        functionName: 'decimals',
+        chainId: HEDERA_CHAIN_ID
+      }) as number;
+      console.log(tokenDecimals)
+      // Convert human-readable amount to smallest unit (1 HUSD = 1,000,000 units)
+      const amountToRepay = parseUnits(repayAmount, 18);
+      console.log(repayAmount,amountToRepay)
+
+      if (amountToRepay <= 0n) {
+        throw new Error('Repayment amount must be greater than zero');
+      }
+      
       setAppState(AppState.RETURNING_FUNDS);
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HUSD_TOKEN_ADDR, abi: ERC20_ABI, functionName: 'transfer', args: [treasury, parseUnits(borrowAmount, 6)] });
+      let currentToast = toast.loading('Preparing transaction...');
+      
+      // Get controller address
+      toast.loading('Fetching contract details...', { id: currentToast });
+      const controllerAddress = await readContract(wagmiConfig, {
+        address: HEDERA_CREDIT_OAPP_ADDR,
+        abi: HEDERA_CREDIT_ABI,
+        functionName: 'controller',
+        chainId: HEDERA_CHAIN_ID
+      }) as `0x${string}`;
+      
+      // Check current allowance
+      toast.loading('Checking token allowance...', { id: currentToast });
+      const currentAllowance = await readContract(wagmiConfig, {
+        address: HUSD_TOKEN_ADDR,
+        abi: ERC20_ABI,
+        functionName: 'allowance',
+        args: [address, controllerAddress],
+        chainId: HEDERA_CHAIN_ID
+      }) as bigint;
+      
+      // Only approve if needed
+      if (currentAllowance < amountToRepay) {
+        // First transaction: Approve
+        toast.loading('Please approve token transfer in your wallet...', { id: currentToast });
+        const approveHash = await sendTxOnChain(HEDERA_CHAIN_ID, {
+          address: HUSD_TOKEN_ADDR,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [controllerAddress, amountToRepay],
+          gas: 200_000n
+        });
+        
+        // Wait for approval transaction to be confirmed
+        toast.loading('Waiting for approval confirmation...', { id: currentToast });
+        const { data: approveReceipt, error: approveError } = useWaitForTransactionReceipt({
+          hash: approveHash,
+          chainId: HEDERA_CHAIN_ID,
+          confirmations: 1
+        });
+        
+        if (approveError) {
+          throw new Error(`Approval failed: ${approveError.message}`);
+        }
+        
+        if (!approveReceipt || approveReceipt.status !== 'success') {
+          throw new Error('Token approval transaction failed');
+        }
+        toast.success('Token transfer approved!', { id: currentToast });
+      }
+      
+      // Second transaction: Repay
+      toast.loading('Preparing repayment transaction...', { id: currentToast });
+      const nativeFee = await readContract(wagmiConfig, { 
+        address: HEDERA_CREDIT_OAPP_ADDR, 
+        abi: HEDERA_CREDIT_ABI, 
+        functionName: 'quoteRepayFee', 
+        args: [activeOrderId], 
+        chainId: HEDERA_CHAIN_ID 
+      }) as bigint;
+      
+      toast.loading('Please confirm repayment in your wallet...', { id: currentToast });
+      const repayHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
+        address: HEDERA_CREDIT_OAPP_ADDR, 
+        abi: HEDERA_CREDIT_ABI, 
+        functionName: 'repay', 
+        args: [activeOrderId, amountToRepay, true], 
+        value: nativeFee,
+        gas: 1_500_000n 
+      });
+      
+      // Wait for repay transaction to be confirmed
+      toast.loading('Processing repayment...', { id: currentToast });
+      const { data: repayReceipt, error: repayError } = useWaitForTransactionReceipt({
+        hash: repayHash,
+        chainId: HEDERA_CHAIN_ID,
+        confirmations: 1
+      });
+      
+      if (repayError) {
+        throw new Error(`Repayment failed: ${repayError.message}`);
+      }
+      
+      if (!repayReceipt || repayReceipt.status !== 'success') {
+        throw new Error('Repayment transaction failed');
+      }
+      
+      setLzTxHash(repayHash);
+      setAppState(AppState.REPAYING_IN_PROGRESS);
+      toast.success('Repayment completed successfully!', { id: currentToast });
+      
+      return true;
+      
     } catch (err: any) {
-      const message = err?.message ?? 'Failed to return hUSD to treasury';
-      addLog(`❌ ${message}`);
+      const message = err?.shortMessage?.replace('Contract Call:', '').trim() || 
+                    err?.message?.replace('Contract Call:', '').trim() || 
+                    'Failed to process repayment';
+      
+      toast.error(`❌ ${message}`, { id: currentToast });
       setError(message);
       setAppState(AppState.ERROR);
+      throw new Error(message);
     }
-  }, [activeOrderId, address, borrowAmount, resolveTreasuryAddress, sendTxOnChain, addLog]);
-
+  }, [activeOrderId, address, sendTxOnChain]);
   const handleWithdraw = useCallback(() => {
     if (!activeOrderId) return;
     setAppState(AppState.WITHDRAWING_IN_PROGRESS);

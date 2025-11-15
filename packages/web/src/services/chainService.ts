@@ -439,13 +439,39 @@ export async function repayOnHedera(orderId: string, repayAmount: string): Promi
     if (!connections || !hederaContract) throw new Error("Wallet not connected.");
     await ensureNetwork('hedera');
 
-    const amountInSmallestUnit = ethers.parseUnits(repayAmount, 6); // 6 decimals
+    // Get the hUSD token contract
+    const hUsdToken = new ethers.Contract(
+        HUSD_TOKEN_ADDR,
+        HUSD_TOKEN_ABI,
+        connections.hedera.signer
+    );
+
+    // Get the controller address
+    const controllerAddress = await hederaContract.controller();
+    
+    // Convert the repay amount to the correct decimal places (6 for hUSD)
+    const amountInSmallestUnit = ethers.parseUnits(repayAmount, 6);
+    
+    // Check current allowance
+    const currentAllowance = await hUsdToken.allowance(await connections.hedera.signer.getAddress(), controllerAddress);
+    
+    // If current allowance is less than the amount to repay, approve the controller to spend more
+    if (currentAllowance < amountInSmallestUnit) {
+        const approveTx = await hUsdToken.approve(controllerAddress, amountInSmallestUnit);
+        await approveTx.wait();
+    }
+
+    // Get the quote for the cross-chain fee
     const nativeFee = await hederaContract.quoteRepayFee(orderId);
     
-    // You would first need an `approve` transaction for the hUSD token here
-    // For simplicity, we'll skip that and go straight to the repay call
+    // Call the repay function with the amount and notify flag set to true
+    const tx = await hederaContract.repay(
+        orderId, 
+        amountInSmallestUnit, 
+        true,  // notify Ethereum
+        { value: nativeFee }
+    );
     
-    const tx = await hederaContract.repay(orderId, amountInSmallestUnit, true, { value: nativeFee });
     await tx.wait();
     return tx.hash;
 }
