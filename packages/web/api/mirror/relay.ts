@@ -8,7 +8,7 @@ import path from 'path';
 const ETH_COLLATERAL_OAPP_ADDR = (process.env.VITE_ETH_COLLATERAL_OAPP || '0x...').toLowerCase() as `0x${string}`;
 const HEDERA_CREDIT_OAPP_ADDR = (process.env.VITE_HEDERA_CREDIT_OAPP || '0x...').toLowerCase() as `0x${string}`;
 const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
-const MIRROR_ADMIN_PRIVATE_KEY = process.env.MIRROR_ADMIN_PRIVATE_KEY;
+const HEDERA_MIRROR_PRIVATE_KEY = process.env.HEDERA_ECDSA_KEY;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 
 // Log environment variables and contract addresses
@@ -16,7 +16,7 @@ console.log('=== ENVIRONMENT VARIABLES ===');
 console.log('VITE_ETH_COLLATERAL_OAPP:', process.env.VITE_ETH_COLLATERAL_OAPP ? '***SET***' : 'NOT SET');
 console.log('VITE_HEDERA_CREDIT_OAPP:', process.env.VITE_HEDERA_CREDIT_OAPP ? '***SET***' : 'NOT SET');
 console.log('HEDERA_RPC_URL:', HEDERA_RPC_URL ? '***SET***' : 'NOT SET');
-console.log('MIRROR_ADMIN_PRIVATE_KEY:', MIRROR_ADMIN_PRIVATE_KEY ? '***SET***' : 'NOT SET');
+console.log('HEDERA_ECDSA_KEY:', HEDERA_MIRROR_PRIVATE_KEY ? '***SET***' : 'NOT SET');
 console.log('SEPOLIA_RPC_URL:', SEPOLIA_RPC_URL ? '***SET***' : 'NOT SET');
 
 console.log('\n=== CONTRACT ADDRESSES ===');
@@ -28,7 +28,7 @@ if (ETH_COLLATERAL_OAPP_ADDR === '0x...' || HEDERA_CREDIT_OAPP_ADDR === '0x...')
   console.error('ERROR: Contract addresses are using default values. Please set the correct environment variables.');
 }
 
-if (!HEDERA_RPC_URL || !MIRROR_ADMIN_PRIVATE_KEY || !SEPOLIA_RPC_URL) {
+if (!HEDERA_RPC_URL || !HEDERA_MIRROR_PRIVATE_KEY || !SEPOLIA_RPC_URL) {
   console.error('ERROR: Missing required environment variables');
 }
 
@@ -195,7 +195,7 @@ collateralToUnlock,
     }
 
     // 4. Now process on Hedera using adminMirrorRepayment
-    if (!MIRROR_ADMIN_PRIVATE_KEY || !HEDERA_RPC_URL) {
+    if (!HEDERA_MIRROR_PRIVATE_KEY || !HEDERA_RPC_URL) {
       return response.status(500).json({ 
         success: false,
         error: 'Server configuration error' 
@@ -203,7 +203,7 @@ collateralToUnlock,
     }
 
     const hederaProvider = new ethers.JsonRpcProvider(HEDERA_RPC_URL);
-    const wallet = new ethers.Wallet(MIRROR_ADMIN_PRIVATE_KEY, hederaProvider);
+    const wallet = new ethers.Wallet(HEDERA_MIRROR_PRIVATE_KEY, hederaProvider);
     
     const hederaCredit = new ethers.Contract(
       HEDERA_CREDIT_OAPP_ADDR,

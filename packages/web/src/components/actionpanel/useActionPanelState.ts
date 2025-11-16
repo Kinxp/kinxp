@@ -6,7 +6,7 @@ import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from '../../wagmi';
 import { HEDERA_CHAIN_ID, HEDERA_CREDIT_ABI, HEDERA_CREDIT_OAPP_ADDR } from '../../config';
 import { submitToMirrorRelay } from '../../services/mirrorRelayService';
-import { fetchOrderTransactions } from '../../services/blockscoutService';
+import { fetchOrderTransactions, fetchOrderSummary } from '../../services/blockscoutService';
 import toast from 'react-hot-toast';
 
 interface OrderTransaction {
@@ -23,7 +23,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     logs, lzTxHash, error,
     handleCreateOrder, handleFundOrder, handleBorrow, calculateBorrowAmount,
     handleRepay, handleWithdraw, handleAddCollateral, resetFlow, exitProgressView, 
-    startPollingForHederaOrder, address, setLzTxHash,
+    startPollingForHederaOrder, startPollingForEthRepay, address, setLzTxHash, triggerWithdrawRelay,
   } = useAppContext();
 
   const [isCheckingHedera, setIsCheckingHedera] = useState(false);
@@ -31,10 +31,12 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
   const [isRelaying, setIsRelaying] = useState(false);
 
   const selectedOrder = allOrders.find(o => o.orderId === selectedOrderId);
+  const [liveOrderSnapshot, setLiveOrderSnapshot] = useState<UserOrderSummary | null>(null);
 
   // --- DERIVED STATE ---
-  const collateralEth = selectedOrder ? formatUnits(selectedOrder.amountWei, 18) : null;
-  const borrowAmountForRepay = selectedOrder?.borrowedUsd ? formatUnits(selectedOrder.borrowedUsd, 6) : borrowAmount;
+  const effectiveOrder = liveOrderSnapshot ?? selectedOrder;
+  const collateralEth = effectiveOrder ? formatUnits(effectiveOrder.amountWei, 18) : null;
+  const borrowAmountForRepay = effectiveOrder?.borrowedUsd ? formatUnits(effectiveOrder.borrowedUsd, 6) : borrowAmount;
   const repayable = !!borrowAmountForRepay && Number(borrowAmountForRepay) > 0;
 
   // --- MEMOIZED HANDLERS ---
@@ -61,6 +63,11 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     if (foundHash) setLzTxHash(foundHash);
     startPollingForHederaOrder(selectedOrder.orderId, foundHash);
   }, [address, selectedOrder, setLzTxHash, startPollingForHederaOrder]);
+
+  const handleTrackRepayConfirmation = useCallback(() => {
+    if (!selectedOrder) return;
+    startPollingForEthRepay(selectedOrder.orderId);
+  }, [selectedOrder, startPollingForEthRepay]);
 
   const handleRelayConfirmation = useCallback(async () => {
     if (!address || !selectedOrder) return;
@@ -105,22 +112,61 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     }
   }, [address, selectedOrder, startPollingForHederaOrder]);
 
+  const handleRepayRelayConfirmation = useCallback(async () => {
+    if (!selectedOrder) return;
+    setIsRelaying(true);
+    try {
+      const txHash = (lzTxHash as `0x${string}` | null) ?? null;
+      await triggerWithdrawRelay(selectedOrder.orderId, txHash);
+      toast.success('Repay relay triggered');
+      startPollingForEthRepay(selectedOrder.orderId);
+    } catch (error) {
+      console.error('Repay relay error:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to trigger repay relay');
+    } finally {
+      setIsRelaying(false);
+    }
+  }, [selectedOrder, triggerWithdrawRelay, lzTxHash, startPollingForEthRepay]);
+
   // --- SIDE EFFECTS ---
   useEffect(() => {
-    // Reset state immediately when order changes to prevent race conditions
     if (selectedOrder) {
       setIsCheckingHedera(false);
       setIsHederaConfirmed(false);
     }
-    
+    let cancelled = false;
+
+    const refreshOrderSnapshot = async () => {
+      if (!selectedOrder) {
+        setLiveOrderSnapshot(null);
+        return;
+      }
+      try {
+        let updated = await fetchOrderSummary(selectedOrder.orderId);
+        if (selectedOrder && updated && selectedOrder.borrowedUsd > 0n && updated.borrowedUsd === 0n) {
+          updated = { ...updated, status: updated.status === 'ReadyToWithdraw' ? updated.status : 'PendingRepayConfirmation' };
+        }
+        if (!cancelled) {
+          setLiveOrderSnapshot(updated ?? selectedOrder);
+        }
+      } catch {
+        if (!cancelled) {
+          setLiveOrderSnapshot(selectedOrder);
+        }
+      }
+    };
+
     const checkHederaStatus = async () => {
       if (selectedOrder && ['Funded', 'Borrowed'].includes(selectedOrder.status)) {
         setIsCheckingHedera(true);
         setIsHederaConfirmed(false);
         try {
           const hOrder = await readContract(wagmiConfig, {
-            address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI,
-            functionName: 'horders', args: [selectedOrder.orderId], chainId: HEDERA_CHAIN_ID,
+            address: HEDERA_CREDIT_OAPP_ADDR,
+            abi: HEDERA_CREDIT_ABI,
+            functionName: 'horders',
+            args: [selectedOrder.orderId],
+            chainId: HEDERA_CHAIN_ID,
           }) as { ethAmountWei: bigint };
           setIsHederaConfirmed(hOrder && hOrder.ethAmountWei > 0n);
         } catch {
@@ -129,20 +175,46 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
           setIsCheckingHedera(false);
         }
       } else {
-        // If order is not Funded/Borrowed, ensure state is reset
         setIsCheckingHedera(false);
         setIsHederaConfirmed(false);
       }
     };
-    checkHederaStatus();
-  }, [selectedOrder]);
 
-  // Return everything the UI needs
+    refreshOrderSnapshot();
+    checkHederaStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedOrder, appState]);
+
   return {
-    appState, selectedOrder, newlyCreatedOrderId, ethAmount, borrowAmount, logs, lzTxHash, error,
-    handleCreateOrder, resetFlow, exitProgressView, onFund, onBorrow, onRepay, onWithdraw, onCalculateBorrow, 
-    onAddCollateral, handleTrackConfirmation, handleRelayConfirmation,
-    isCheckingHedera, isHederaConfirmed, isRelaying,
-    collateralEth, borrowAmountForRepay, repayable
+    appState,
+    selectedOrder: effectiveOrder ?? null,
+    newlyCreatedOrderId,
+    ethAmount,
+    borrowAmount,
+    logs,
+    lzTxHash,
+    error,
+    handleCreateOrder,
+    resetFlow,
+    exitProgressView,
+    onFund,
+    onBorrow,
+    onRepay,
+    onWithdraw,
+    onCalculateBorrow,
+    onAddCollateral,
+    handleTrackConfirmation,
+    handleTrackRepayConfirmation,
+    handleRelayConfirmation,
+    handleRepayRelayConfirmation,
+    isCheckingHedera,
+    isHederaConfirmed,
+    isRelaying,
+    collateralEth,
+    borrowAmountForRepay,
+    repayable,
   };
 }

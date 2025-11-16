@@ -8,6 +8,7 @@ interface ImportMetaEnv {
   readonly VITE_HUSD_TOKEN_ID?: string;
   readonly VITE_HUSD_TOKEN_ADDR?: string;
   readonly VITE_USD_CONTROLLER?: string;
+  readonly VITE_HEDERA_RPC_URL?: string;
   readonly VITE_LIQUIDITY_POOL?: string;
   readonly VITE_CROSS_CHAIN_GATEWAY?: string;
   readonly VITE_UNDERLYING_TOKEN?: string;

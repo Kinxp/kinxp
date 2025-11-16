@@ -299,6 +299,76 @@ export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<Us
   return loadOrderSummaries(orderIds);
 }
 
+export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrderSummary | null> {
+  try {
+    const tuple = await readContract(wagmiConfig, {
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      abi: ETH_COLLATERAL_ABI,
+      functionName: 'orders',
+      args: [orderId],
+      chainId: ETH_CHAIN_ID,
+    }) as [ `0x${string}`, `0x${string}`, bigint, bigint, boolean, boolean, boolean ];
+
+    const [ owner, reserveId, amountWei, unlockedWei, funded, repaid, liquidated ] = tuple;
+    if (!owner || owner === ZERO_ADDRESS) return null;
+
+    const normalizedReserveId = reserveId && reserveId !== ZERO_BYTES32 ? reserveId : undefined;
+    let status: OrderStatus = 'Created';
+    let borrowedUsd: bigint = 0n;
+    let hederaReady = false;
+
+    if (liquidated) {
+      status = 'Liquidated';
+    } else if (repaid && !funded) {
+      status = 'Withdrawn';
+    } else if (repaid && funded) {
+      status = 'ReadyToWithdraw';
+    } else if (funded) {
+      try {
+        const hederaOrder = await readContract(wagmiConfig, {
+          address: HEDERA_CREDIT_OAPP_ADDR,
+          abi: HEDERA_CREDIT_ABI,
+          functionName: 'horders',
+          args: [orderId],
+          chainId: HEDERA_CHAIN_ID,
+        }) as [ `0x${string}`, bigint, bigint, boolean ];
+
+        const hederaCollateral = hederaOrder?.[1] ?? 0n;
+        borrowedUsd = hederaOrder?.[2] ?? 0n;
+        hederaReady = hederaCollateral > 0n;
+
+        if (borrowedUsd > 0n) {
+          status = 'Borrowed';
+        } else if (repaid) {
+          status = 'ReadyToWithdraw';
+        } else if (unlockedWei > 0n) {
+          status = 'PendingRepayConfirmation';
+        } else {
+          status = 'Funded';
+        }
+      } catch (err) {
+        console.warn(`Failed to refresh Hedera data for ${orderId}`, err);
+        status = repaid ? 'ReadyToWithdraw' : 'Funded';
+      }
+    } else {
+      status = 'Created';
+    }
+
+    return {
+      orderId,
+      amountWei,
+      status,
+      reserveId: normalizedReserveId,
+      unlockedWei,
+      borrowedUsd,
+      hederaReady,
+    };
+  } catch (error) {
+    console.error(`Failed to fetch order summary for ${orderId}`, error);
+    return null;
+  }
+}
+
 export interface OrderTransactionInfo {
   chainId: number;
   label: string;
