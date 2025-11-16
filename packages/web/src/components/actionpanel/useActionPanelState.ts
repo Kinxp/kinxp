@@ -35,9 +35,17 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
   
   const handleTrackConfirmation = useCallback(async () => {
     if (!address || !selectedOrder) return;
-    const foundHash = localStorage.getItem(`lzTxHash_${selectedOrder.orderId}`) as `0x${string}` | null;
-    if (foundHash) setLzTxHash(foundHash);
-    startPollingForHederaOrder(selectedOrder.orderId, foundHash);
+    
+    // First try to get the transaction hash from the order, then from localStorage
+    const foundHash = selectedOrder.creationTxHash || 
+                     localStorage.getItem(`lzTxHash_${selectedOrder.orderId}`) as `0x${string}` | null;
+    
+    if (foundHash) {
+      setLzTxHash(foundHash);
+    }
+    
+    // Start polling with the hash (or null if not found)
+    startPollingForHederaOrder(selectedOrder.orderId, foundHash || undefined);
   }, [address, selectedOrder, setLzTxHash, startPollingForHederaOrder]);
 
   // --- SIDE EFFECTS ---

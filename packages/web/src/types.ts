@@ -31,6 +31,8 @@ export interface OrderData {
     amountWei: bigint;
     status: OrderStatus;
     borrowedUsd?: bigint;
+    creationTxHash?: `0x${string}`;
+    borrower?: `0x${string}`;
   }
 
 
