@@ -9,7 +9,8 @@
     "build:contracts": "pnpm --filter @kinxp/contracts build",
     "e2e:full": "pnpm --filter @kinxp/contracts e2e:full",
     "p:rep": "pnpm --filter @kinxp/contracts p-repayment",
-    "add": "pnpm --filter @kinxp/contracts add-collateral"
+    "add": "pnpm --filter @kinxp/contracts add-collateral",
+    "deploy-token": "pnpm --filter @kinxp/contracts deploy-token"
   },
   "devDependencies": {
     "@types/node": "^24.8.0",

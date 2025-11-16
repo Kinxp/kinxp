@@ -1,5 +1,5 @@
 // packages/web/api/mirror/withdraw.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { ApiRequest, ApiResponse } from '../types';
 import { ethers } from 'ethers';
 import fs from 'fs';
 import path from 'path';
@@ -43,8 +43,8 @@ const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
 const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
 
 export default async function handler(
-  request: VercelRequest,
-  response: VercelResponse
+  request: ApiRequest,
+  response: ApiResponse
 ) {
   console.log('=== WITHDRAW MIRROR REQUEST START ===');
   console.log('Request method:', request.method);

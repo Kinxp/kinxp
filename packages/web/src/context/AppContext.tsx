@@ -462,12 +462,16 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       chainId: HEDERA_CHAIN_ID
     }) as bigint;
     
+    // Hedera RPC rejects non-zero msg.value below 1 tinybar, so enforce the minimum
+    const minValue = 1n * WEI_PER_TINYBAR;
+    const repayValue = lzFee > 0n && lzFee < minValue ? minValue : lzFee;
+    
     const repayHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
       address: HEDERA_CREDIT_OAPP_ADDR, 
       abi: HEDERA_CREDIT_ABI, 
       functionName: 'repay', 
       args: [activeOrderId, amountToRepay, true], // true = notify Ethereum
-      value: lzFee, // Include the LayerZero fee
+      value: repayValue, // Include LayerZero fee (respect Hedera tinybar minimum)
       gas: 1_500_000n // Ensure enough gas for the cross-chain operation
     });
     

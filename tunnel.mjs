@@ -2,7 +2,6 @@
 // Node 18+
 import localtunnel from "localtunnel";
 
-// ==== HARD-CODED SETTINGS (strict subdomain) ====
 const PORT = 8787;
 const SUBDOMAIN = "kinxp";
 const HOST = "https://loca.lt";
@@ -14,7 +13,6 @@ const FAIL_THRESHOLD = 3;
 const REQUEST_TIMEOUT_MS = 8000;
 const VERBOSE_HEALTH = true;
 const BODY_PREVIEW_BYTES = 160;
-// ================================================
 
 let tunnel = null;
 let url = "";
@@ -48,11 +46,18 @@ function scheduleRestart(reason = "unspecified") {
   backoff = wait;
 }
 
+function hookTunnel(t) {
+  // Attach listeners to EVERY tunnel instance immediately to avoid unhandled 'error'
+  t.on("close", () => { if (!shuttingDown) scheduleRestart("tunnel close"); });
+  t.on("error", (e) => {
+    console.warn(`[${now()}] [tunnel] error:`, e?.message || e);
+    if (!shuttingDown) scheduleRestart("tunnel error");
+  });
+}
+
 async function startStrict() {
-  // Cancel any pending restart; we're actively (re)starting now.
   clearScheduledRestart("canceled (starting now)");
 
-  // Loop until we actually get the exact hostname we want.
   while (!shuttingDown) {
     // Close previous attempt if any
     if (tunnel) {
@@ -63,28 +68,21 @@ async function startStrict() {
     try {
       const opts = { port: PORT, subdomain: SUBDOMAIN, host: HOST };
       const t = await localtunnel(opts);
-      const candidate = t.url.replace(/\/$/, "");
+      hookTunnel(t); // <-- attach handlers BEFORE we decide to keep/close it
+      const candidate = (t.url || "").replace(/\/$/, "");
 
       if (candidate === EXPECTED) {
         tunnel = t;
         url = candidate;
         fails = 0;
-        backoff = 1000; // reset backoff after success
+        backoff = 1000;
         console.log(`[${now()}] [tunnel] UP (strict): ${url}  → localhost:${PORT}`);
-
-        tunnel.on("close", () => { if (!shuttingDown) scheduleRestart("tunnel close"); });
-        tunnel.on("error", (e) => {
-          console.warn(`[${now()}] [tunnel] error:`, e?.message || e);
-          if (!shuttingDown) scheduleRestart("tunnel error");
-        });
-
-        // Immediate health check
         await health(true).catch(() => {});
-        return; // only return when EXPECTED is up
+        return; // stay alive with periodic health checks
       } else {
         console.warn(`[${now()}] [tunnel] got "${candidate}", not "${EXPECTED}" → closing and retrying...`);
         try { await t.close(); } catch {}
-        await sleep(Math.min(5000, 500 + Math.random() * 1000)); // small jitter before retry
+        await sleep(Math.min(5000, 500 + Math.random() * 1000));
         continue;
       }
     } catch (e) {
@@ -100,8 +98,8 @@ async function health(isStartup = false) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
   const target = url + HEALTH_PATH;
-
   const t0 = Date.now();
+
   try {
     const res = await fetch(target, { signal: ctl.signal, cache: "no-store", method: "GET" });
     clearTimeout(t);
@@ -134,26 +132,37 @@ async function health(isStartup = false) {
   }
 }
 
-async function main() {
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-  await startStrict(); // <— only returns when kinxp.loca.lt is actually obtained
-  while (!shuttingDown) {
-    await sleep(CHECK_EVERY_MS);
-    await health();
-  }
-}
-
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   clearScheduledRestart("canceled (shutdown)");
   console.log(`\n[${now()}] [tunnel] shutting down…`);
   try { if (tunnel) await tunnel.close(); } catch {}
-  process.exit(0);
+  // do NOT exit here abruptly; let Node end naturally
 }
 
-main().catch((e) => {
-  console.error(`[${now()}] [tunnel] fatal:`, e?.message || e);
-  process.exit(1);
-});
+function keepAliveOnFatal(tag, err) {
+  console.error(`[${now()}] [${tag}]`, err?.stack || err?.message || err);
+  if (!shuttingDown) scheduleRestart(`${tag}`);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+process.on("uncaughtException", (e) => keepAliveOnFatal("uncaughtException", e));
+process.on("unhandledRejection", (e) => keepAliveOnFatal("unhandledRejection", e));
+
+(async function mainLoop() {
+  while (!shuttingDown) {
+    try {
+      await startStrict();                  // returns once EXPECTED is up
+      while (!shuttingDown) {              // periodic health checks
+        await sleep(CHECK_EVERY_MS);
+        await health();
+      }
+    } catch (e) {
+      keepAliveOnFatal("mainLoop", e);
+      await sleep(Math.min(30000, backoff));
+      backoff = Math.min(30000, Math.floor(backoff * 1.7));
+    }
+  }
+})();
