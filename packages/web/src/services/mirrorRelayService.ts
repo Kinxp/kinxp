@@ -12,6 +12,7 @@ export async function submitToMirrorRelay(params: {
   fullyRepaid: boolean;
   reserveId: string;
   borrower: string;
+  actionType?: 'fund' | 'repay';
 }): Promise<RelayResponse> {
   try {
     const response = await fetch('/api/mirror/relay', {

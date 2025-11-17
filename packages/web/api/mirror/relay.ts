@@ -10,6 +10,7 @@ const HEDERA_CREDIT_OAPP_ADDR = (process.env.VITE_HEDERA_CREDIT_OAPP || '0x...')
 const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
 const HEDERA_MIRROR_PRIVATE_KEY = process.env.HEDERA_ECDSA_KEY;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
+const SEPOLIA_MIRROR_PRIVATE_KEY = process.env.DEPLOYER_KEY;
 
 // Log environment variables and contract addresses
 console.log('=== ENVIRONMENT VARIABLES ===');
@@ -42,6 +43,19 @@ const loadABI = (filename: string) => {
 const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
 const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
 
+const RAY = 10n ** 27n;
+const DEBT_TOKEN_DECIMALS = 6;
+
+const rayMul = (a: bigint, b: bigint) => {
+  if (a === 0n || b === 0n) return 0n;
+  return (a * b) / RAY;
+};
+
+const toRay = (amount: bigint, decimals: number) => {
+  const exponent = BigInt(27 - decimals);
+  return amount * 10n ** exponent;
+};
+
 export default async function handler(
   request: ApiRequest,
   response: ApiResponse
@@ -61,15 +75,17 @@ export default async function handler(
   }
 
   try {
-    const { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower } = request.body;
+    const { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType } = request.body;
     
-    console.log('Parsed request body:', { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower });
+    const mode: 'fund' | 'repay' = actionType === 'repay' ? 'repay' : 'fund';
+    
+    console.log('Parsed request body:', { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType, mode });
     
     if (!orderId || !txHash || collateralToUnlock === undefined || fullyRepaid === undefined || !reserveId || !borrower) {
       const error = `Missing required parameters. Received: ${JSON.stringify({
         hasOrderId: !!orderId,
         hasTxHash: !!txHash,
-collateralToUnlock,
+        collateralToUnlock,
         fullyRepaid,
         reserveId: !!reserveId,
         borrower: !!borrower
@@ -82,168 +98,275 @@ collateralToUnlock,
       });
     }
 
-    // 1. Verify Sepolia transaction first
-    console.log('Verifying Sepolia transaction...');
-    let sepoliaProvider;
-    let sepoliaTx;
-    
-    try {
-      if (!SEPOLIA_RPC_URL) {
-        throw new Error('SEPOLIA_RPC_URL environment variable is not set');
-      }
+    if (mode === 'fund') {
+      console.log('Processing fund relay via Sepolia → Hedera path');
+      let sepoliaProvider;
+      let sepoliaTx;
       
-      console.log('Creating Sepolia provider with URL:', SEPOLIA_RPC_URL);
-      
-      // Initialize provider with minimal configuration
-      sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
-      
-      // Disable ENS resolution
-      sepoliaProvider.getResolver = async () => null;
-      sepoliaProvider.resolveName = async (name: string) => {
-        if (ethers.isAddress(name)) return name;
-        return null;
-      };
-      
-      // Test the connection
-      const network = await sepoliaProvider.getNetwork();
-      console.log('Connected to network:', {
-        name: network.name,
-        chainId: network.chainId.toString()
-      });
-      
-      // Log network status
-      console.log('Network status:', {
-        isTestnet: network.chainId === 11155111n ? 'Sepolia Testnet' : 'Unknown',
-        isEthereum: network.name === 'sepolia' || network.name === 'homestead'
-      });
-      console.log('Fetching transaction:', txHash);
-      sepoliaTx = await sepoliaProvider.getTransaction(txHash);
-      console.log('Transaction details:', {
-        hash: sepoliaTx?.hash,
-        blockNumber: sepoliaTx?.blockNumber,
-        from: sepoliaTx?.from,
-        to: sepoliaTx?.to,
-        value: sepoliaTx?.value?.toString()
-      });
-      
-      if (!sepoliaTx) {
-        const error = 'Transaction not found on Sepolia';
-        console.error(error);
-        return response.status(404).json({ 
+      try {
+        if (!SEPOLIA_RPC_URL) {
+          throw new Error('SEPOLIA_RPC_URL environment variable is not set');
+        }
+        
+        console.log('Creating Sepolia provider with URL:', SEPOLIA_RPC_URL);
+        
+        sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
+        
+        sepoliaProvider.getResolver = async () => null;
+        sepoliaProvider.resolveName = async (name: string) => {
+          if (ethers.isAddress(name)) return name;
+          return null;
+        };
+        
+        const network = await sepoliaProvider.getNetwork();
+        console.log('Connected to network:', {
+          name: network.name,
+          chainId: network.chainId.toString()
+        });
+        
+        console.log('Fetching transaction:', txHash);
+        sepoliaTx = await sepoliaProvider.getTransaction(txHash);
+        console.log('Transaction details:', {
+          hash: sepoliaTx?.hash,
+          blockNumber: sepoliaTx?.blockNumber,
+          from: sepoliaTx?.from,
+          to: sepoliaTx?.to,
+          value: sepoliaTx?.value?.toString()
+        });
+        
+        if (!sepoliaTx) {
+          const error = 'Transaction not found on Sepolia';
+          console.error(error);
+          return response.status(404).json({ 
+            success: false,
+            error
+          });
+        }
+      } catch (error) {
+        console.error('Error verifying Sepolia transaction:', error);
+        return response.status(500).json({
           success: false,
-          error
+          error: `Failed to verify Sepolia transaction: ${error instanceof Error ? error.message : 'Unknown error'}`
         });
       }
-    } catch (error) {
-      console.error('Error verifying Sepolia transaction:', error);
-      return response.status(500).json({
-        success: false,
-        error: `Failed to verify Sepolia transaction: ${error instanceof Error ? error.message : 'Unknown error'}`
-      });
-    }
 
-    // 2. Wait for Sepolia transaction to be mined
-    console.log('Waiting for Sepolia transaction to be mined...');
-    let sepoliaReceipt;
-    
-    try {
-      sepoliaReceipt = await sepoliaTx.wait();
-      console.log('Sepolia transaction receipt:', {
-        blockNumber: sepoliaReceipt?.blockNumber,
-        status: sepoliaReceipt?.status,
-        logsCount: sepoliaReceipt?.logs?.length,
-        gasUsed: sepoliaReceipt?.gasUsed?.toString(),
-        contractAddress: sepoliaReceipt?.contractAddress,
-        transactionLogs: sepoliaReceipt?.logs?.map((log: any, i: number) => ({
-          index: i,
-          address: log.address,
-          topics: log.topics,
-          data: log.data
-        }))
-      });
+      console.log('Waiting for Sepolia transaction to be mined...');
+      let sepoliaReceipt;
       
-      if (!sepoliaReceipt || !sepoliaReceipt.status) {
-        const error = 'Sepolia transaction failed or not found';
-        console.error(error, { receipt: sepoliaReceipt });
+      try {
+        sepoliaReceipt = await sepoliaTx.wait();
+        console.log('Sepolia transaction receipt:', {
+          blockNumber: sepoliaReceipt?.blockNumber,
+          status: sepoliaReceipt?.status,
+          logsCount: sepoliaReceipt?.logs?.length,
+          gasUsed: sepoliaReceipt?.gasUsed?.toString(),
+          contractAddress: sepoliaReceipt?.contractAddress,
+          transactionLogs: sepoliaReceipt?.logs?.map((log: any, i: number) => ({
+            index: i,
+            address: log.address,
+            topics: log.topics,
+            data: log.data
+          }))
+        });
+        
+        if (!sepoliaReceipt || !sepoliaReceipt.status) {
+          const error = 'Sepolia transaction failed or not found';
+          console.error(error, { receipt: sepoliaReceipt });
+          return response.status(400).json({ 
+            success: false,
+            error
+          });
+        }
+      } catch (error) {
+        console.error('Error waiting for transaction receipt:', error);
+        return response.status(500).json({
+          success: false,
+          error: `Failed to get transaction receipt: ${error instanceof Error ? error.message : 'Unknown error'}`
+        });
+      }
+
+      const ethCollateral = new ethers.Contract(
+        ETH_COLLATERAL_OAPP_ADDR,
+        ETH_COLLATERAL_ABI,
+        sepoliaProvider
+      );
+
+      const order = await ethCollateral.orders(orderId);
+      
+      if (!order || !order.funded) {
         return response.status(400).json({ 
           success: false,
-          error
+          error: 'Order not found or not funded on Sepolia' 
         });
       }
-    } catch (error) {
-      console.error('Error waiting for transaction receipt:', error);
-      return response.status(500).json({
-        success: false,
-        error: `Failed to get transaction receipt: ${error instanceof Error ? error.message : 'Unknown error'}`
+
+      if (!HEDERA_MIRROR_PRIVATE_KEY || !HEDERA_RPC_URL) {
+        return response.status(500).json({ 
+          success: false,
+          error: 'Server configuration error' 
+        });
+      }
+
+      const hederaProvider = new ethers.JsonRpcProvider(HEDERA_RPC_URL);
+      const wallet = new ethers.Wallet(HEDERA_MIRROR_PRIVATE_KEY, hederaProvider);
+      const hederaCredit = new ethers.Contract(
+        HEDERA_CREDIT_OAPP_ADDR,
+        HEDERA_CREDIT_ABI,
+        wallet
+      );
+
+      const collateralAmount = order.amountWei || order.amountWei === 0 ? 
+        order.amountWei.toString() : 
+        (order as any).collateralWei?.toString() || '0';
+
+      if (collateralAmount === '0') {
+        throw new Error('Order has no collateral amount');
+      }
+
+      console.log('Calling adminMirrorOrder with:', {
+        orderId,
+        reserveId,
+        borrower,
+        collateralAmount
+      });
+      
+      const mirrorTx = await hederaCredit.adminMirrorOrder(
+        orderId,
+        reserveId,
+        borrower,
+        borrower,
+        BigInt(collateralAmount)
+      );
+
+      console.log('Transaction submitted, waiting for confirmation...');
+
+      const receipt = await mirrorTx.wait();
+
+      return response.status(200).json({
+        success: true,
+        message: 'Funding mirrored successfully',
+        txHash: receipt.transactionHash
       });
     }
 
-    // 3. Check order status on Sepolia
-    const ethCollateral = new ethers.Contract(
-      ETH_COLLATERAL_OAPP_ADDR,
-      ETH_COLLATERAL_ABI,
-      sepoliaProvider
-    );
+    console.log('Processing repay relay via Hedera → Sepolia path');
 
-    const order = await ethCollateral.orders(orderId);
-    
-    if (!order || !order.funded) {
-      return response.status(400).json({ 
-        success: false,
-        error: 'Order not found or not funded on Sepolia' 
-      });
+    if (!HEDERA_RPC_URL) {
+      throw new Error('HEDERA_RPC_URL environment variable is not set');
     }
-
-    // 4. Now process on Hedera using adminMirrorRepayment
-    if (!HEDERA_MIRROR_PRIVATE_KEY || !HEDERA_RPC_URL) {
-      return response.status(500).json({ 
-        success: false,
-        error: 'Server configuration error' 
-      });
+    if (!SEPOLIA_RPC_URL) {
+      throw new Error('SEPOLIA_RPC_URL environment variable is not set');
+    }
+    if (!SEPOLIA_MIRROR_PRIVATE_KEY) {
+      throw new Error('DEPLOYER_KEY (Sepolia mirror signer) is not configured');
     }
 
     const hederaProvider = new ethers.JsonRpcProvider(HEDERA_RPC_URL);
-    const wallet = new ethers.Wallet(HEDERA_MIRROR_PRIVATE_KEY, hederaProvider);
-    
-    const hederaCredit = new ethers.Contract(
-      HEDERA_CREDIT_OAPP_ADDR,
-      HEDERA_CREDIT_ABI,
-      wallet
-    );
+    const hederaTx = await hederaProvider.getTransaction(txHash);
 
-    // Get the collateral amount from the order
-    // The order.amountWei field contains the total collateral in wei
-    const collateralAmount = order.amountWei || order.amountWei === 0 ? 
-      order.amountWei.toString() : 
-      (order as any).collateralWei?.toString() || '0';
-
-    if (collateralAmount === '0') {
-      throw new Error('Order has no collateral amount');
+    if (!hederaTx) {
+      return response.status(404).json({
+        success: false,
+        error: 'Transaction not found on Hedera'
+      });
     }
 
-    console.log('Calling adminMirrorOrder with:', {
-      orderId,
-      reserveId,
-      borrower,
-      collateralAmount
-    });
-    
-    const mirrorTx = await hederaCredit.adminMirrorOrder(
-      orderId,
-      reserveId,
-      borrower,
-      borrower, // Using same as canonical address
-      BigInt(collateralAmount)
+    const hederaReceipt = await hederaTx.wait();
+    if (!hederaReceipt || !hederaReceipt.status) {
+      return response.status(400).json({
+        success: false,
+        error: 'Hedera transaction failed or not found'
+      });
+    }
+
+    const hederaInterface = new ethers.Interface(HEDERA_CREDIT_ABI);
+    const parsedLog = hederaReceipt.logs
+      ?.map((log: any) => {
+        if (!log?.topics?.length) return null;
+        try {
+          return hederaInterface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((log) => {
+        if (!log || log.name !== 'RepayApplied') return false;
+        const logOrderId = (log.args?.orderId as string | undefined)?.toLowerCase();
+        return !!logOrderId && logOrderId === orderId.toLowerCase();
+      });
+
+    if (!parsedLog) {
+      throw new Error('RepayApplied event not found in Hedera transaction logs');
+    }
+
+    const repayAmount = BigInt(parsedLog.args?.repayBurnAmount?.toString() ?? '0');
+    const eventReserveId = (parsedLog.args?.reserveId as `0x${string}` | undefined) || reserveId;
+    const eventFullyRepaid = Boolean(parsedLog.args?.fullyRepaid ?? fullyRepaid);
+
+    const hederaCreditReader = new ethers.Contract(
+      HEDERA_CREDIT_OAPP_ADDR,
+      HEDERA_CREDIT_ABI,
+      hederaProvider
     );
 
-    console.log('Transaction submitted, waiting for confirmation...');
+    const position = await hederaCreditReader.positions(orderId);
+    if (!position) {
+      throw new Error('Position not found on Hedera');
+    }
 
-    const receipt = await mirrorTx.wait();
+    const reserveState = await hederaCreditReader.reserveStates(eventReserveId);
+    if (!reserveState) {
+      throw new Error('Reserve state not found on Hedera');
+    }
+    const collateralWei = BigInt(position.collateralWei?.toString?.() ?? '0');
+    const scaledDebtRayAfter = BigInt(position.scaledDebtRay?.toString?.() ?? '0');
+    const variableBorrowIndexRaw = BigInt(reserveState?.variableBorrowIndex?.toString?.() ?? '0');
+    const borrowIndex = variableBorrowIndexRaw === 0n ? RAY : variableBorrowIndexRaw;
+
+    const repayRay = toRay(repayAmount, DEBT_TOKEN_DECIMALS);
+    const totalDebtAfterRay = rayMul(scaledDebtRayAfter, borrowIndex);
+    const totalDebtBeforeRay = totalDebtAfterRay + repayRay;
+
+    if (totalDebtBeforeRay === 0n) {
+      throw new Error('Invalid debt snapshot for repayment');
+    }
+
+    let unlockAmount = (collateralWei * repayRay) / totalDebtBeforeRay;
+    if (unlockAmount > collateralWei) {
+      unlockAmount = collateralWei;
+    }
+    if (unlockAmount === 0n && eventFullyRepaid) {
+      unlockAmount = collateralWei;
+    }
+
+    console.log('Computed unlock payload:', {
+      repayAmount: repayAmount.toString(),
+      unlockAmount: unlockAmount.toString(),
+      collateralWei: collateralWei.toString(),
+      eventFullyRepaid,
+      reserveId: eventReserveId
+    });
+
+    const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
+    const adminWallet = new ethers.Wallet(SEPOLIA_MIRROR_PRIVATE_KEY, sepoliaProvider);
+    const ethCollateral = new ethers.Contract(
+      ETH_COLLATERAL_OAPP_ADDR,
+      ETH_COLLATERAL_ABI,
+      adminWallet
+    );
+
+    const mirrorTx = await ethCollateral.adminMirrorRepayment(
+      orderId,
+      eventReserveId,
+      eventFullyRepaid,
+      unlockAmount
+    );
+    const mirrorReceipt = await mirrorTx.wait();
 
     return response.status(200).json({
       success: true,
       message: 'Repayment mirrored successfully',
-      txHash: receipt.transactionHash
+      txHash: mirrorReceipt.transactionHash
     });
 
   } catch (error) {

@@ -71,38 +71,58 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   const handleRelayConfirmation = useCallback(async () => {
     if (!address || !selectedOrder) return;
-    
+
     setIsRelaying(true);
     try {
-      // Fetch all transactions for this order
+      const isRepayFlow = selectedOrder.status === 'PendingRepayConfirmation';
+
+      // Fetch all transactions for this order so we can pick the correct tx hash per flow
       const orderTransactions = await fetchOrderTransactions(selectedOrder.orderId);
-      
-      // Find the funding transaction (usually labeled as 'Order Funded' or similar)
-      const fundingTx = orderTransactions.find(tx => 
-        tx.label.toLowerCase().includes('fund') || 
-        tx.label.toLowerCase().includes('deposit')
-      );
-      
-      if (!fundingTx) {
-        throw new Error('No funding transaction found for this order. Please try the standard confirmation flow first.');
+
+      const findTransaction = (predicate: (tx: OrderTransaction) => boolean) => {
+        for (let i = orderTransactions.length - 1; i >= 0; i -= 1) {
+          const tx = orderTransactions[i];
+          if (predicate(tx)) return tx;
+        }
+        return undefined;
+      };
+
+      const relayTx = isRepayFlow
+        ? findTransaction((tx) => tx.label.toLowerCase().includes('repaid'))
+        : findTransaction((tx) =>
+            tx.label.toLowerCase().includes('fund') ||
+            tx.label.toLowerCase().includes('deposit')
+          );
+
+      if (!relayTx) {
+        throw new Error(
+          isRepayFlow
+            ? 'No Hedera repay transaction found. Please try the standard confirmation flow first.'
+            : 'No funding transaction found for this order. Please try the standard confirmation flow first.'
+        );
       }
 
-      // Call the relay service with the actual funding transaction hash
+      // Call the relay service with the identified transaction
       const result = await submitToMirrorRelay({
         orderId: selectedOrder.orderId,
-        txHash: fundingTx.txHash,
+        txHash: relayTx.txHash,
         collateralToUnlock: '0',
-        fullyRepaid: false,
+        fullyRepaid: isRepayFlow,
         reserveId: selectedOrder.reserveId || '0x01',
-        borrower: address
+        borrower: address,
+        actionType: isRepayFlow ? 'repay' : 'fund',
       });
 
-      if (result.success) {
-        toast.success('Bridge operation started successfully');
-        // Start polling for the order status update
-        startPollingForHederaOrder(selectedOrder.orderId, fundingTx.txHash);
-      } else {
+      if (!result.success) {
         throw new Error(result.error || 'Failed to start bridge operation');
+      }
+
+      toast.success('Bridge operation started successfully');
+
+      if (isRepayFlow) {
+        startPollingForEthRepay(selectedOrder.orderId);
+      } else {
+        startPollingForHederaOrder(selectedOrder.orderId, relayTx.txHash);
       }
     } catch (error) {
       console.error('Bridge operation error:', error);
@@ -110,7 +130,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     } finally {
       setIsRelaying(false);
     }
-  }, [address, selectedOrder, startPollingForHederaOrder]);
+  }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay]);
 
   const handleRepayRelayConfirmation = useCallback(async () => {
     if (!selectedOrder) return;
