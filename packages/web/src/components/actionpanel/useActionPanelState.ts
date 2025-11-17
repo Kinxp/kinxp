@@ -76,7 +76,6 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     try {
       const isRepayFlow = selectedOrder.status === 'PendingRepayConfirmation';
 
-      // Fetch all transactions for this order so we can pick the correct tx hash per flow
       const orderTransactions = await fetchOrderTransactions(selectedOrder.orderId);
 
       const findTransaction = (predicate: (tx: OrderTransaction) => boolean) => {
@@ -102,26 +101,25 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
         );
       }
 
-      // Call the relay service with the identified transaction
-      const result = await submitToMirrorRelay({
-        orderId: selectedOrder.orderId,
-        txHash: relayTx.txHash,
-        collateralToUnlock: '0',
-        fullyRepaid: isRepayFlow,
-        reserveId: selectedOrder.reserveId || '0x01',
-        borrower: address,
-        actionType: isRepayFlow ? 'repay' : 'fund',
-      });
-
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to start bridge operation');
-      }
-
-      toast.success('Bridge operation started successfully');
-
       if (isRepayFlow) {
+        await triggerWithdrawRelay(selectedOrder.orderId, relayTx.txHash);
+        toast.success('Repay relay triggered');
         startPollingForEthRepay(selectedOrder.orderId);
       } else {
+        const result = await submitToMirrorRelay({
+          orderId: selectedOrder.orderId,
+          txHash: relayTx.txHash,
+          collateralToUnlock: '0',
+          fullyRepaid: false,
+          reserveId: selectedOrder.reserveId || '0x01',
+          borrower: address,
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to start bridge operation');
+        }
+
+        toast.success('Bridge operation started successfully');
         startPollingForHederaOrder(selectedOrder.orderId, relayTx.txHash);
       }
     } catch (error) {
@@ -130,7 +128,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     } finally {
       setIsRelaying(false);
     }
-  }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay]);
+  }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay, triggerWithdrawRelay]);
 
   const handleRepayRelayConfirmation = useCallback(async () => {
     if (!selectedOrder) return;

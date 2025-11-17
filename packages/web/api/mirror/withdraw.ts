@@ -10,16 +10,14 @@ const HEDERA_CREDIT_OAPP_ADDR = (process.env.VITE_HEDERA_CREDIT_OAPP || '0x...')
 const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
 const MIRROR_ADMIN_PRIVATE_KEY = process.env.MIRROR_ADMIN_WITHDRAW_PRIVATE_KEY;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
-const SEPOLIA_MIRROR_PRIVATE_KEY = process.env.DEPLOYER_KEY;
 
 // Log environment variables and contract addresses
 console.log('=== WITHDRAW MIRROR ENVIRONMENT ===');
 console.log('VITE_ETH_COLLATERAL_OAPP:', process.env.VITE_ETH_COLLATERAL_OAPP ? '***SET***' : 'NOT SET');
 console.log('VITE_HEDERA_CREDIT_OAPP:', process.env.VITE_HEDERA_CREDIT_OAPP ? '***SET***' : 'NOT SET');
 console.log('HEDERA_RPC_URL:', HEDERA_RPC_URL ? '***SET***' : 'NOT SET');
-console.log('HEDERA_ECDSA_KEY:', HEDERA_MIRROR_PRIVATE_KEY ? '***SET***' : 'NOT SET');
+console.log('MIRROR_ADMIN_WITHDRAW_PRIVATE_KEY:', MIRROR_ADMIN_PRIVATE_KEY ? '***SET***' : 'NOT SET');
 console.log('SEPOLIA_RPC_URL:', SEPOLIA_RPC_URL ? '***SET***' : 'NOT SET');
-console.log('DEPLOYER_KEY:', SEPOLIA_MIRROR_PRIVATE_KEY ? '***SET***' : 'NOT SET');
 
 console.log('\n=== CONTRACT ADDRESSES ===');
 console.log('ETH_COLLATERAL_OAPP_ADDR:', ETH_COLLATERAL_OAPP_ADDR);
@@ -30,7 +28,7 @@ if (ETH_COLLATERAL_OAPP_ADDR === '0x...' || HEDERA_CREDIT_OAPP_ADDR === '0x...')
   console.error('ERROR: Contract addresses are using default values. Please set the correct environment variables.');
 }
 
-if (!HEDERA_RPC_URL || !HEDERA_MIRROR_PRIVATE_KEY || !SEPOLIA_RPC_URL || !SEPOLIA_MIRROR_PRIVATE_KEY) {
+if (!HEDERA_RPC_URL || !SEPOLIA_RPC_URL || !MIRROR_ADMIN_PRIVATE_KEY) {
   console.error('ERROR: Missing required environment variables');
 }
 
@@ -174,19 +172,18 @@ export default async function handler(
       });
     }
 
-    // 3. Check order status on Hedera
-    if (!HEDERA_MIRROR_PRIVATE_KEY || !HEDERA_RPC_URL) {
+    // 3. Check order status on Hedera (read-only)
+    if (!HEDERA_RPC_URL) {
       return response.status(500).json({ 
         success: false,
         error: 'Server configuration error' 
       });
     }
 
-    const hederaSigner = new ethers.Wallet(HEDERA_MIRROR_PRIVATE_KEY, hederaProvider);
     const hederaCredit = new ethers.Contract(
       HEDERA_CREDIT_OAPP_ADDR,
       HEDERA_CREDIT_ABI,
-      hederaSigner
+      hederaProvider
     );
 
     const order = await hederaCredit.positions(orderId);
@@ -200,8 +197,12 @@ export default async function handler(
 
     // 4. Execute withdrawal on Sepolia
     console.log('Initializing Sepolia provider...');
+    if (!MIRROR_ADMIN_PRIVATE_KEY) {
+      throw new Error('MIRROR_ADMIN_WITHDRAW_PRIVATE_KEY is not configured');
+    }
+
     const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
-    const sepoliaSigner = new ethers.Wallet(SEPOLIA_MIRROR_PRIVATE_KEY, sepoliaProvider);
+    const sepoliaSigner = new ethers.Wallet(MIRROR_ADMIN_PRIVATE_KEY, sepoliaProvider);
     
     const ethCollateral = new ethers.Contract(
       ETH_COLLATERAL_OAPP_ADDR,
