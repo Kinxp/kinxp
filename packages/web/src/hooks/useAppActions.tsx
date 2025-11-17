@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
+import { submitToMirrorRelay } from '../services/mirrorRelayService';
 import { parseEther, parseUnits, formatUnits } from 'viem';
 import toast from 'react-hot-toast';
 
@@ -96,12 +97,57 @@ export function useAppActions(onActionSuccess?: (receipt: any) => void) {
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'createOrderId' });
   }, [sendTxOnChain]);
 
-  const handleFundOrder = useCallback((orderId: `0x${string}`, amountToFund: string) => {
+  const handleFundOrder = useCallback(async (orderId: `0x${string}`, amountToFund: string) => {
     toast('Funding order...');
-    const nativeFee = parseEther('0.0001');
-    const totalValue = parseEther(amountToFund) + nativeFee;
-    sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [orderId, parseEther(amountToFund)], value: totalValue });
-  }, [sendTxOnChain]);
+    try {
+      const nativeFee = parseEther('0.0001');
+      const totalValue = parseEther(amountToFund) + nativeFee;
+      
+      // Store the transaction hash
+      const txHash = await sendTxOnChain(ETH_CHAIN_ID, { 
+        address: ETH_COLLATERAL_OAPP_ADDR, 
+        abi: ETH_COLLATERAL_ABI, 
+        functionName: 'fundOrderWithNotify', 
+        args: [orderId, parseEther(amountToFund)], 
+        value: totalValue 
+      }) as `0x${string}`;
+
+      // After successful funding, call the mirror relay service
+      if (txHash) {
+        if (!address) {
+          throw new Error('No connected wallet address found');
+        }
+        
+        toast('Notifying Hedera via mirror relay...');
+        try {
+          const result = await submitToMirrorRelay({
+            orderId,
+            txHash,
+            collateralToUnlock: parseEther(amountToFund).toString(),
+            fullyRepaid: false,
+            reserveId: orderId, // Using orderId as reserveId
+            borrower: address // Now we're sure address is defined
+          });
+
+          if (!result.success) {
+            throw new Error(result.error || 'Failed to notify Hedera via mirror relay');
+          }
+          
+          toast.success('Hedera mirror relay notified successfully');
+        } catch (mirrorError) {
+          console.error('Mirror relay error:', mirrorError);
+          toast.error('Funding successful but failed to notify Hedera mirror. Please try again later.');
+          // Don't throw the error to keep the funding successful
+        }
+      }
+
+      return txHash;
+    } catch (e) { 
+      const error = e as Error;
+      setActionError(error.message); 
+      throw error;
+    }
+  }, [sendTxOnChain, address]);
   
   const handleBorrow = useCallback(async (orderId: `0x${string}`, amountToBorrow: string) => {
     toast('Preparing borrow transaction...');
