@@ -1,9 +1,9 @@
 import React, { createContext, useState, useCallback, useRef, useContext, ReactNode, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
-import { readContract, getAccount } from 'wagmi/actions';
+import { readContract, getAccount, getPublicClient } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
-import { parseEther, parseUnits, formatUnits } from 'viem';
+import { parseEther, parseUnits, formatUnits, parseAbiItem } from 'viem';
 import toast from 'react-hot-toast';
 
 import { AppState } from '../types';
@@ -22,6 +22,13 @@ import { submitToMirrorRelay } from '../services/mirrorRelayService';
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
+const MIRROR_FLAG_FUND = 'mirror_funding_';
+const MIRROR_FLAG_REPAY = 'mirror_repay_';
+const MIRROR_FLAG_FUND_INFLIGHT = 'mirror_funding_inflight_';
+const MIRROR_FLAG_REPAY_INFLIGHT = 'mirror_repay_inflight_';
+const ORDER_CREATED_EVENT = parseAbiItem(
+  'event OrderCreated(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user)'
+);
 
 type BorrowedOrderMap = Record<string, { amount: string }>;
 
@@ -50,6 +57,56 @@ function readBorrowedOrdersFromStorage(): BorrowedOrderMap {
   }
 }
 
+const setMirrorFlag = (prefix: string, orderId: `0x${string}`, value: boolean) => {
+  if (typeof window === 'undefined') return;
+  const key = `${prefix}${orderId.toLowerCase()}`;
+  if (value) {
+    window.localStorage.setItem(key, 'true');
+  } else {
+    window.localStorage.removeItem(key);
+  }
+};
+
+const hasMirrorFlag = (prefix: string, orderId: `0x${string}` | null | undefined): boolean => {
+  if (typeof window === 'undefined' || !orderId) return false;
+  const key = `${prefix}${orderId.toLowerCase()}`;
+  return window.localStorage.getItem(key) === 'true';
+};
+
+const setMirrorInflight = (prefix: string, orderId: `0x${string}` | null, value: boolean) => {
+  if (typeof window === 'undefined' || !orderId) return;
+  const key = `${prefix}${orderId.toLowerCase()}`;
+  if (value) {
+    window.localStorage.setItem(key, 'true');
+  } else {
+    window.localStorage.removeItem(key);
+  }
+};
+
+const isMirrorInflight = (prefix: string, orderId: `0x${string}` | null | undefined): boolean => {
+  if (typeof window === 'undefined' || !orderId) return false;
+  return window.localStorage.getItem(`${prefix}${orderId.toLowerCase()}`) === 'true';
+};
+
+const fetchReserveIdForOrder = async (orderId: `0x${string}`): Promise<`0x${string}`> => {
+  try {
+    const orderTuple = await readContract(wagmiConfig, {
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      abi: ETH_COLLATERAL_ABI,
+      functionName: 'orders',
+      args: [orderId],
+      chainId: ETH_CHAIN_ID,
+    }) as [`0x${string}`, `0x${string}`, bigint, bigint, boolean, boolean, boolean];
+    const reserveId = orderTuple?.[1];
+    if (reserveId && reserveId !== ZERO_BYTES32) {
+      return reserveId;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch reserveId for order', orderId, err);
+  }
+  return orderId;
+};
+
 // Define the shape (interface) of our global context
 interface AppContextType {
   // Wallet & Connection
@@ -72,7 +129,6 @@ interface AppContextType {
   handleWithdraw: () => void;
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
-  exitProgressView: () => void;
   setSelectedOrderId: (orderId: `0x${string}` | null) => void;
   borrowedOrders: BorrowedOrderMap;
   startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
@@ -128,7 +184,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const hederaPollingRef = useRef<NodeJS.Timeout | null>(null);
   const ethPollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  const { data: hash, error: writeError, isPending: isWritePending, writeContract, reset: resetWriteContract } = useWriteContract();
+  const { data: hash, error: writeError, isPending: isWritePending, writeContract, writeContractAsync, reset: resetWriteContract } = useWriteContract();
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash });
   const hederaPublicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
   
@@ -211,7 +267,9 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       config.gas = gasLimits[config.functionName] || 2_000_000n;
     }
     
-    const result = await writeContract(config);
+    const writer = writeContractAsync ?? writeContract;
+    if (!writer) throw new Error('Wallet not ready');
+    const result = await writer(config);
     
     // Store the transaction hash for funded orders
     if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
@@ -243,6 +301,8 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     addLog(`▶ Funding order ${activeOrderId.slice(0, 10)}... with ${amountToFund} ETH...`);
     addLog(`   ↪ Direction: Sepolia ➜ Hedera (fundOrderWithNotify)`);
     addLog(`   ↪ Wallet: ${address}`);
+    setMirrorFlag(MIRROR_FLAG_FUND, activeOrderId, false);
+    setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
     const nativeFee = parseEther('0.0001');
     const totalValue = parseEther(amountToFund) + nativeFee;
     addLog(`   ↪ Total value: ${formatUnits(totalValue, 18)} ETH (includes native fee buffer ${formatUnits(nativeFee, 18)} ETH)`);
@@ -284,16 +344,19 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       if (txHash) {
         addLog(`✓ Transaction confirmed on Sepolia: ${txHash}`);
         addLog('✓ Notifying Hedera via /api/mirror/relay...');
+        const reserveId = await fetchReserveIdForOrder(activeOrderId);
+        const account = await getAccount(wagmiConfig);
         const payload = {
           orderId: activeOrderId,
           txHash,
           collateralToUnlock: amountWei.toString(),
           fullyRepaid: false,
-          reserveId: activeOrderId,
-          borrower: await getAccount(wagmiConfig).address
+          reserveId,
+          borrower: account.address
         };
         addLog(`   ↪ Payload: ${JSON.stringify(payload)}`);
         try {
+          setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, true);
           const response = await fetch('/api/mirror/relay', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -303,12 +366,15 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
           const result = await response.json();
           if (result.success) {
             addLog(`✓ Hedera mirror succeeded. Hedera tx hash: ${result.txHash ?? 'N/A'}`);
+            setMirrorFlag(MIRROR_FLAG_FUND, activeOrderId, true);
           } else {
             addLog(`⚠️ Admin mirror service warning: ${result.message || 'Unknown error'}`);
           }
+          setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
         } catch (mirrorError) {
           console.error('Admin mirror service error:', mirrorError);
           addLog('⚠️ Failed to notify Hedera via admin mirror service. Please try again later.');
+          setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
         }
       }
     } catch (e) {
@@ -339,13 +405,18 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       addLog(`3/3: Sending borrow transaction with exact fee...`);
       addLog(`   ↪ Wallet: ${address ?? 'unknown'} | Value (HBAR): ${formatUnits(valueInWei, 18)}`);
       const borrowHash = await sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [activeOrderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
+      if (!borrowHash) {
+        throw new Error('Borrow transaction was not submitted');
+      }
       addLog(`   ↪ Borrow tx hash: ${borrowHash}`);
+      await waitForHederaReceipt(borrowHash as `0x${string}`);
+      addLog('   ↪ Borrow transaction mined on Hedera');
     } catch (e: any) {
       addLog(`❌ An error occurred during the borrow process: ${e.shortMessage || e.message}`);
       setError(`Borrow failed: ${e.shortMessage || e.message}`);
       setAppState(AppState.ERROR);
     }
-  }, [activeOrderId, sendTxOnChain, addLog]);
+  }, [activeOrderId, sendTxOnChain, addLog, waitForHederaReceipt]);
 
   const resolveTreasuryAddress = useCallback(async (): Promise<`0x${string}`> => {
     if (treasuryAddress) return treasuryAddress;
@@ -385,6 +456,7 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       addLog('   ↪ Calling /api/mirror/withdraw with payload:');
       addLog(`      orderId=${orderId}, txHash=${repayTxHash}, receiver=${address}`);
 
+      setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, orderId, true);
       const result = await submitWithdrawToEthereum(
         orderId,
         repayTxHash,
@@ -393,14 +465,17 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
         address
       );
 
-      if (result.success) {
-        addLog(`✓ Withdrawal relay triggered on Ethereum. Sepolia tx hash: ${result.txHash ?? 'N/A'}`);
-      } else {
-        addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
-      }
+        if (result.success) {
+          addLog(`✓ Withdrawal relay triggered on Ethereum. Sepolia tx hash: ${result.txHash ?? 'N/A'}`);
+          setMirrorFlag(MIRROR_FLAG_REPAY, orderId, true);
+        } else {
+          addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
+        }
+        setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, orderId, false);
     } catch (err) {
       console.error('Withdraw relay error:', err);
       addLog('⚠ Failed to trigger withdraw relay. You can retry from the dashboard once available.');
+      setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, orderId, false);
     }
   }, [address, addLog]);
 
@@ -470,6 +545,8 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       throw new Error('Repayment amount must be greater than zero');
     }
     
+    setMirrorFlag(MIRROR_FLAG_REPAY, activeOrderId, false);
+    setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, activeOrderId, false);
     setAppState(AppState.RETURNING_FUNDS);
     setCurrentToast(String(toast.loading('Preparing transaction...')));
     addLog('▶ Initiating repay (Hedera ➜ Sepolia)');
@@ -588,12 +665,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     setAppState(AppState.CROSSING_TO_HEDERA);
     addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
     setOrderId(prev => prev ?? idToPoll);
-    setSelectedOrderId(prev => {
-      if (!prev || prev === idToPoll) {
-        return idToPoll;
-      }
-      return prev;
-    });
+    setSelectedOrderId(idToPoll);
     let attempts = 0; const maxAttempts = 60;
     if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
     hederaPollingRef.current = setInterval(async () => {
@@ -607,7 +679,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
         // This makes the newly bridged order the currently selected one.
         setSelectedOrderId(idToPoll); 
         setOrderId(null); // Clear the temporary linear flow ID
-        setAppState(AppState.READY_TO_BORROW); // Set the state that triggers the borrow UI
+        setAppState(AppState.LOAN_ACTIVE); // Unlock the management UI immediately
         
       } else if (attempts >= maxAttempts) {
         addLog('❌ [Polling Hedera] Timed out.');
@@ -717,18 +789,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     setPollingStartBlock(0);
   };
 
-  // Exit progress view without fully resetting - allows user to navigate away
-  // while polling continues in the background
-  const exitProgressView = useCallback(() => {
-    // Set state to IDLE or LOAN_ACTIVE depending on whether there's a selected order
-    // This allows the user to navigate away while polling continues
-    if (selectedOrderId) {
-      setAppState(AppState.LOAN_ACTIVE);
-    } else {
-      setAppState(AppState.IDLE);
-    }
-  }, [selectedOrderId]);
-
   const handleReceipt = useCallback(async () => {
     if (receipt) {
       addLog(`✓ Transaction confirmed! Block: ${receipt.blockNumber}`);
@@ -739,13 +799,77 @@ const handleRepay = useCallback(async (repayAmount: string) => {
         case AppState.ORDER_CREATING:
           try {
             const eventTopic = '0xfe3abe4ac576af677b15551bc3727d347d2c7b3d0aa6e5d4ec1bed01e3f13d16';
-            const orderCreatedLog = receipt.logs.find(log => log.topics[0] === eventTopic);
-            if (orderCreatedLog && orderCreatedLog.topics[1]) {
-              setOrderId(orderCreatedLog.topics[1]);
-              addLog(`✓ Order ID created: ${orderCreatedLog.topics[1].slice(0, 12)}...`);
+            const iface = new ethers.Interface(ETH_COLLATERAL_ABI);
+            let parsedOrderId: `0x${string}` | null = null;
+            for (const log of receipt.logs) {
+              if (!log?.topics?.length) continue;
+              if (log.topics[0] !== eventTopic) continue;
+              if (log.address?.toLowerCase() !== ETH_COLLATERAL_OAPP_ADDR.toLowerCase()) continue;
+              try {
+                const parsed = iface.parseLog({ data: log.data, topics: log.topics as string[] });
+                if (parsed?.name === 'OrderCreated') {
+                  parsedOrderId = parsed.args?.orderId as `0x${string}`;
+                  break;
+                }
+              } catch {
+                continue;
+              }
+            }
+            if (!parsedOrderId && address) {
+              const client = getPublicClient(wagmiConfig, { chainId: ETH_CHAIN_ID });
+              if (client) {
+                try {
+                  const logs = await client.getLogs({
+                    address: ETH_COLLATERAL_OAPP_ADDR,
+                    event: ORDER_CREATED_EVENT,
+                    args: { user: address },
+                    fromBlock: BigInt(receipt.blockNumber),
+                    toBlock: BigInt(receipt.blockNumber),
+                  });
+                  if (logs.length > 0) {
+                    parsedOrderId = logs[0].args?.orderId as `0x${string}`;
+                  }
+                } catch (logErr) {
+                  console.warn('OrderCreated log lookup failed', logErr);
+                }
+              }
+            }
+            if (parsedOrderId) {
+              setOrderId(parsedOrderId);
+              addLog(`✓ Order ID created: ${parsedOrderId.slice(0, 12)}...`);
               setAppState(AppState.ORDER_CREATED);
-            } else { throw new Error("OrderCreated event not found."); }
-          } catch (e: any) { addLog(`❌ Error parsing Order ID: ${e.message}`); setAppState(AppState.ERROR); }
+            } else {
+              throw new Error('OrderCreated event not found.');
+            }
+          } catch (e: any) {
+            addLog(`⚠️ Could not read OrderCreated event (${e.message || e}). Attempting deterministic fallback...`);
+            try {
+              if (!address) throw new Error('Wallet address unavailable');
+              const latestNonce = await readContract(wagmiConfig, {
+                address: ETH_COLLATERAL_OAPP_ADDR,
+                abi: ETH_COLLATERAL_ABI,
+                functionName: 'nonces',
+                args: [address],
+                chainId: ETH_CHAIN_ID,
+              }) as bigint;
+              const defaultReserve = await readContract(wagmiConfig, {
+                address: ETH_COLLATERAL_OAPP_ADDR,
+                abi: ETH_COLLATERAL_ABI,
+                functionName: 'defaultReserveId',
+                chainId: ETH_CHAIN_ID,
+              }) as `0x${string}`;
+              const computedOrderId = ethers.solidityPackedKeccak256(
+                ['address', 'uint96', 'uint256', 'bytes32'],
+                [address, latestNonce, BigInt(ETH_CHAIN_ID), defaultReserve]
+              ) as `0x${string}`;
+              setOrderId(computedOrderId);
+              addLog(`✓ Order ID (fallback) computed: ${computedOrderId.slice(0, 12)}...`);
+              setAppState(AppState.ORDER_CREATED);
+            } catch (fallbackError: any) {
+              addLog(`❌ Error deriving Order ID: ${fallbackError?.message || fallbackError}`);
+              setAppState(AppState.ERROR);
+            }
+          }
           break;
         
         case AppState.FUNDING_IN_PROGRESS:
@@ -762,22 +886,29 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           if (LAYERZERO_DISABLED && receipt.transactionHash && activeOrderId && address) {
             try {
               addLog('⚙️ LayerZero disabled – mirroring funding via relay service...');
+              setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, true);
+              const reserveIdForOrder = await fetchReserveIdForOrder(activeOrderId);
               const mirrorResult = await submitToMirrorRelay({
                 orderId: activeOrderId,
                 txHash: receipt.transactionHash,
                 collateralToUnlock: '0',
                 fullyRepaid: false,
-                reserveId: activeOrderId,
+                reserveId: reserveIdForOrder,
                 borrower: address,
               });
               if (mirrorResult.success) {
                 addLog(`✓ Funding mirrored via relay service (tx: ${mirrorResult.txHash ?? 'N/A'})`);
+                if (activeOrderId) {
+                  setMirrorFlag(MIRROR_FLAG_FUND, activeOrderId, true);
+                }
               } else {
                 addLog(`⚠️ Relay service failed: ${mirrorResult.error || mirrorResult.message || 'Unknown error'}`);
               }
+              setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
             } catch (mirrorError) {
               console.error('Funding relay error:', mirrorError);
               addLog('⚠️ Failed to mirror funding via relay service. You may need to retry manually.');
+              setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
             }
           }
           if (hederaPublicClient) {
@@ -904,12 +1035,10 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     handleWithdraw,
     calculateBorrowAmount,
     resetFlow,
-    exitProgressView,
     setSelectedOrderId,
     borrowedOrders,
     startPollingForHederaOrder,
     startPollingForEthRepay,
-    address, 
     setLzTxHash,
     triggerWithdrawRelay,
   };

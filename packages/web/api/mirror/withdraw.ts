@@ -42,6 +42,16 @@ const loadABI = (filename: string) => {
 const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
 const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
 
+const RAY = 10n ** 27n;
+const toRay = (amount: bigint, decimals: number) => {
+  const exponent = BigInt(27 - decimals);
+  return amount * 10n ** exponent;
+};
+const rayMul = (a: bigint, b: bigint) => {
+  if (a === 0n || b === 0n) return 0n;
+  return (a * b) / RAY;
+};
+
 export default async function handler(
   request: ApiRequest,
   response: ApiResponse
@@ -187,12 +197,54 @@ export default async function handler(
     );
 
     const order = await hederaCredit.positions(orderId);
-    
     if (!order) {
       return response.status(400).json({ 
         success: false,
         error: 'Order not found on Hedera' 
       });
+    }
+    const collateralWei = BigInt(order?.collateralWei?.toString?.() ?? '0');
+
+    const hederaInterface = new ethers.Interface(HEDERA_CREDIT_ABI);
+    const repayLog = hederaReceipt.logs
+      ?.map((log: any) => {
+        if (!log?.topics?.length) return null;
+        try {
+          return hederaInterface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((log: any) => log?.name === 'RepayApplied' && log?.args?.orderId?.toLowerCase?.() === orderId.toLowerCase());
+
+    if (!repayLog) {
+      throw new Error('RepayApplied event not found in Hedera receipt');
+    }
+
+    const repayAmountTokens = BigInt(repayLog.args?.repayBurnAmount?.toString() ?? '0');
+    const remainingScaledDebtRay = BigInt(repayLog.args?.remainingDebtRay?.toString() ?? '0');
+    const eventFullyRepaid = Boolean(repayLog.args?.fullyRepaid);
+    const eventReserveId = (repayLog.args?.reserveId as `0x${string}` | undefined) || reserveId;
+
+    const reserveState = await hederaCredit.reserveStates(eventReserveId);
+    const variableBorrowIndexRaw = BigInt(reserveState?.variableBorrowIndex?.toString?.() ?? '0');
+    const borrowIndex = variableBorrowIndexRaw === 0n ? RAY : variableBorrowIndexRaw;
+    const remainingDebtRay = rayMul(remainingScaledDebtRay, borrowIndex);
+    const repayRay = toRay(repayAmountTokens, 6); // hUSD has 6 decimals
+    const totalDebtRay = repayRay + remainingDebtRay;
+
+    let computedCollateralUnlock = totalDebtRay === 0n ? collateralWei : (collateralWei * repayRay) / totalDebtRay;
+    if (computedCollateralUnlock === 0n && eventFullyRepaid) {
+      computedCollateralUnlock = collateralWei;
+    }
+
+    let unlockAmount = computedCollateralUnlock;
+    if (unlockAmount === 0n && collateralToWithdraw) {
+      unlockAmount = BigInt(collateralToWithdraw);
+    }
+
+    if (unlockAmount === 0n) {
+      throw new Error('Calculated collateral to unlock is zero');
     }
 
     // 4. Execute withdrawal on Sepolia
@@ -210,19 +262,19 @@ export default async function handler(
       sepoliaSigner
     );
 
-    console.log('Calling adminMirrorWithdraw with:', {
+    console.log('Calling adminMirrorRepayment (Sepolia unlock) with:', {
       orderId,
-      reserveId,
+      reserveId: eventReserveId,
       receiver,
-      collateralToWithdraw: collateralToWithdraw.toString()
+      collateralToUnlock: unlockAmount.toString()
     });
     
     try {
-      const withdrawTx = await ethCollateral.adminMirrorWithdraw(
+      const withdrawTx = await ethCollateral.adminMirrorRepayment(
         orderId,
-        reserveId,
-        receiver,
-        BigInt(collateralToWithdraw)
+        eventReserveId,
+        true,
+        unlockAmount
       );
 
       console.log('Withdrawal transaction submitted, waiting for confirmation...');
@@ -235,7 +287,7 @@ export default async function handler(
 
       return response.status(200).json({
         success: true,
-        message: 'Withdrawal processed successfully',
+        message: 'Collateral unlock processed successfully',
         txHash: sepoliaReceipt.transactionHash
       });
     } catch (err: any) {

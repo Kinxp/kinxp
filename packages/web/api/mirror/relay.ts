@@ -56,6 +56,22 @@ const toRay = (amount: bigint, decimals: number) => {
   return amount * 10n ** exponent;
 };
 
+const isAlreadyMirroredError = (error: unknown): boolean => {
+  const lower = (value?: string) => value?.toLowerCase() ?? '';
+  const reason = lower((error as any)?.reason ?? (error as any)?.shortMessage);
+  const infoMsg = lower((error as any)?.info?.error?.message);
+  const message = lower((error as any)?.message);
+  const data = lower((error as any)?.data);
+  const combined = `${reason} ${infoMsg} ${message} ${data}`;
+  return combined.includes('already mirrored');
+};
+
+const formatDirection = (mode: 'fund' | 'repay', collateralToUnlock: string, fullyRepaid: boolean) => {
+  if (mode === 'repay') return 'Hedera ➜ Sepolia (repay notify)';
+  if (collateralToUnlock !== '0' && collateralToUnlock !== '0x0') return 'Sepolia ➜ Hedera (add collateral)';
+  return 'Sepolia ➜ Hedera (fund order)';
+};
+
 export default async function handler(
   request: ApiRequest,
   response: ApiResponse
@@ -80,6 +96,7 @@ export default async function handler(
     const mode: 'fund' | 'repay' = actionType === 'repay' ? 'repay' : 'fund';
     
     console.log('Parsed request body:', { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType, mode });
+    console.log(`Relay direction: ${formatDirection(mode, String(collateralToUnlock), fullyRepaid)}`);
     
     if (!orderId || !txHash || collateralToUnlock === undefined || fullyRepaid === undefined || !reserveId || !borrower) {
       const error = `Missing required parameters. Received: ${JSON.stringify({
@@ -209,6 +226,7 @@ export default async function handler(
 
       const hederaProvider = new ethers.JsonRpcProvider(HEDERA_RPC_URL);
       const wallet = new ethers.Wallet(HEDERA_MIRROR_PRIVATE_KEY, hederaProvider);
+      console.log('[Relay][Fund] Hedera signer:', wallet.address);
       const hederaCredit = new ethers.Contract(
         HEDERA_CREDIT_OAPP_ADDR,
         HEDERA_CREDIT_ABI,
@@ -230,23 +248,35 @@ export default async function handler(
         collateralAmount
       });
       
-      const mirrorTx = await hederaCredit.adminMirrorOrder(
-        orderId,
-        reserveId,
-        borrower,
-        borrower,
-        BigInt(collateralAmount)
-      );
+      try {
+        console.log('[Relay][Fund] Invoking adminMirrorOrder (Sepolia ➜ Hedera)...');
+        const mirrorTx = await hederaCredit.adminMirrorOrder(
+          orderId,
+          reserveId,
+          borrower,
+          borrower,
+          BigInt(collateralAmount)
+        );
 
-      console.log('Transaction submitted, waiting for confirmation...');
+        console.log('[Relay][Fund] Hedera tx submitted:', mirrorTx.hash);
+        const receipt = await mirrorTx.wait();
+        console.log('[Relay][Fund] Hedera tx confirmed at block', receipt.blockNumber);
 
-      const receipt = await mirrorTx.wait();
-
-      return response.status(200).json({
-        success: true,
-        message: 'Funding mirrored successfully',
-        txHash: receipt.transactionHash
-      });
+        return response.status(200).json({
+          success: true,
+          message: 'Funding mirrored successfully',
+          txHash: receipt.transactionHash
+        });
+      } catch (err) {
+        if (isAlreadyMirroredError(err)) {
+          console.warn('Funding relay skipped: order already mirrored on Hedera');
+          return response.status(200).json({
+            success: true,
+            message: 'Order already mirrored on Hedera'
+          });
+        }
+        throw err;
+      }
     }
 
     console.log('Processing repay relay via Hedera → Sepolia path');
@@ -349,25 +379,40 @@ export default async function handler(
 
     const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
     const adminWallet = new ethers.Wallet(SEPOLIA_MIRROR_PRIVATE_KEY, sepoliaProvider);
+    console.log('[Relay][Repay] Sepolia signer:', adminWallet.address);
     const ethCollateral = new ethers.Contract(
       ETH_COLLATERAL_OAPP_ADDR,
       ETH_COLLATERAL_ABI,
       adminWallet
     );
 
-    const mirrorTx = await ethCollateral.adminMirrorRepayment(
-      orderId,
-      eventReserveId,
-      eventFullyRepaid,
-      unlockAmount
-    );
-    const mirrorReceipt = await mirrorTx.wait();
+    try {
+      console.log('[Relay][Repay] Invoking adminMirrorRepayment (Hedera ➜ Sepolia)...');
+      const mirrorTx = await ethCollateral.adminMirrorRepayment(
+        orderId,
+        eventReserveId,
+        eventFullyRepaid,
+        unlockAmount
+      );
+      console.log('[Relay][Repay] Sepolia tx submitted:', mirrorTx.hash);
+      const mirrorReceipt = await mirrorTx.wait();
+      console.log('[Relay][Repay] Sepolia tx confirmed at block', mirrorReceipt.blockNumber);
 
-    return response.status(200).json({
-      success: true,
-      message: 'Repayment mirrored successfully',
-      txHash: mirrorReceipt.transactionHash
-    });
+      return response.status(200).json({
+        success: true,
+        message: 'Repayment mirrored successfully',
+        txHash: mirrorReceipt.transactionHash
+      });
+    } catch (err) {
+      if (isAlreadyMirroredError(err)) {
+        console.warn('Repay relay skipped: already mirrored on Sepolia');
+        return response.status(200).json({
+          success: true,
+          message: 'Repayment already mirrored on Sepolia'
+        });
+      }
+      throw err;
+    }
 
   } catch (error) {
     console.error('Error in mirror relay:', error);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAppContext } from '../../context/AppContext';
 import { UserOrderSummary } from '../../types';
 import { formatUnits } from 'viem';
@@ -16,13 +16,35 @@ interface OrderTransaction {
   timestamp?: string;
 }
 
+const MIRROR_FLAG_FUND = 'mirror_funding_';
+const MIRROR_FLAG_REPAY = 'mirror_repay_';
+const MIRROR_FLAG_FUND_INFLIGHT = 'mirror_funding_inflight_';
+const MIRROR_FLAG_REPAY_INFLIGHT = 'mirror_repay_inflight_';
+const hasMirrorFlag = (prefix: string, orderId?: `0x${string}` | null) => {
+  if (typeof window === 'undefined' || !orderId) return false;
+  return window.localStorage.getItem(`${prefix}${orderId.toLowerCase()}`) === 'true';
+};
+const isMirrorInflight = (prefix: string, orderId?: `0x${string}` | null) => {
+  if (typeof window === 'undefined' || !orderId) return false;
+  return window.localStorage.getItem(`${prefix}${orderId.toLowerCase()}`) === 'true';
+};
+const setMirrorInflightFlag = (prefix: string, orderId?: `0x${string}` | null, value?: boolean) => {
+  if (typeof window === 'undefined' || !orderId) return;
+  const key = `${prefix}${orderId.toLowerCase()}`;
+  if (value) {
+    window.localStorage.setItem(key, 'true');
+  } else {
+    window.localStorage.removeItem(key);
+  }
+};
+
 // This hook encapsulates all the state and logic for the ActionPanel
 export function useActionPanelState(allOrders: UserOrderSummary[]) {
   const {
     appState, selectedOrderId, orderId: newlyCreatedOrderId, ethAmount, borrowAmount,
     logs, lzTxHash, error,
     handleCreateOrder, handleFundOrder, handleBorrow, calculateBorrowAmount,
-    handleRepay, handleWithdraw, handleAddCollateral, resetFlow, exitProgressView, 
+    handleRepay, handleWithdraw, handleAddCollateral, resetFlow, 
     startPollingForHederaOrder, startPollingForEthRepay, address, setLzTxHash, triggerWithdrawRelay,
   } = useAppContext();
 
@@ -36,8 +58,25 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   // --- DERIVED STATE ---
   const effectiveOrder = liveOrderSnapshot ?? selectedOrder;
-  const collateralEth = effectiveOrder ? formatUnits(effectiveOrder.amountWei, 18) : null;
-  const borrowAmountForRepay = effectiveOrder?.borrowedUsd ? formatUnits(effectiveOrder.borrowedUsd, 6) : borrowAmount;
+  const normalizedOrder = useMemo(() => {
+    if (!effectiveOrder) return null;
+    if (
+      effectiveOrder.status === 'PendingRepayConfirmation' &&
+      (effectiveOrder.unlockedWei ?? 0n) === 0n &&
+      (effectiveOrder.borrowedUsd ?? 0n) === 0n
+    ) {
+      return { ...effectiveOrder, status: 'Funded' } as UserOrderSummary;
+    }
+    if (
+      effectiveOrder.status === 'Borrowed' &&
+      (effectiveOrder.borrowedUsd ?? 0n) === 0n
+    ) {
+      return { ...effectiveOrder, status: 'Funded' } as UserOrderSummary;
+    }
+    return effectiveOrder;
+  }, [effectiveOrder]);
+  const collateralEth = normalizedOrder ? formatUnits(normalizedOrder.amountWei, 18) : null;
+  const borrowAmountForRepay = normalizedOrder?.borrowedUsd ? formatUnits(normalizedOrder.borrowedUsd, 6) : borrowAmount;
   const repayable = !!borrowAmountForRepay && Number(borrowAmountForRepay) > 0;
 
   // --- MEMOIZED HANDLERS ---
@@ -76,6 +115,11 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     setIsRelaying(true);
     try {
       const isRepayFlow = selectedOrder.status === 'PendingRepayConfirmation';
+      if (!isRepayFlow && isHederaConfirmed) {
+        console.info('Relay skipped: order already mirrored on Hedera');
+        setIsRelaying(false);
+        return;
+      }
 
       const orderTransactions = await fetchOrderTransactions(selectedOrder.orderId);
 
@@ -103,10 +147,13 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
       }
 
       if (isRepayFlow) {
+        setMirrorInflightFlag(MIRROR_FLAG_REPAY_INFLIGHT, selectedOrder.orderId, true);
         await triggerWithdrawRelay(selectedOrder.orderId, relayTx.txHash);
+        setMirrorInflightFlag(MIRROR_FLAG_REPAY_INFLIGHT, selectedOrder.orderId, false);
         toast.success('Repay relay triggered');
         startPollingForEthRepay(selectedOrder.orderId);
       } else {
+        setMirrorInflightFlag(MIRROR_FLAG_FUND_INFLIGHT, selectedOrder.orderId, true);
         const result = await submitToMirrorRelay({
           orderId: selectedOrder.orderId,
           txHash: relayTx.txHash,
@@ -117,19 +164,33 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
         });
 
         if (!result.success) {
+          setMirrorInflightFlag(MIRROR_FLAG_FUND_INFLIGHT, selectedOrder.orderId, false);
           throw new Error(result.error || 'Failed to start bridge operation');
         }
 
-        toast.success('Bridge operation started successfully');
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(`${MIRROR_FLAG_FUND}${selectedOrder.orderId.toLowerCase()}`, 'true');
+        }
+
+        if (result.message?.toLowerCase().includes('already mirrored')) {
+          toast.success('Order already mirrored on Hedera');
+        } else {
+          toast.success('Bridge operation started successfully');
+        }
+        setMirrorInflightFlag(MIRROR_FLAG_FUND_INFLIGHT, selectedOrder.orderId, false);
         startPollingForHederaOrder(selectedOrder.orderId, relayTx.txHash);
       }
     } catch (error) {
       console.error('Bridge operation error:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to start bridge operation');
+      if (selectedOrder) {
+        setMirrorInflightFlag(MIRROR_FLAG_FUND_INFLIGHT, selectedOrder.orderId, false);
+        setMirrorInflightFlag(MIRROR_FLAG_REPAY_INFLIGHT, selectedOrder.orderId, false);
+      }
     } finally {
       setIsRelaying(false);
     }
-  }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay, triggerWithdrawRelay]);
+  }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay, triggerWithdrawRelay, isHederaConfirmed]);
 
   // --- SIDE EFFECTS ---
   useEffect(() => {
@@ -194,9 +255,14 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
   useEffect(() => {
     if (!LAYERZERO_DISABLED || !address || !selectedOrder) return;
 
+    const alreadyMirrored = hasMirrorFlag(MIRROR_FLAG_FUND, selectedOrder.orderId);
+    const repayMirrored = hasMirrorFlag(MIRROR_FLAG_REPAY, selectedOrder.orderId);
+    const fundInflight = isMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, selectedOrder.orderId);
+    const repayInflight = isMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, selectedOrder.orderId);
+
     const waitingForRelay = (
-      (['Funded', 'Borrowed'].includes(selectedOrder.status) && !isHederaConfirmed) ||
-      selectedOrder.status === 'PendingRepayConfirmation'
+      (!alreadyMirrored && !fundInflight && ['Funded', 'Borrowed'].includes(selectedOrder.status) && !isHederaConfirmed) ||
+      (!repayMirrored && !repayInflight && selectedOrder.status === 'PendingRepayConfirmation')
     );
 
     if (!waitingForRelay) return;
@@ -213,7 +279,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   return {
     appState,
-    selectedOrder: effectiveOrder ?? null,
+    selectedOrder: normalizedOrder ?? null,
     newlyCreatedOrderId,
     ethAmount,
     borrowAmount,
@@ -222,7 +288,6 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     error,
     handleCreateOrder,
     resetFlow,
-    exitProgressView,
     onFund,
     onBorrow,
     onRepay,
