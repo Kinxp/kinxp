@@ -1,7 +1,7 @@
 import React, { createContext, useState, useCallback, useRef, useContext, ReactNode, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
-import { readContract } from 'wagmi/actions';
+import { readContract, getAccount } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
 import { parseEther, parseUnits, formatUnits } from 'viem';
 import toast from 'react-hot-toast';
@@ -13,11 +13,12 @@ import {
   ETH_CHAIN_ID, ETH_COLLATERAL_ABI, ETH_COLLATERAL_OAPP_ADDR,
   HEDERA_CHAIN_ID, HEDERA_CREDIT_ABI, HEDERA_CREDIT_OAPP_ADDR,
   HUSD_TOKEN_ADDR, ERC20_ABI, PYTH_CONTRACT_ADDR, PYTH_ABI,
-  BORROW_SAFETY_BPS, USD_CONTROLLER_ABI
+  BORROW_SAFETY_BPS, USD_CONTROLLER_ABI, LAYERZERO_DISABLED
 } from '../config';
 import { pollForHederaOrderOpened, pollForSepoliaRepayEvent } from '../services/blockscoutService';
 import { fetchPythUpdateData } from '../services/pythService';
 import { submitWithdrawToEthereum } from '../services/withdrawMirrorService';
+import { submitToMirrorRelay } from '../services/mirrorRelayService';
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -222,8 +223,11 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     if (!address || !activeOrderId) return;
     setAppState(AppState.FUNDING_IN_PROGRESS);
     addLog(`▶ Funding order ${activeOrderId.slice(0, 10)}... with ${amountToFund} ETH...`);
+    addLog(`   ↪ Direction: Sepolia ➜ Hedera (fundOrderWithNotify)`);
+    addLog(`   ↪ Wallet: ${address}`);
     const nativeFee = parseEther('0.0001');
     const totalValue = parseEther(amountToFund) + nativeFee;
+    addLog(`   ↪ Total value: ${formatUnits(totalValue, 18)} ETH (includes native fee buffer ${formatUnits(nativeFee, 18)} ETH)`);
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [activeOrderId, parseEther(amountToFund)], value: totalValue });
   }, [address, activeOrderId, sendTxOnChain, addLog]);
 
@@ -245,6 +249,9 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       const buffer = nativeFee === 0n ? parseEther('0.00005') : nativeFee / 10n;
       const totalValue = amountWei + nativeFee + buffer;
       addLog('▶ Sending addCollateralWithNotify transaction...');
+      addLog(`   ↪ Direction: Sepolia ➜ Hedera (collateral increase)`);
+      addLog(`   ↪ Wallet: ${address ?? 'unknown'}`);
+      addLog(`   ↪ Value sent: ${formatUnits(totalValue, 18)} ETH (buffer ${formatUnits(buffer, 18)} ETH)`);
       
       // Send the transaction and wait for it to be mined
       const txHash = await sendTxOnChain(ETH_CHAIN_ID, {
@@ -257,24 +264,27 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
 
       // After successful transaction, call the admin mirror service
       if (txHash) {
-        addLog('✓ Transaction confirmed. Notifying Hedera via admin mirror service...');
+        addLog(`✓ Transaction confirmed on Sepolia: ${txHash}`);
+        addLog('✓ Notifying Hedera via /api/mirror/relay...');
+        const payload = {
+          orderId: activeOrderId,
+          txHash,
+          collateralToUnlock: amountWei.toString(),
+          fullyRepaid: false,
+          reserveId: activeOrderId,
+          borrower: await getAccount(wagmiConfig).address
+        };
+        addLog(`   ↪ Payload: ${JSON.stringify(payload)}`);
         try {
           const response = await fetch('/api/mirror/relay', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              orderId: activeOrderId,
-              txHash,
-              collateralToUnlock: amountWei.toString(),
-              fullyRepaid: false,
-              reserveId: activeOrderId, // Using orderId as reserveId for now
-              borrower: await getAccount(wagmiConfig).address
-            })
+            body: JSON.stringify(payload)
           });
           
           const result = await response.json();
           if (result.success) {
-            addLog('✓ Successfully notified Hedera via admin mirror service');
+            addLog(`✓ Hedera mirror succeeded. Hedera tx hash: ${result.txHash ?? 'N/A'}`);
           } else {
             addLog(`⚠️ Admin mirror service warning: ${result.message || 'Unknown error'}`);
           }
@@ -298,6 +308,8 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     setUserBorrowAmount(amountToBorrow);
     setAppState(AppState.BORROWING_IN_PROGRESS);
     setLogs(['▶ Preparing borrow transaction...']);
+    addLog(`   ↪ Direction: Hedera ➜ Sepolia (borrow notify)`);
+    addLog(`   ↪ Requested borrow amount: ${amountToBorrow} hUSD`);
     try {
       addLog('1/3: Fetching latest price data from Pyth Network...');
       const { priceUpdateData } = await fetchPythUpdateData();
@@ -307,7 +319,9 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       const valueInWei = requiredFeeInTinybars * WEI_PER_TINYBAR;
       addLog(`✓ Pyth fee quoted: ${formatUnits(requiredFeeInTinybars, 8)} HBAR`);
       addLog(`3/3: Sending borrow transaction with exact fee...`);
-      sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [activeOrderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
+      addLog(`   ↪ Wallet: ${address ?? 'unknown'} | Value (HBAR): ${formatUnits(valueInWei, 18)}`);
+      const borrowHash = await sendTxOnChain(HEDERA_CHAIN_ID, { address: HEDERA_CREDIT_OAPP_ADDR, abi: HEDERA_CREDIT_ABI, functionName: 'borrow', args: [activeOrderId, parseUnits(amountToBorrow, 6), priceUpdateData, 300], value: valueInWei, gas: 1_500_000n });
+      addLog(`   ↪ Borrow tx hash: ${borrowHash}`);
     } catch (e: any) {
       addLog(`❌ An error occurred during the borrow process: ${e.shortMessage || e.message}`);
       setError(`Borrow failed: ${e.shortMessage || e.message}`);
@@ -334,6 +348,8 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     if (!address || !repayTxHash) return;
     try {
       addLog('▶ Notifying Ethereum withdraw relay...');
+      addLog('   ↪ Direction: Hedera ➜ Sepolia (repay mirror)');
+      addLog(`   ↪ Hedera repay tx: ${repayTxHash}`);
       const position = await readContract(wagmiConfig, {
         address: HEDERA_CREDIT_OAPP_ADDR,
         abi: HEDERA_CREDIT_ABI,
@@ -346,6 +362,10 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
         ? position.reserveId
         : orderId;
       const collateralWei = position?.collateralWei ?? 0n;
+      addLog(`   ↪ Position snapshot: reserveId=${reserveId}, collateralWei=${collateralWei.toString()}`);
+
+      addLog('   ↪ Calling /api/mirror/withdraw with payload:');
+      addLog(`      orderId=${orderId}, txHash=${repayTxHash}, receiver=${address}`);
 
       const result = await submitWithdrawToEthereum(
         orderId,
@@ -356,7 +376,7 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       );
 
       if (result.success) {
-        addLog('✓ Withdrawal relay triggered on Ethereum.');
+        addLog(`✓ Withdrawal relay triggered on Ethereum. Sepolia tx hash: ${result.txHash ?? 'N/A'}`);
       } else {
         addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
       }
@@ -434,6 +454,9 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     
     setAppState(AppState.RETURNING_FUNDS);
     setCurrentToast(String(toast.loading('Preparing transaction...')));
+    addLog('▶ Initiating repay (Hedera ➜ Sepolia)');
+    addLog(`   ↪ Wallet: ${address}`);
+    addLog(`   ↪ Amount (6dp): ${amountToRepay.toString()}`);
     
     // Get controller address - Make sure this is called on Hedera
     const controllerAddress = await readContract(wagmiConfig, {
@@ -442,6 +465,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       functionName: 'controller',
       chainId: HEDERA_CHAIN_ID
     }) as `0x${string}`;
+    addLog(`   ↪ Controller address: ${controllerAddress}`);
           
     // Check current allowance - Make sure this is called on Hedera
     setCurrentToast(String(toast.loading('Checking token allowance...')));
@@ -458,6 +482,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       amountToRepay: amountToRepay.toString(),
       spender: controllerAddress
     });
+    addLog(`   ↪ Allowance check: ${currentAllowance.toString()} / ${amountToRepay.toString()}`);
     
     // Only approve if needed
     if (currentAllowance < amountToRepay) {
@@ -470,6 +495,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       });
       setApproveTxHash(approveHash);
       await waitForHederaReceipt(approveHash);
+      addLog(`   ↪ Approval tx mined on Hedera: ${approveHash}`);
     }
     
     // Second transaction: Repay - Make sure this is sent to Hedera
@@ -491,6 +517,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       args: [activeOrderId],
       chainId: HEDERA_CHAIN_ID
     }) as bigint;
+    addLog(`   ↪ LayerZero fee quote: ${lzFee.toString()} wei`);
     
     // Hedera RPC rejects non-zero msg.value below 1 tinybar, so enforce the minimum
     const minValue = 1n * WEI_PER_TINYBAR;
@@ -507,8 +534,10 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     
     setRepayTxHash(repayHash);
     setLzTxHash(repayHash);
+    addLog(`   ↪ Repay tx hash: ${repayHash}`);
     
     await waitForHederaReceipt(repayHash);
+    addLog('   ↪ Repay tx mined, awaiting Ethereum unlock.');
     
     setAppState(AppState.REPAYING_IN_PROGRESS);
     toast.success('Repayment completed successfully!', { id: currentToast });
@@ -712,6 +741,27 @@ const handleRepay = useCallback(async (repayAmount: string) => {
               console.warn('Failed to save lzTxHash to localStorage', e);
             }
           }
+          if (LAYERZERO_DISABLED && receipt.transactionHash && activeOrderId && address) {
+            try {
+              addLog('⚙️ LayerZero disabled – mirroring funding via relay service...');
+              const mirrorResult = await submitToMirrorRelay({
+                orderId: activeOrderId,
+                txHash: receipt.transactionHash,
+                collateralToUnlock: '0',
+                fullyRepaid: false,
+                reserveId: activeOrderId,
+                borrower: address,
+              });
+              if (mirrorResult.success) {
+                addLog(`✓ Funding mirrored via relay service (tx: ${mirrorResult.txHash ?? 'N/A'})`);
+              } else {
+                addLog(`⚠️ Relay service failed: ${mirrorResult.error || mirrorResult.message || 'Unknown error'}`);
+              }
+            } catch (mirrorError) {
+              console.error('Funding relay error:', mirrorError);
+              addLog('⚠️ Failed to mirror funding via relay service. You may need to retry manually.');
+            }
+          }
           if (hederaPublicClient) {
             const hederaBlockNumber = await hederaPublicClient.getBlockNumber();
             addLog(`   (Polling from Hedera block ${hederaBlockNumber})...`);
@@ -744,7 +794,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           break;
       }
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed, address, submitToMirrorRelay]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
