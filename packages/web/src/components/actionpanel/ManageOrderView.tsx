@@ -25,6 +25,8 @@ interface ManageOrderViewProps {
   onAddCollateral: (amount: string) => void;
   handleTrackConfirmation: () => void;
   handleRelayConfirmation: () => Promise<void>;
+  handleTrackRepayConfirmation: () => void;
+  handleRepayRelayConfirmation: () => void;
 }
 
 export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
@@ -93,7 +95,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
             </div>
             
             <button 
-              onClick={props.handleRelayConfirmation}
+              onClick={props.handleRepayRelayConfirmation}
               disabled={props.isRelaying}
               className="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
             >
@@ -107,21 +109,21 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
         </div>
       );
 
-    case 'Funded':
+    case 'PendingRepayConfirmation':
       return (
         <div className="space-y-4 p-4">
           <div className="text-center space-y-2 mb-4">
-            <h3 className="font-semibold text-lg">Waiting for Cross-Chain Confirmation</h3>
-            <p className="text-sm text-gray-400">Your funds are on Sepolia, but the message has not yet arrived on Hedera.</p>
+            <h3 className="font-semibold text-lg">Waiting for Repay Confirmation</h3>
+            <p className="text-sm text-gray-400">Your repay cleared on Hedera. Bridge the message back to Sepolia to unlock your ETH.</p>
           </div>
           
           <div className="space-y-3">
             <button 
-              onClick={props.handleTrackConfirmation} 
+              onClick={props.handleTrackRepayConfirmation} 
               className="w-full bg-cyan-600 hover:bg-cyan-700 font-bold py-3 px-4 rounded-lg transition-colors"
               disabled={props.isCheckingHedera}
             >
-              {props.isCheckingHedera ? 'Checking...' : 'Track Confirmation'}
+              {props.isCheckingHedera ? 'Checking...' : 'Track Ethereum Confirmation'}
             </button>
             
             <div className="relative flex items-center my-4">
@@ -139,7 +141,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
             </button>
             
             <p className="text-xs text-gray-500 text-center mt-2">
-              The relay will help deliver your cross-chain message faster.
+              The relay will force the repay message to finalize on Sepolia faster so you can withdraw sooner.
             </p>
           </div>
         </div>

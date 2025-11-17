@@ -1,4 +1,5 @@
 import React, { createContext, useState, useCallback, useRef, useContext, ReactNode, useEffect } from 'react';
+import { ethers } from 'ethers';
 import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
@@ -16,8 +17,10 @@ import {
 } from '../config';
 import { pollForHederaOrderOpened, pollForSepoliaRepayEvent } from '../services/blockscoutService';
 import { fetchPythUpdateData } from '../services/pythService';
+import { submitWithdrawToEthereum } from '../services/withdrawMirrorService';
 
 const WEI_PER_TINYBAR = 10_000_000_000n;
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 type BorrowedOrderMap = Record<string, { amount: string }>;
 
@@ -74,6 +77,7 @@ interface AppContextType {
   startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
   startPollingForEthRepay: (orderId: `0x${string}`) => void;
   setLzTxHash: (hash: `0x${string}` | null) => void; 
+  triggerWithdrawRelay: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => Promise<void>;
 }
 
 // Create the actual React Context
@@ -110,6 +114,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
   const [borrowedOrders, setBorrowedOrders] = useState<BorrowedOrderMap>(() => readBorrowedOrdersFromStorage());
+
+  const hederaRpcUrl = import.meta.env.VITE_HEDERA_RPC_URL;
+  const hederaRpcProviderRef = useRef<ethers.JsonRpcProvider | null>(null);
+  useEffect(() => {
+    if (hederaRpcUrl) {
+      hederaRpcProviderRef.current = new ethers.JsonRpcProvider(hederaRpcUrl);
+    }
+  }, [hederaRpcUrl]);
 
   const hederaPollingRef = useRef<NodeJS.Timeout | null>(null);
   const ethPollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -155,6 +167,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return rest;
     });
   }, [persistBorrowedOrders]);
+
+  const waitForHederaReceipt = useCallback(async (txHash: `0x${string}`) => {
+    if (!hederaRpcProviderRef.current) return;
+    const receipt = await hederaRpcProviderRef.current.waitForTransaction(txHash, 1);
+    if (!receipt || receipt.status !== 1) {
+      throw new Error('Transaction failed');
+    }
+  }, []);
 
 const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
   const send = async () => {
@@ -310,16 +330,41 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     }
   }, [treasuryAddress, addLog]);
 
-  const repayAndCross = useCallback(async () => {
-    if (!activeOrderId || !borrowAmount) return;
+  const triggerWithdrawRelay = useCallback(async (orderId: `0x${string}`, repayTxHash?: `0x${string}` | null) => {
+    if (!address || !repayTxHash) return;
     try {
-      // Use the handleRepay function which now handles the entire flow
-      await handleRepay(borrowAmount);
-    } catch (e: any) {
-      // Error is already handled in handleRepay
-      console.error('Repay and cross failed:', e);
+      addLog('▶ Notifying Ethereum withdraw relay...');
+      const position = await readContract(wagmiConfig, {
+        address: HEDERA_CREDIT_OAPP_ADDR,
+        abi: HEDERA_CREDIT_ABI,
+        functionName: 'positions',
+        args: [orderId],
+        chainId: HEDERA_CHAIN_ID
+      }) as { reserveId?: `0x${string}`; collateralWei?: bigint };
+
+      const reserveId = position?.reserveId && position.reserveId !== ZERO_BYTES32
+        ? position.reserveId
+        : orderId;
+      const collateralWei = position?.collateralWei ?? 0n;
+
+      const result = await submitWithdrawToEthereum(
+        orderId,
+        repayTxHash,
+        collateralWei || 0n,
+        reserveId,
+        address
+      );
+
+      if (result.success) {
+        addLog('✓ Withdrawal relay triggered on Ethereum.');
+      } else {
+        addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Withdraw relay error:', err);
+      addLog('⚠ Failed to trigger withdraw relay. You can retry from the dashboard once available.');
     }
-  }, [activeOrderId, borrowAmount, sendTxOnChain, addLog]);
+  }, [address, addLog]);
 
   // Get the public client for the Hedera network
   const publicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
@@ -361,11 +406,14 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       setCurrentToast(String(toast.success('Repayment completed successfully!')));
       setLzTxHash(repayReceipt.transactionHash);
       setAppState(AppState.REPAYING_IN_PROGRESS);
+      if (activeOrderId && repayReceipt.transactionHash) {
+        void triggerWithdrawRelay(activeOrderId, repayReceipt.transactionHash);
+      }
     } else if (isRepayError) {
       toast.dismiss(currentToast);
       setCurrentToast(String(toast.error('Repayment transaction failed')));
     }
-  }, [repayReceipt, isRepayError]);
+  }, [repayReceipt, isRepayError, activeOrderId, triggerWithdrawRelay]);
 
 const handleRepay = useCallback(async (repayAmount: string) => {
   if (!activeOrderId || !address) return false;
@@ -413,7 +461,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     
     // Only approve if needed
     if (currentAllowance < amountToRepay) {
-      // First transaction: Approve - Make sure this is sent to Hedera
       setCurrentToast(String(toast.loading('Please approve token transfer in your wallet...')));
       const approveHash = await sendTxOnChain(HEDERA_CHAIN_ID, {
         address: HUSD_TOKEN_ADDR,
@@ -422,24 +469,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
         args: [controllerAddress, amountToRepay]
       });
       setApproveTxHash(approveHash);
-      
-      // Wait for the approval to be confirmed
-      await new Promise<void>((resolve, reject) => {
-        const checkApproval = () => {
-          if (approveReceipt) {
-            if (approveReceipt.status === 'success') {
-              resolve();
-            } else {
-              reject(new Error('Token approval transaction failed'));
-            }
-          } else if (isApproveError) {
-            reject(new Error('Token approval transaction failed'));
-          } else {
-            setTimeout(checkApproval, 100);
-          }
-        };
-        checkApproval();
-      });
+      await waitForHederaReceipt(approveHash);
     }
     
     // Second transaction: Repay - Make sure this is sent to Hedera
@@ -462,39 +492,23 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       chainId: HEDERA_CHAIN_ID
     }) as bigint;
     
+    // Hedera RPC rejects non-zero msg.value below 1 tinybar, so enforce the minimum
+    const minValue = 1n * WEI_PER_TINYBAR;
+    const repayValue = lzFee > 0n && lzFee < minValue ? minValue : lzFee;
+    
     const repayHash = await sendTxOnChain(HEDERA_CHAIN_ID, { 
       address: HEDERA_CREDIT_OAPP_ADDR, 
       abi: HEDERA_CREDIT_ABI, 
       functionName: 'repay', 
-      args: [activeOrderId, amountToRepay, true], // true = notify Ethereum
-      value: lzFee, // Include the LayerZero fee
-      gas: 1_500_000n // Ensure enough gas for the cross-chain operation
+      args: [activeOrderId, amountToRepay, true],
+      value: repayValue,
+      gas: 1_500_000n
     });
     
     setRepayTxHash(repayHash);
     setLzTxHash(repayHash);
     
-    // Wait for the repay to be confirmed
-    await new Promise<void>((resolve, reject) => {
-      const checkRepay = () => {
-        if (repayReceipt) {
-          if (repayReceipt.status === 'success') {
-            resolve();
-          } else {
-            reject(new Error('Repayment transaction failed'));
-          }
-        } else if (isRepayError) {
-          reject(new Error('Repayment transaction failed'));
-        } else {
-          setTimeout(checkRepay, 100);
-        }
-      };
-      checkRepay();
-    });
-    
-    if (!repayReceipt || repayReceipt.status !== 'success') {
-      throw new Error('Repayment transaction not confirmed');
-    }
+    await waitForHederaReceipt(repayHash);
     
     setAppState(AppState.REPAYING_IN_PROGRESS);
     toast.success('Repayment completed successfully!', { id: currentToast });
@@ -512,7 +526,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     setAppState(AppState.ERROR);
     throw new Error(message);
   }
-}, [activeOrderId, address, sendTxOnChain, publicClient, setAppState, setError, setLzTxHash]);
+}, [activeOrderId, address, sendTxOnChain, setAppState, setError, setLzTxHash, waitForHederaReceipt]);
   const handleWithdraw = useCallback(() => {
     if (!activeOrderId) return;
     setAppState(AppState.WITHDRAWING_IN_PROGRESS);
@@ -717,8 +731,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           setAppState(AppState.LOAN_ACTIVE);
           break;
         case AppState.RETURNING_FUNDS:
-          addLog('✓ Treasury transfer complete. Proceeding with repay...');
-          repayAndCross();
+          addLog('✓ Treasury transfer complete.');
           break;
         case AppState.REPAYING_IN_PROGRESS:
           addLog('▶ Crossing chains back to Ethereum...');
@@ -731,7 +744,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           break;
       }
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, repayAndCross, userBorrowAmount, activeOrderId, markOrderBorrowed]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -830,6 +843,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     startPollingForEthRepay,
     address, 
     setLzTxHash,
+    triggerWithdrawRelay,
   };
 
   return (

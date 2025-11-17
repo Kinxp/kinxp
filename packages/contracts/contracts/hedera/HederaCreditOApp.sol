@@ -452,10 +452,13 @@ contract HederaCreditOApp is OApp, ReentrancyGuard {
         // round up the debt to avoid remaining dust debt
         uint256 totalDebtTokens = MathUtils.fromRayCeil(totalDebtRay, decimals);
 
-        // Clamp repayment to total debt
-        uint64 repayAmount;
+        // Clamp repayment to total debt. Default to user-specified amount so partial repayments work.
+        uint64 repayAmount = usdAmount;
         if (usdAmount > totalDebtTokens) {
-            repayAmount = totalDebtTokens > type(uint64).max ? type(uint64).max : uint64(totalDebtTokens);
+            uint256 capped = totalDebtTokens > type(uint64).max
+                ? type(uint64).max
+                : totalDebtTokens;
+            repayAmount = uint64(capped);
         }
 
         ctrl.pullFrom(pos.borrower, repayAmount);
