@@ -20,6 +20,7 @@ export const HEDERA_BLOCKSCOUT_API_URL = '/blockscout-api/api';
 // Sepolia Blockscout API endpoint
 export const SEPOLIA_BLOCKSCOUT_API_URL = '/sepolia-blockscout-api/api';
 export const USE_MOCK_API = (import.meta.env.VITE_USE_MOCK_API ?? 'false') === 'true';
+export const LAYERZERO_DISABLED = (import.meta.env.VITE_LAYERZERO_DISABLED ?? 'false') === 'true';
 
 // Polling interval in milliseconds for blockchain state updates
 export const POLLING_INTERVAL = 5000; // 5 seconds

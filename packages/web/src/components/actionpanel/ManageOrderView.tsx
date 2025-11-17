@@ -12,7 +12,6 @@ interface ManageOrderViewProps {
   selectedOrder: UserOrderSummary;
   isCheckingHedera: boolean;
   isHederaConfirmed: boolean;
-  isRelaying: boolean;
   ethAmount: string;
   borrowAmountForRepay: string | null;
   collateralEth: string | null;
@@ -24,9 +23,7 @@ interface ManageOrderViewProps {
   onWithdraw: () => void;
   onAddCollateral: (amount: string) => void;
   handleTrackConfirmation: () => void;
-  handleRelayConfirmation: () => Promise<void>;
   handleTrackRepayConfirmation: () => void;
-  handleRepayRelayConfirmation: () => void;
 }
 
 export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
@@ -87,24 +84,6 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
             >
               {props.isCheckingHedera ? 'Checking...' : 'Track Confirmation'}
             </button>
-            
-            <div className="relative flex items-center my-4">
-              <div className="flex-grow border-t border-gray-700"></div>
-              <span className="flex-shrink mx-4 text-sm text-gray-500">OR</span>
-              <div className="flex-grow border-t border-gray-700"></div>
-            </div>
-            
-            <button 
-              onClick={props.handleRepayRelayConfirmation}
-              disabled={props.isRelaying}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
-            >
-              {props.isRelaying ? 'Processing...' : 'Use Relay to Speed Up'}
-            </button>
-            
-            <p className="text-xs text-gray-500 text-center mt-2">
-              The relay will help deliver your cross-chain message faster.
-            </p>
           </div>
         </div>
       );
@@ -125,24 +104,6 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
             >
               {props.isCheckingHedera ? 'Checking...' : 'Track Ethereum Confirmation'}
             </button>
-            
-            <div className="relative flex items-center my-4">
-              <div className="flex-grow border-t border-gray-700"></div>
-              <span className="flex-shrink mx-4 text-sm text-gray-500">OR</span>
-              <div className="flex-grow border-t border-gray-700"></div>
-            </div>
-            
-            <button 
-              onClick={props.handleRelayConfirmation}
-              disabled={props.isRelaying}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
-            >
-              {props.isRelaying ? 'Processing...' : 'Use Relay to Speed Up'}
-            </button>
-            
-            <p className="text-xs text-gray-500 text-center mt-2">
-              The relay will force the repay message to finalize on Sepolia faster so you can withdraw sooner.
-            </p>
           </div>
         </div>
       );

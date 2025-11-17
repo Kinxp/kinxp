@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../../context/AppContext';
 import { UserOrderSummary } from '../../types';
 import { formatUnits } from 'viem';
 import { readContract } from 'wagmi/actions';
 import { config as wagmiConfig } from '../../wagmi';
-import { HEDERA_CHAIN_ID, HEDERA_CREDIT_ABI, HEDERA_CREDIT_OAPP_ADDR } from '../../config';
+import { HEDERA_CHAIN_ID, HEDERA_CREDIT_ABI, HEDERA_CREDIT_OAPP_ADDR, LAYERZERO_DISABLED } from '../../config';
 import { submitToMirrorRelay } from '../../services/mirrorRelayService';
 import { fetchOrderTransactions, fetchOrderSummary } from '../../services/blockscoutService';
 import toast from 'react-hot-toast';
@@ -32,6 +32,7 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   const selectedOrder = allOrders.find(o => o.orderId === selectedOrderId);
   const [liveOrderSnapshot, setLiveOrderSnapshot] = useState<UserOrderSummary | null>(null);
+  const autoRelayKeysRef = useRef<Set<string>>(new Set());
 
   // --- DERIVED STATE ---
   const effectiveOrder = liveOrderSnapshot ?? selectedOrder;
@@ -130,22 +131,6 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     }
   }, [address, selectedOrder, startPollingForHederaOrder, startPollingForEthRepay, triggerWithdrawRelay]);
 
-  const handleRepayRelayConfirmation = useCallback(async () => {
-    if (!selectedOrder) return;
-    setIsRelaying(true);
-    try {
-      const txHash = (lzTxHash as `0x${string}` | null) ?? null;
-      await triggerWithdrawRelay(selectedOrder.orderId, txHash);
-      toast.success('Repay relay triggered');
-      startPollingForEthRepay(selectedOrder.orderId);
-    } catch (error) {
-      console.error('Repay relay error:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to trigger repay relay');
-    } finally {
-      setIsRelaying(false);
-    }
-  }, [selectedOrder, triggerWithdrawRelay, lzTxHash, startPollingForEthRepay]);
-
   // --- SIDE EFFECTS ---
   useEffect(() => {
     if (selectedOrder) {
@@ -206,6 +191,26 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     };
   }, [selectedOrder, appState]);
 
+  useEffect(() => {
+    if (!LAYERZERO_DISABLED || !address || !selectedOrder) return;
+
+    const waitingForRelay = (
+      (['Funded', 'Borrowed'].includes(selectedOrder.status) && !isHederaConfirmed) ||
+      selectedOrder.status === 'PendingRepayConfirmation'
+    );
+
+    if (!waitingForRelay) return;
+
+    const relayKey = `${selectedOrder.orderId}-${selectedOrder.status}`;
+    if (autoRelayKeysRef.current.has(relayKey)) return;
+
+    autoRelayKeysRef.current.add(relayKey);
+    handleRelayConfirmation().catch((err) => {
+      console.error('Automatic relay attempt failed', err);
+      autoRelayKeysRef.current.delete(relayKey);
+    });
+  }, [address, selectedOrder, isHederaConfirmed, handleRelayConfirmation]);
+
   return {
     appState,
     selectedOrder: effectiveOrder ?? null,
@@ -226,8 +231,6 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
     onAddCollateral,
     handleTrackConfirmation,
     handleTrackRepayConfirmation,
-    handleRelayConfirmation,
-    handleRepayRelayConfirmation,
     isCheckingHedera,
     isHederaConfirmed,
     isRelaying,
