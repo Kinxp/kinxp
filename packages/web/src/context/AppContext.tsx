@@ -115,6 +115,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
   const [borrowedOrders, setBorrowedOrders] = useState<BorrowedOrderMap>(() => readBorrowedOrdersFromStorage());
+  const envLoggedRef = useRef(false);
 
   const hederaRpcUrl = import.meta.env.VITE_HEDERA_RPC_URL;
   const hederaRpcProviderRef = useRef<ethers.JsonRpcProvider | null>(null);
@@ -136,6 +137,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeOrderId = orderId || selectedOrderId;
 
   const addLog = useCallback((log: string) => setLogs(prev => [...prev, log]), []);
+
+  useEffect(() => {
+    if (envLoggedRef.current) return;
+    envLoggedRef.current = true;
+    addLog(`ℹ️ LayerZero disabled: ${LAYERZERO_DISABLED}`);
+    addLog(`ℹ️ ETH_COLLATERAL_OAPP_ADDR: ${ETH_COLLATERAL_OAPP_ADDR}`);
+    addLog(`ℹ️ HEDERA_CREDIT_OAPP_ADDR: ${HEDERA_CREDIT_OAPP_ADDR}`);
+    addLog(`ℹ️ Hedera RPC URL configured: ${Boolean(hederaRpcUrl)}`);
+  }, [addLog, hederaRpcUrl]);
+
+  useEffect(() => {
+    if (address) {
+      addLog(`👛 Wallet connected: ${address}`);
+    } else {
+      addLog('👛 Wallet disconnected');
+    }
+  }, [address, addLog]);
 
   const persistBorrowedOrders = useCallback((next: BorrowedOrderMap) => {
     if (typeof window === 'undefined') return;
