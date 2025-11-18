@@ -16,7 +16,11 @@ const ActionPanel: React.FC<ActionPanelProps> = ({ allOrders }) => {
   const state = useActionPanelState(allOrders);
 
   // 1. If an action is in progress, render the appropriate status view.
-  if (state.appState !== AppState.IDLE && state.appState !== AppState.LOAN_ACTIVE) {
+  if (
+    state.appState !== AppState.IDLE &&
+    state.appState !== AppState.LOAN_ACTIVE &&
+    state.appState !== AppState.READY_TO_WITHDRAW
+  ) {
     return <InProgressViews {...state} />;
   }
 

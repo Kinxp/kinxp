@@ -6,6 +6,7 @@ import BorrowView from './manageorder/BorrowView';
 import RepayView from './manageorder/RepayView';
 import WithdrawView from './manageorder/WithdrawView';
 import AddCollateralView from './manageorder/AddCollateralView';
+import OrderDebugPanel from './OrderDebugPanel';
 import { SpinnerIcon } from '../Icons';
 
 // This component receives all the props it needs to make decisions
@@ -34,7 +35,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
     <div className="bg-gray-900/60 border border-gray-700 rounded-xl px-4 py-3 text-sm mb-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <p className="text-xs text-gray-500">Selected Order</p>
+          <p className="text-xs text-gray-500">Active Position</p>
           <p className="font-mono text-cyan-300 text-xs">{props.selectedOrder.orderId}</p>
         </div>
         <div className="text-right">
@@ -55,6 +56,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           <FundOrderView
             orderId={props.selectedOrder.orderId}
             ethAmount={props.ethAmount}
@@ -75,6 +77,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
           return (
         <div className="space-y-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           {hasUnlocked && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
               <p className="text-sm text-amber-200 font-semibold">Unlocked ETH available</p>
@@ -123,6 +126,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4 p-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           <div className="text-center space-y-2 mb-4">
             <h3 className="font-semibold text-lg">Waiting for Cross-Chain Confirmation</h3>
             <p className="text-sm text-gray-400">Your funds are on Sepolia, but the message has not yet arrived on Hedera.</p>
@@ -144,6 +148,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4 p-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           <div className="text-center space-y-2 mb-4">
             <h3 className="font-semibold text-lg">Waiting for Repay Confirmation</h3>
             <p className="text-sm text-gray-400">Your repay cleared on Hedera. Bridge the message back to Sepolia to unlock your ETH.</p>
@@ -165,6 +170,7 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           <WithdrawView
             orderId={props.selectedOrder.orderId}
             onWithdraw={props.onWithdraw}
@@ -177,8 +183,9 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4 p-4">
           {renderOrderHeader()}
+          <OrderDebugPanel order={props.selectedOrder} />
           <div className="text-center text-gray-400">
-            <p>This order is in a final state (<span className="font-semibold">{props.selectedOrder.status}</span>).</p>
+            <p>This position is in a final state (<span className="font-semibold">{props.selectedOrder.status}</span>).</p>
           </div>
         </div>
       );

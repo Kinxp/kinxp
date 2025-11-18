@@ -33,6 +33,8 @@ export interface OrderData {
     reserveId?: `0x${string}`;
     unlockedWei?: bigint;
     borrowedUsd?: bigint;
+    hederaCollateralWei?: bigint;
+    hederaBorrowedUsd?: bigint;
     outstandingDebt?: bigint;
     lastBorrowRateBps?: number;
     createdAt?: number;
@@ -57,4 +59,3 @@ export interface OrderData {
     REPAYING_IN_PROGRESS,
     CROSSING_TO_ETHEREUM, READY_TO_WITHDRAW, WITHDRAWING_IN_PROGRESS, COMPLETED, ERROR
   }
-

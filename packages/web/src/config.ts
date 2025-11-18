@@ -26,16 +26,16 @@ export const LAYERZERO_DISABLED = (import.meta.env.VITE_LAYERZERO_DISABLED ?? 'f
 export const POLLING_INTERVAL = 5000; // 5 seconds
 // --- CONTRACT ADDRESSES ---
 // Load from environment variables with fallback to hardcoded values for development
-export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0x31041db39a5e0c3bd20b52c8812d62203de2031a').toLowerCase() as `0x${string}`;
-export const HEDERA_CREDIT_OAPP_ADDR = (import.meta.env.VITE_HEDERA_CREDIT_OAPP || '0x00000000000000000000000000000000006f0a86').toLowerCase() as `0x${string}`;
-export const RESERVE_REGISTRY_ADDR = '0x00000000000000000000000000000000006f0a84' as `0x${string}`;
+export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0x6d5aabecce669811c6bcc25652302088d8f6ed26').toLowerCase() as `0x${string}`;
+export const HEDERA_CREDIT_OAPP_ADDR = (import.meta.env.VITE_HEDERA_CREDIT_OAPP || '0x00000000000000000000000000000000006f0b2c').toLowerCase() as `0x${string}`;
+export const RESERVE_REGISTRY_ADDR = '0x00000000000000000000000000000000006f0b29' as `0x${string}`;
 // HUSD token ID in Hedera format (0.0.0.7253040)
 // Can be set via VITE_HUSD_TOKEN_ID environment variable
-export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7277194';
+export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7277363';
 
 // HUSD token address in EVM format (for contract calls)
 // Can be set via VITE_HUSD_TOKEN_ADDR environment variable
-const HUSD_TOKEN_ADDR_RAW = import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006f0a8a';
+const HUSD_TOKEN_ADDR_RAW = import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006f0b33';
 
 // Ensure the address is properly formatted as an EVM address
 export const HUSD_TOKEN_ADDR = (() => {
@@ -49,7 +49,7 @@ export const HUSD_TOKEN_ADDR = (() => {
 export const PYTH_CONTRACT_ADDR = '0xa2aa501b19aff244d90cc15a4cf739d2725b5729'.toLowerCase() as `0x${string}`;
 
 // New contract addresses
-export const USD_CONTROLLER_ADDR = (import.meta.env.VITE_USD_CONTROLLER || '0x00000000000000000000000000000000006f0a82').toLowerCase() as `0x${string}`;
+export const USD_CONTROLLER_ADDR = (import.meta.env.VITE_USD_CONTROLLER || '0x00000000000000000000000000000000006f0b26').toLowerCase() as `0x${string}`;
 export const LIQUIDITY_POOL_ADDR = (import.meta.env.VITE_LIQUIDITY_POOL || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;
 export const CROSS_CHAIN_GATEWAY_ADDR = (import.meta.env.VITE_CROSS_CHAIN_GATEWAY || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;
 export const UNDERLYING_TOKEN_ADDR = (import.meta.env.VITE_UNDERLYING_TOKEN || '0x0000000000000000000000000000000000000000').toLowerCase() as `0x${string}`;

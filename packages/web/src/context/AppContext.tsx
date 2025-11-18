@@ -28,34 +28,7 @@ const MIRROR_FLAG_FUND_INFLIGHT = 'mirror_funding_inflight_';
 const MIRROR_FLAG_REPAY_INFLIGHT = 'mirror_repay_inflight_';
 const ORDER_CREATED_EVENT = parseAbiItem(
   'event OrderCreated(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user)'
-);
-
-type BorrowedOrderMap = Record<string, { amount: string }>;
-
-const BORROWED_ORDERS_STORAGE_KEY = 'borrowedOrders';
-
-function readBorrowedOrdersFromStorage(): BorrowedOrderMap {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const raw = window.localStorage.getItem(BORROWED_ORDERS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return {};
-
-    return Object.entries(parsed as Record<string, unknown>).reduce<BorrowedOrderMap>((acc, [key, value]) => {
-      if (value && typeof value === 'object' && typeof (value as { amount?: unknown }).amount === 'string') {
-        acc[key] = { amount: (value as { amount: string }).amount };
-      }
-      return acc;
-    }, {});
-  } catch (err) {
-    console.warn('Failed to parse borrowed orders cache', err);
-    return {};
-  }
-}
+);  
 
 const setMirrorFlag = (prefix: string, orderId: `0x${string}`, value: boolean) => {
   if (typeof window === 'undefined') return;
@@ -130,7 +103,6 @@ interface AppContextType {
   calculateBorrowAmount: () => Promise<{ amount: string, price: string } | null>;
   resetFlow: () => void;
   setSelectedOrderId: (orderId: `0x${string}` | null) => void;
-  borrowedOrders: BorrowedOrderMap;
   startPollingForHederaOrder: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => void;
   startPollingForEthRepay: (orderId: `0x${string}`) => void;
   setLzTxHash: (hash: `0x${string}` | null) => void; 
@@ -172,7 +144,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pollingStartBlock, setPollingStartBlock] = useState<number>(0);
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
-  const [borrowedOrders, setBorrowedOrders] = useState<BorrowedOrderMap>(() => readBorrowedOrdersFromStorage());
   const [ordersRefreshVersion, setOrdersRefreshVersion] = useState(0);
   const envLoggedRef = useRef(false);
 
@@ -217,38 +188,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addLog('👛 Wallet disconnected');
     }
   }, [address, addLog]);
-
-  const persistBorrowedOrders = useCallback((next: BorrowedOrderMap) => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(BORROWED_ORDERS_STORAGE_KEY, JSON.stringify(next));
-    } catch (err) {
-      console.warn('Failed to persist borrowed orders cache', err);
-    }
-  }, []);
-
-  const markOrderBorrowed = useCallback((id: `0x${string}`, amount: string | null) => {
-    if (!id || !amount) return;
-    setBorrowedOrders(prev => {
-      const key = id.toLowerCase();
-      const existing = prev[key];
-      if (existing?.amount === amount) return prev;
-      const next: BorrowedOrderMap = { ...prev, [key]: { amount } };
-      persistBorrowedOrders(next);
-      return next;
-    });
-  }, [persistBorrowedOrders]);
-
-  const clearBorrowedOrder = useCallback((id: `0x${string}`) => {
-    if (!id) return;
-    setBorrowedOrders(prev => {
-      const key = id.toLowerCase();
-      if (!prev[key]) return prev;
-      const { [key]: _removed, ...rest } = prev;
-      persistBorrowedOrders(rest);
-      return rest;
-    });
-  }, [persistBorrowedOrders]);
 
   const waitForHederaReceipt = useCallback(async (txHash: `0x${string}`) => {
     if (!hederaRpcProviderRef.current) return;
@@ -360,7 +299,6 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       if (foundEvent) {
         addLog(`✅ [Polling Ethereum] Success! Collateral is unlocked for order ${foundEvent.orderId.slice(0, 12)}...`);
         if (ethPollingRef.current) clearInterval(ethPollingRef.current);
-        clearBorrowedOrder(idToPoll);
         setAppState(AppState.READY_TO_WITHDRAW);
         refreshOrders();
       } else if (attempts >= maxAttempts) {
@@ -370,7 +308,7 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
         setAppState(AppState.ERROR);
       }
     }, 5000);
-  }, [addLog, clearBorrowedOrder, refreshOrders]);
+  }, [addLog, refreshOrders]);
 
   const handleAddCollateral = useCallback(async (amountEth: string) => {
     if (!activeOrderId) return;
@@ -942,9 +880,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
 
         case AppState.BORROWING_IN_PROGRESS:
           setBorrowAmount(userBorrowAmount);
-          if (activeOrderId && userBorrowAmount) {
-            markOrderBorrowed(activeOrderId, userBorrowAmount);
-          }
           addLog(`✅ Successfully borrowed ${userBorrowAmount} hUSD!`);
           setAppState(AppState.LOAN_ACTIVE);
           break;
@@ -963,7 +898,7 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           break;
       }
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed, address, submitToMirrorRelay, refreshOrders]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, address, submitToMirrorRelay, refreshOrders]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -994,16 +929,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
       setOrderId(selectedOrderId);
     }
   }, [selectedOrderId]);
-
-  useEffect(() => {
-    if (!activeOrderId) return;
-    const stored = borrowedOrders[activeOrderId.toLowerCase()];
-    if (stored?.amount) {
-      setBorrowAmount(stored.amount);
-    } else {
-      setBorrowAmount(null);
-    }
-  }, [activeOrderId, borrowedOrders]);
 
   useEffect(() => {
 
@@ -1056,7 +981,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     calculateBorrowAmount,
     resetFlow,
     setSelectedOrderId,
-    borrowedOrders,
     startPollingForHederaOrder,
     startPollingForEthRepay,
     setLzTxHash,

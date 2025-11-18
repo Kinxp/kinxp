@@ -230,6 +230,8 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
     let status: OrderStatus = 'Created';
     let borrowedUsd: bigint = 0n;
     let hederaReady = false;
+    let hederaCollateralWei: bigint | undefined;
+    let hederaBorrowedUsd: bigint | undefined;
 
     // --- THIS IS THE CORRECTED LOGIC ---
     if (liquidated) {
@@ -255,8 +257,11 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
         ];
 
         const hederaCollateral = hederaOrder?.[1] ?? 0n;
-        borrowedUsd = hederaOrder?.[2] ?? 0n;
+        const hederaBorrowed = hederaOrder?.[2] ?? 0n;
+        borrowedUsd = hederaBorrowed;
         hederaReady = hederaCollateral > 0n;
+        hederaCollateralWei = hederaCollateral;
+        hederaBorrowedUsd = hederaBorrowed;
 
         // Now, determine the sub-status for a funded order without calling non-existent functions
         if (borrowedUsd > 0n) {
@@ -288,6 +293,8 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
       reserveId: normalizedReserveId,
       unlockedWei,
       borrowedUsd,
+      hederaCollateralWei,
+      hederaBorrowedUsd,
       hederaReady,
     });
   }
@@ -320,6 +327,8 @@ export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrd
     let status: OrderStatus = 'Created';
     let borrowedUsd: bigint = 0n;
     let hederaReady = false;
+    let hederaCollateralWei: bigint | undefined;
+    let hederaBorrowedUsd: bigint | undefined;
 
     if (liquidated) {
       status = 'Liquidated';
@@ -338,8 +347,11 @@ export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrd
         }) as [ `0x${string}`, bigint, bigint, boolean ];
 
         const hederaCollateral = hederaOrder?.[1] ?? 0n;
-        borrowedUsd = hederaOrder?.[2] ?? 0n;
+        const hederaBorrowed = hederaOrder?.[2] ?? 0n;
+        borrowedUsd = hederaBorrowed;
         hederaReady = hederaCollateral > 0n;
+        hederaCollateralWei = hederaCollateral;
+        hederaBorrowedUsd = hederaBorrowed;
 
         if (borrowedUsd > 0n) {
           status = 'Borrowed';
@@ -369,6 +381,8 @@ export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrd
       reserveId: normalizedReserveId,
       unlockedWei,
       borrowedUsd,
+      hederaCollateralWei,
+      hederaBorrowedUsd,
       hederaReady,
     };
   } catch (error) {
