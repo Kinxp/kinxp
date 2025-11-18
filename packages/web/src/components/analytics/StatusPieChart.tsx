@@ -4,6 +4,7 @@ import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recha
 import { UserOrderSummary } from '../../types';
 import { fetchAllUserOrders } from '../../services/blockscoutService';
 import ChartCard from './ChartCard';
+import { useAppContext } from '../../context/AppContext';
 
 const COLORS = {
   Created: '#6b7280',
@@ -17,6 +18,7 @@ const COLORS = {
 
 const StatusPieChart = () => {
   const { address } = useAccount();
+  const { ordersRefreshVersion } = useAppContext();
   const [allOrders, setAllOrders] = useState<UserOrderSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +31,7 @@ const StatusPieChart = () => {
         .catch(() => setError("Failed to fetch order statuses."))
         .finally(() => setIsLoading(false));
     }
-  }, [address]);
+  }, [address, ordersRefreshVersion]);
 
   const portfolioDistribution = useMemo(() => {
     if (allOrders.length === 0) return [];

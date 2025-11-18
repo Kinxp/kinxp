@@ -41,6 +41,7 @@ const loadABI = (filename: string) => {
 
 const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
 const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
 
 const RAY = 10n ** 27n;
 const toRay = (amount: bigint, decimals: number) => {
@@ -218,6 +219,28 @@ export default async function handler(
       .find((log: any) => log?.name === 'RepayApplied' && log?.args?.orderId?.toLowerCase?.() === orderId.toLowerCase());
 
     if (!repayLog) {
+      if (collateralToWithdraw && BigInt(collateralToWithdraw) > 0n) {
+        console.warn('RepayApplied event missing; using provided collateralToWithdraw');
+        const sepoliaProviderFallback = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL, 'sepolia');
+        const sepoliaSignerFallback = new ethers.Wallet(MIRROR_ADMIN_PRIVATE_KEY!, sepoliaProviderFallback);
+        const ethCollateralFallback = new ethers.Contract(
+          ETH_COLLATERAL_OAPP_ADDR,
+          ETH_COLLATERAL_ABI,
+          sepoliaSignerFallback
+        );
+        const fallbackTx = await ethCollateralFallback.adminMirrorRepayment(
+          orderId,
+          reserveId,
+          false,
+          BigInt(collateralToWithdraw)
+        );
+        const fallbackReceipt = await fallbackTx.wait();
+        return response.status(200).json({
+          success: true,
+          message: 'Collateral unlock processed successfully (manual amount)',
+          txHash: fallbackReceipt.transactionHash
+        });
+      }
       throw new Error('RepayApplied event not found in Hedera receipt');
     }
 

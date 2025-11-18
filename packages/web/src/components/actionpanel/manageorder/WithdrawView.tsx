@@ -3,9 +3,13 @@ import React from 'react';
 interface WithdrawViewProps {
   orderId: string;
   onWithdraw: () => void;
+  availableWei?: bigint;
 }
 
-const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw }) => {
+const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw, availableWei }) => {
+  const availableEth = availableWei ? Number(availableWei) / 1e18 : 0;
+  const formattedAvailable = availableWei ? (Number(availableWei) / 1e18).toFixed(6) : '0';
+  const disabled = !availableWei || availableWei === 0n;
   return (
     <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
       <h3 className="text-xl font-bold">Withdraw Your Collateral</h3>
@@ -16,10 +20,20 @@ const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw }) => {
           <span className="text-gray-500">Order ID:</span>
           <code className="text-cyan-300 ml-2 text-xs">{orderId}</code>
         </div>
+        <div className="mt-2">
+          <span className="text-gray-500">Available to Withdraw:</span>
+          <span className={`ml-2 font-semibold ${disabled ? 'text-gray-500' : 'text-white'}`}>
+            {disabled ? '0 ETH' : `${formattedAvailable} ETH`}
+          </span>
+        </div>
       </div>
 
-      <button onClick={onWithdraw} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg">
-        Withdraw ETH
+      <button
+        onClick={onWithdraw}
+        disabled={disabled}
+        className={`w-full font-bold py-3 px-4 rounded-lg ${disabled ? 'bg-gray-600 text-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'}`}
+      >
+        {disabled ? 'No ETH available' : 'Withdraw ETH'}
       </button>
     </div>
   );

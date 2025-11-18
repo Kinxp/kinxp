@@ -54,6 +54,7 @@ const statusStyles: Record<OrderStatus, string> = {
   Withdrawn: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
   Liquidated: "bg-red-700/20 text-red-300 border-red-500/40",
   Borrowed: "bg-indigo-600/20 text-indigo-300 border-indigo-500/30",
+  PendingRepayConfirmation: "bg-purple-600/20 text-purple-200 border-purple-500/30",
 };
 
 // -------- helpers --------
@@ -240,6 +241,12 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
           const explain = explainState[order.orderId];
           const isSelected = selectedOrderId === order.orderId;
           const rowDisabled = isAppBusy;
+          const unlockedWei = order.unlockedWei ?? 0n;
+          const isReady = order.status === 'ReadyToWithdraw';
+          const amountLabel = isReady ? 'Unlocked' : 'Collateral';
+          const amountValue = isReady ? unlockedWei : order.amountWei;
+          const amountText = formatEthFromWei(amountValue);
+          const showZeroUnlocked = isReady && unlockedWei === 0n;
 
           return (
             <div
@@ -255,7 +262,9 @@ const OrderActionList: React.FC<OrderActionListProps> = ({ title, orders, select
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <p className="font-mono text-sm text-gray-200">{shorten(order.orderId)}</p>
-                  <p className="text-xs text-gray-400">{formatEthFromWei(order.amountWei)} ETH</p>
+                  <p className={`text-xs ${showZeroUnlocked ? 'text-yellow-400' : 'text-gray-400'}`}>
+                    {amountLabel}: {amountText} ETH{showZeroUnlocked ? ' (locked)' : ''}
+                  </p>
                 </div>
                 <div>
                   <span className={`inline-block text-xs font-medium px-3 py-1 rounded-full border ${statusStyles[order.status]}`}>

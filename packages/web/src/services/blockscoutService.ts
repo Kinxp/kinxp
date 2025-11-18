@@ -262,7 +262,7 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
         if (borrowedUsd > 0n) {
           status = 'Borrowed';
         } else if (repaid) {
-          status = 'ReadyToWithdraw';
+          status = unlockedWei > 0n ? 'ReadyToWithdraw' : 'Withdrawn';
         } else if (unlockedWei > 0n) {
           status = 'PendingRepayConfirmation';
         } else {
@@ -275,6 +275,10 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
       }
     } else {
       status = 'Created';
+    }
+
+    if (status === 'ReadyToWithdraw' && (unlockedWei ?? 0n) === 0n) {
+      status = amountWei === 0n ? 'Withdrawn' : 'Funded';
     }
 
     summaries.push({
@@ -340,7 +344,7 @@ export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrd
         if (borrowedUsd > 0n) {
           status = 'Borrowed';
         } else if (repaid) {
-          status = 'ReadyToWithdraw';
+          status = unlockedWei > 0n ? 'ReadyToWithdraw' : 'Withdrawn';
         } else if (unlockedWei > 0n) {
           status = 'PendingRepayConfirmation';
         } else {
@@ -352,6 +356,10 @@ export async function fetchOrderSummary(orderId: `0x${string}`): Promise<UserOrd
       }
     } else {
       status = 'Created';
+    }
+
+    if (status === 'ReadyToWithdraw' && (unlockedWei ?? 0n) === 0n) {
+      status = amountWei === 0n ? 'Withdrawn' : 'Funded';
     }
 
     return {

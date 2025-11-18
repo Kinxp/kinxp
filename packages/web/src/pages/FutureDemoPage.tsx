@@ -60,6 +60,7 @@ const FutureDemoPage: React.FC = () => {
     ethAmount,
     lzTxHash,
     startPollingForHederaOrder,
+    ordersRefreshVersion,
   } = useAppContext();
 
   const [activeTab, setActiveTab] = useState<'orders' | 'create'>('orders');
@@ -210,7 +211,7 @@ const FutureDemoPage: React.FC = () => {
     } finally {
       setIsLoadingOrders(false);
     }
-  }, [address, selectedOrderId, setSelectedOrderId]);
+  }, [address, selectedOrderId, setSelectedOrderId, ordersRefreshVersion]);
 
   useEffect(() => {
     loadOrders();
@@ -258,7 +259,7 @@ const FutureDemoPage: React.FC = () => {
   const { activeOrders, withdrawableOrders, fundableOrders } = useMemo(() => {
     return {
       activeOrders: decoratedOrders.filter(order => order.status === 'Borrowed' || order.status === 'Funded'),
-      withdrawableOrders: decoratedOrders.filter(order => order.status === 'ReadyToWithdraw'),
+      withdrawableOrders: decoratedOrders.filter(order => order.status === 'ReadyToWithdraw' && (order.unlockedWei ?? 0n) > 0n),
       fundableOrders: decoratedOrders.filter(order => order.status === 'Created'),
     };
   }, [decoratedOrders]);
@@ -649,4 +650,3 @@ const OrderCard: React.FC<OrderCardProps> = ({ order, reserve, isSelected, onSel
 };
 
 export default FutureDemoPage;
-

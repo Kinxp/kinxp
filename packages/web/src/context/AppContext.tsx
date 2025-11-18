@@ -135,6 +135,8 @@ interface AppContextType {
   startPollingForEthRepay: (orderId: `0x${string}`) => void;
   setLzTxHash: (hash: `0x${string}` | null) => void; 
   triggerWithdrawRelay: (orderId: `0x${string}`, txHash?: `0x${string}` | null) => Promise<void>;
+  ordersRefreshVersion: number;
+  refreshOrders: () => void;
 }
 
 // Create the actual React Context
@@ -171,7 +173,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [userBorrowAmount, setUserBorrowAmount] = useState<string | null>(null);
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
   const [borrowedOrders, setBorrowedOrders] = useState<BorrowedOrderMap>(() => readBorrowedOrdersFromStorage());
+  const [ordersRefreshVersion, setOrdersRefreshVersion] = useState(0);
   const envLoggedRef = useRef(false);
+
+  const refreshOrders = useCallback(() => {
+    setOrdersRefreshVersion((version) => version + 1);
+  }, []);
 
   const hederaRpcUrl = import.meta.env.VITE_HEDERA_RPC_URL;
   const hederaRpcProviderRef = useRef<ethers.JsonRpcProvider | null>(null);
@@ -309,6 +316,62 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'fundOrderWithNotify', args: [activeOrderId, parseEther(amountToFund)], value: totalValue });
   }, [address, activeOrderId, sendTxOnChain, addLog]);
 
+  const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`, txHash?: `0x${string}` | null) => {
+    if (txHash) {
+      setLzTxHash(txHash);
+    }
+    setAppState(AppState.CROSSING_TO_HEDERA);
+    addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
+    setOrderId(prev => prev ?? idToPoll);
+    setSelectedOrderId(idToPoll);
+    let attempts = 0; const maxAttempts = 60;
+    if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
+    hederaPollingRef.current = setInterval(async () => {
+      attempts++; addLog(`[Polling Hedera] Attempt ${attempts}/${maxAttempts}...`);
+      const found = await pollForHederaOrderOpened(idToPoll, pollingStartBlock);
+      if (found) {
+        addLog('✅ [Polling Hedera] Success! Your order is now funded on Hedera and ready for the next step.');
+        if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
+
+        // Transition from the creation flow to the "active order" management flow.
+        // This makes the newly bridged order the currently selected one.
+        setSelectedOrderId(idToPoll); 
+        setOrderId(null); // Clear the temporary linear flow ID
+        setAppState(AppState.LOAN_ACTIVE); // Unlock the management UI immediately
+        refreshOrders();
+        
+      } else if (attempts >= maxAttempts) {
+        addLog('❌ [Polling Hedera] Timed out.');
+        setError('Polling for Hedera order timed out.');
+        if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
+        setAppState(AppState.ERROR);
+      }
+    }, 5000);
+  }, [addLog, pollingStartBlock, refreshOrders]);
+
+  const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
+    setAppState(AppState.CROSSING_TO_ETHEREUM);
+    addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
+    let attempts = 0; const maxAttempts = 60;
+    if (ethPollingRef.current) clearInterval(ethPollingRef.current);
+    ethPollingRef.current = setInterval(async () => {
+      attempts++; addLog(`[Polling Ethereum] Attempt ${attempts}/${maxAttempts}...`);
+      const foundEvent = await pollForSepoliaRepayEvent(idToPoll);
+      if (foundEvent) {
+        addLog(`✅ [Polling Ethereum] Success! Collateral is unlocked for order ${foundEvent.orderId.slice(0, 12)}...`);
+        if (ethPollingRef.current) clearInterval(ethPollingRef.current);
+        clearBorrowedOrder(idToPoll);
+        setAppState(AppState.READY_TO_WITHDRAW);
+        refreshOrders();
+      } else if (attempts >= maxAttempts) {
+        addLog('❌ [Polling Ethereum] Timed out.');
+        setError('Polling for Ethereum repay confirmation timed out.');
+        if (ethPollingRef.current) clearInterval(ethPollingRef.current);
+        setAppState(AppState.ERROR);
+      }
+    }, 5000);
+  }, [addLog, clearBorrowedOrder, refreshOrders]);
+
   const handleAddCollateral = useCallback(async (amountEth: string) => {
     if (!activeOrderId) return;
     setLogs([`▶ Adding ${amountEth} ETH collateral to order ${activeOrderId.slice(0, 10)}...`]);
@@ -376,7 +439,12 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
           addLog('⚠️ Failed to notify Hedera via admin mirror service. Please try again later.');
           setMirrorInflight(MIRROR_FLAG_FUND_INFLIGHT, activeOrderId, false);
         }
+        startPollingForHederaOrder(activeOrderId, txHash);
       }
+
+      addLog('✓ Add collateral flow complete. Hedera state will refresh shortly.');
+      setAppState(AppState.LOAN_ACTIVE);
+      refreshOrders();
     } catch (e) {
       const message = (e as { shortMessage?: string; message?: string })?.shortMessage
         || (e as { message?: string })?.message
@@ -385,7 +453,7 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       setError(message);
       setAppState(AppState.ERROR);
     }
-  }, [activeOrderId, addLog, sendTxOnChain]);
+  }, [activeOrderId, addLog, address, sendTxOnChain, startPollingForHederaOrder, refreshOrders]);
 
   const handleBorrow = useCallback(async (amountToBorrow: string) => {
     if (!activeOrderId) return;
@@ -411,12 +479,13 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
       addLog(`   ↪ Borrow tx hash: ${borrowHash}`);
       await waitForHederaReceipt(borrowHash as `0x${string}`);
       addLog('   ↪ Borrow transaction mined on Hedera');
+      refreshOrders();
     } catch (e: any) {
       addLog(`❌ An error occurred during the borrow process: ${e.shortMessage || e.message}`);
       setError(`Borrow failed: ${e.shortMessage || e.message}`);
       setAppState(AppState.ERROR);
     }
-  }, [activeOrderId, sendTxOnChain, addLog, waitForHederaReceipt]);
+  }, [activeOrderId, address, sendTxOnChain, addLog, waitForHederaReceipt, refreshOrders]);
 
   const resolveTreasuryAddress = useCallback(async (): Promise<`0x${string}`> => {
     if (treasuryAddress) return treasuryAddress;
@@ -465,19 +534,22 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
         address
       );
 
-        if (result.success) {
-          addLog(`✓ Withdrawal relay triggered on Ethereum. Sepolia tx hash: ${result.txHash ?? 'N/A'}`);
-          setMirrorFlag(MIRROR_FLAG_REPAY, orderId, true);
-        } else {
-          addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
-        }
+      if (result.success) {
+        addLog(`✓ Withdrawal relay triggered on Ethereum. Sepolia tx hash: ${result.txHash ?? 'N/A'}`);
+        setMirrorFlag(MIRROR_FLAG_REPAY, orderId, true);
+        setAppState(AppState.READY_TO_WITHDRAW);
+        addLog('✓ Collateral unlocked on Sepolia. You can withdraw now.');
+        refreshOrders();
+      } else {
+        addLog(`⚠ Withdraw relay warning: ${result.message || result.error || 'Unknown error'}`);
+      }
         setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, orderId, false);
     } catch (err) {
       console.error('Withdraw relay error:', err);
       addLog('⚠ Failed to trigger withdraw relay. You can retry from the dashboard once available.');
       setMirrorInflight(MIRROR_FLAG_REPAY_INFLIGHT, orderId, false);
     }
-  }, [address, addLog]);
+  }, [address, addLog, refreshOrders]);
 
   // Get the public client for the Hedera network
   const publicClient = usePublicClient({ chainId: HEDERA_CHAIN_ID });
@@ -657,60 +729,6 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     addLog('▶ Withdrawing ETH on Ethereum...');
     sendTxOnChain(ETH_CHAIN_ID, { address: ETH_COLLATERAL_OAPP_ADDR, abi: ETH_COLLATERAL_ABI, functionName: 'withdraw', args: [activeOrderId] });
   }, [activeOrderId, sendTxOnChain, addLog]);
-
-  const startPollingForHederaOrder = useCallback((idToPoll: `0x${string}`, txHash?: `0x${string}` | null) => {
-    if (txHash) {
-      setLzTxHash(txHash);
-    }
-    setAppState(AppState.CROSSING_TO_HEDERA);
-    addLog(`[Polling Hedera] Starting check from block ${pollingStartBlock}...`);
-    setOrderId(prev => prev ?? idToPoll);
-    setSelectedOrderId(idToPoll);
-    let attempts = 0; const maxAttempts = 60;
-    if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
-    hederaPollingRef.current = setInterval(async () => {
-      attempts++; addLog(`[Polling Hedera] Attempt ${attempts}/${maxAttempts}...`);
-      const found = await pollForHederaOrderOpened(idToPoll, pollingStartBlock);
-      if (found) {
-        addLog('✅ [Polling Hedera] Success! Your order is now funded on Hedera and ready for the next step.');
-        if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
-
-        // Transition from the creation flow to the "active order" management flow.
-        // This makes the newly bridged order the currently selected one.
-        setSelectedOrderId(idToPoll); 
-        setOrderId(null); // Clear the temporary linear flow ID
-        setAppState(AppState.LOAN_ACTIVE); // Unlock the management UI immediately
-        
-      } else if (attempts >= maxAttempts) {
-        addLog('❌ [Polling Hedera] Timed out.');
-        setError('Polling for Hedera order timed out.');
-        if (hederaPollingRef.current) clearInterval(hederaPollingRef.current);
-        setAppState(AppState.ERROR);
-      }
-    }, 5000);
-  }, [addLog, pollingStartBlock]);
-
-  const startPollingForEthRepay = useCallback((idToPoll: `0x${string}`) => {
-    setAppState(AppState.CROSSING_TO_ETHEREUM);
-    addLog(`[Polling Ethereum] Waiting for repay confirmation...`);
-    let attempts = 0; const maxAttempts = 60;
-    if (ethPollingRef.current) clearInterval(ethPollingRef.current);
-    ethPollingRef.current = setInterval(async () => {
-      attempts++; addLog(`[Polling Ethereum] Attempt ${attempts}/${maxAttempts}...`);
-      const foundEvent = await pollForSepoliaRepayEvent(idToPoll);
-      if (foundEvent) {
-        addLog(`✅ [Polling Ethereum] Success! Collateral is unlocked for order ${foundEvent.orderId.slice(0, 12)}...`);
-        if (ethPollingRef.current) clearInterval(ethPollingRef.current);
-        clearBorrowedOrder(idToPoll);
-        setAppState(AppState.READY_TO_WITHDRAW);
-      } else if (attempts >= maxAttempts) {
-        addLog('❌ [Polling Ethereum] Timed out.');
-        setError('Polling for Ethereum repay confirmation timed out.');
-        if (ethPollingRef.current) clearInterval(ethPollingRef.current);
-        setAppState(AppState.ERROR);
-      }
-    }, 5000);
-  }, [addLog, clearBorrowedOrder]);
 
   const calculateBorrowAmount = useCallback(async () => {
     if (!address || !activeOrderId) return null;
@@ -939,11 +957,12 @@ const handleRepay = useCallback(async (repayAmount: string) => {
           break;
         case AppState.WITHDRAWING_IN_PROGRESS:
           addLog(`✅ E2E FLOW COMPLETE! Your ETH has been withdrawn.`);
+          refreshOrders();
           setAppState(AppState.COMPLETED);
           break;
       }
     }
-  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed, address, submitToMirrorRelay]);
+  }, [receipt, appState, addLog, resetWriteContract, hederaPublicClient, userBorrowAmount, activeOrderId, markOrderBorrowed, address, submitToMirrorRelay, refreshOrders]);
 
   useEffect(() => {
     if (isWritePending) addLog('✍️ Please approve the transaction in your wallet...');
@@ -1041,6 +1060,8 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     startPollingForEthRepay,
     setLzTxHash,
     triggerWithdrawRelay,
+    ordersRefreshVersion,
+    refreshOrders,
   };
 
   return (

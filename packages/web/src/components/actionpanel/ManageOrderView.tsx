@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatUnits } from 'viem';
 import { UserOrderSummary } from '../../types';
 import FundOrderView from './FundOrderView';
 import BorrowView from './manageorder/BorrowView';
@@ -64,13 +65,31 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
 
     case 'Funded':
     case 'Borrowed':
-      if (props.isCheckingHedera) {
+      if (props.isCheckingHedera && !(props.selectedOrder.unlockedWei && props.selectedOrder.unlockedWei > 0n)) {
         return <div className="text-center p-4"><SpinnerIcon /> <p className="mt-2 text-sm text-gray-400">Confirming status on Hedera...</p></div>;
       }
-      if (props.isHederaConfirmed) {
+      const unlockedWei = props.selectedOrder.unlockedWei ?? 0n;
+      const hasUnlocked = unlockedWei > 0n;
+      if (props.isHederaConfirmed || hasUnlocked) {
+          const unlockedEth = hasUnlocked ? formatUnits(unlockedWei, 18) : null;
           return (
         <div className="space-y-4">
           {renderOrderHeader()}
+          {hasUnlocked && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+              <p className="text-sm text-amber-200 font-semibold">Unlocked ETH available</p>
+              <p className="text-lg font-mono text-white mt-1">{unlockedEth} ETH</p>
+              <p className="text-xs text-amber-100/80 mt-1">
+                This collateral is ready to withdraw on Sepolia. Withdraw it below or keep it deposited as extra buffer.
+              </p>
+              <button
+                onClick={props.onWithdraw}
+                className="mt-3 w-full bg-amber-500/80 hover:bg-amber-500 text-gray-900 font-bold py-2 rounded-lg transition-colors"
+              >
+                Withdraw unlocked ETH
+              </button>
+            </div>
+          )}
           <BorrowView 
             orderId={props.selectedOrder.orderId} 
             onBorrow={props.onBorrow} 
@@ -146,7 +165,11 @@ export const ManageOrderView: React.FC<ManageOrderViewProps> = (props) => {
       return (
         <div className="space-y-4">
           {renderOrderHeader()}
-          <WithdrawView orderId={props.selectedOrder.orderId} onWithdraw={props.onWithdraw} />
+          <WithdrawView
+            orderId={props.selectedOrder.orderId}
+            onWithdraw={props.onWithdraw}
+            availableWei={props.selectedOrder.unlockedWei}
+          />
         </div>
       );
 

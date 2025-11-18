@@ -7,6 +7,7 @@ import { useAccount } from 'wagmi';
 import { fetchAllUserOrders } from '../../services/blockscoutService';
 // Import the shared types for consistency
 import { UserOrderSummary } from '../../types';
+import { useAppContext } from '../../context/AppContext';
 // Import the presentational component that will display the data
 import OrderList from './OrderList';
 
@@ -17,6 +18,7 @@ import OrderList from './OrderList';
 const UserOrders: React.FC = () => {
   // Get the connected wallet's information
   const { address, isConnected } = useAccount();
+  const { ordersRefreshVersion } = useAppContext();
 
   // State management for the component's data, loading status, and errors
   const [orders, setOrders] = useState<UserOrderSummary[]>([]);
@@ -46,7 +48,7 @@ const UserOrders: React.FC = () => {
       // Always ensure the loading state is turned off after the request completes
       setIsLoading(false);
     }
-  }, [address]); // This function depends only on the user's address
+  }, [address, ordersRefreshVersion]); // This function depends on the user's address and refresh ticks
 
   /**
    * An effect that runs when the component is first mounted or when the user's
@@ -60,7 +62,7 @@ const UserOrders: React.FC = () => {
       // If the user disconnects, clear the list of orders
       setOrders([]);
     }
-  }, [isConnected, address, handleRefresh]); // Dependencies for the effect
+  }, [isConnected, address, handleRefresh, ordersRefreshVersion]); // Dependencies for the effect
 
   // Don't render anything if the user's wallet is not connected
   if (!isConnected) {

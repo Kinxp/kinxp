@@ -58,11 +58,23 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
 
   // --- DERIVED STATE ---
   const effectiveOrder = liveOrderSnapshot ?? selectedOrder;
+  useEffect(() => {
+    if (!effectiveOrder) return;
+    console.log('[ActionPanel] Selected order', {
+      orderId: effectiveOrder.orderId,
+      status: effectiveOrder.status,
+      amountWei: effectiveOrder.amountWei?.toString?.(),
+      unlockedWei: effectiveOrder.unlockedWei?.toString?.(),
+      borrowedUsd: effectiveOrder.borrowedUsd?.toString?.(),
+    });
+  }, [effectiveOrder]);
   const normalizedOrder = useMemo(() => {
     if (!effectiveOrder) return null;
+    const amountWei = effectiveOrder.amountWei ?? 0n;
+    const unlockedWei = effectiveOrder.unlockedWei ?? 0n;
     if (
       effectiveOrder.status === 'PendingRepayConfirmation' &&
-      (effectiveOrder.unlockedWei ?? 0n) === 0n &&
+      unlockedWei === 0n &&
       (effectiveOrder.borrowedUsd ?? 0n) === 0n
     ) {
       return { ...effectiveOrder, status: 'Funded' } as UserOrderSummary;
@@ -72,6 +84,21 @@ export function useActionPanelState(allOrders: UserOrderSummary[]) {
       (effectiveOrder.borrowedUsd ?? 0n) === 0n
     ) {
       return { ...effectiveOrder, status: 'Funded' } as UserOrderSummary;
+    }
+    if (effectiveOrder.status === 'ReadyToWithdraw') {
+      if (unlockedWei === 0n) {
+        const fallbackStatus = amountWei === 0n ? 'Withdrawn' : 'Funded';
+        return { ...effectiveOrder, status: fallbackStatus } as UserOrderSummary;
+      }
+      if (amountWei > unlockedWei) {
+        return { ...effectiveOrder, status: 'Funded' } as UserOrderSummary;
+      }
+    }
+    if (
+      effectiveOrder.status === 'Funded' &&
+      amountWei === 0n
+    ) {
+      return { ...effectiveOrder, status: 'Withdrawn' } as UserOrderSummary;
     }
     return effectiveOrder;
   }, [effectiveOrder]);

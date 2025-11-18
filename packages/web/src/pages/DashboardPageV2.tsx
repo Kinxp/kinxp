@@ -10,6 +10,7 @@ import BorrowView from '../components/actionpanel/manageorder/BorrowView';
 import RepayView from '../components/actionpanel/manageorder/RepayView';
 import CreateOrderView from '../components/dashboard/CreateOrderView';
 import { fetchAllUserOrders } from '../services/blockscoutService';
+import { useAppContext } from '../context/AppContext';
 
 // Types for the reserve info
 interface ReserveInfo {
@@ -25,6 +26,7 @@ interface ReserveInfo {
 
 const DashboardPageV2: React.FC = () => {
   const { address } = useAccount();
+  const { ordersRefreshVersion } = useAppContext();
   const [orders, setOrders] = useState<UserOrderSummary[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<UserOrderSummary | null>(null);
   const [activeTab, setActiveTab] = useState<'orders' | 'create'>('orders');
@@ -51,7 +53,7 @@ const DashboardPageV2: React.FC = () => {
     };
 
     loadOrders();
-  }, [address]);
+  }, [address, ordersRefreshVersion]);
 
   // Mock reserves - in a real app, this would come from the ReserveRegistry
   const mockReserves: ReserveInfo[] = [

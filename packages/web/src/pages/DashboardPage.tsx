@@ -14,7 +14,7 @@ import OrderListSkeleton from '../components/dashboard/OrderListSkeleton';
 import DemoDashboardView from '../components/dashboard/DemoDashboardView'; 
 const DashboardPage = () => {
   const { isConnected, address } = useAccount();
-  const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders, handleCreateOrder } = useAppContext();
+  const { selectedOrderId, setSelectedOrderId, appState, borrowedOrders, handleCreateOrder, ordersRefreshVersion } = useAppContext();
 
   const [allOrders, setAllOrders] = useState<UserOrderSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true); // Start in loading state
@@ -42,7 +42,7 @@ const DashboardPage = () => {
       setIsLoading(false); // Stop loading if not connected
       setAllOrders([]);
     }
-  }, [isConnected, address, appState]);
+  }, [isConnected, address, appState, ordersRefreshVersion]);
 
   const decoratedOrders = useMemo(() => {
     return allOrders.map(order => {
@@ -62,8 +62,12 @@ const DashboardPage = () => {
   const { fundableOrders, activeOrders, withdrawableOrders, closedOrders } = useMemo(() => {
     const fundable = decoratedOrders.filter(o => o.status === 'Created');
     const active = decoratedOrders.filter(o => o.status === 'Funded' || o.status === 'Borrowed');
-    const withdrawable = decoratedOrders.filter(o => o.status === 'ReadyToWithdraw');
-    const closed = decoratedOrders.filter(o => o.status === 'Liquidated' || o.status === 'Withdrawn');
+    const withdrawable = decoratedOrders.filter(o => o.status === 'ReadyToWithdraw' && (o.unlockedWei ?? 0n) > 0n);
+    const closed = decoratedOrders.filter(o =>
+      o.status === 'Liquidated' ||
+      o.status === 'Withdrawn' ||
+      (o.status === 'ReadyToWithdraw' && (o.unlockedWei ?? 0n) === 0n)
+    );
 
     return {
       fundableOrders: fundable,
