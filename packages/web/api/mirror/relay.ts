@@ -66,9 +66,16 @@ const isAlreadyMirroredError = (error: unknown): boolean => {
   return combined.includes('already mirrored');
 };
 
-const formatDirection = (mode: 'fund' | 'repay', collateralToUnlock: string, fullyRepaid: boolean) => {
+const formatDirection = (
+  mode: 'fund' | 'repay',
+  collateralToUnlock: string,
+  fullyRepaid: boolean,
+  isCollateralTopUp = false
+) => {
   if (mode === 'repay') return 'Hedera ➜ Sepolia (repay notify)';
-  if (collateralToUnlock !== '0' && collateralToUnlock !== '0x0') return 'Sepolia ➜ Hedera (add collateral)';
+  if (isCollateralTopUp || (collateralToUnlock !== '0' && collateralToUnlock !== '0x0')) {
+    return 'Sepolia ➜ Hedera (add collateral)';
+  }
   return 'Sepolia ➜ Hedera (fund order)';
 };
 
@@ -94,9 +101,10 @@ export default async function handler(
     const { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType } = request.body;
     
     const mode: 'fund' | 'repay' = actionType === 'repay' ? 'repay' : 'fund';
+    const isCollateralTopUp = actionType === 'addCollateral';
     
-    console.log('Parsed request body:', { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType, mode });
-    console.log(`Relay direction: ${formatDirection(mode, String(collateralToUnlock), fullyRepaid)}`);
+    console.log('Parsed request body:', { orderId, txHash, collateralToUnlock, fullyRepaid, reserveId, borrower, actionType, mode, isCollateralTopUp });
+    console.log(`Relay direction: ${formatDirection(mode, String(collateralToUnlock), fullyRepaid, isCollateralTopUp)}`);
     
     if (!orderId || !txHash || collateralToUnlock === undefined || fullyRepaid === undefined || !reserveId || !borrower) {
       const error = `Missing required parameters. Received: ${JSON.stringify({
@@ -241,41 +249,80 @@ export default async function handler(
         throw new Error('Order has no collateral amount');
       }
 
-      console.log('Calling adminMirrorOrder with:', {
-        orderId,
-        reserveId,
-        borrower,
-        collateralAmount
-      });
-      
-      try {
-        console.log('[Relay][Fund] Invoking adminMirrorOrder (Sepolia ➜ Hedera)...');
-        const mirrorTx = await hederaCredit.adminMirrorOrder(
+      if (isCollateralTopUp) {
+        if (!collateralToUnlock) {
+          throw new Error('Missing collateral top-up amount');
+        }
+        const addedWei = BigInt(collateralToUnlock);
+        if (addedWei <= 0n) {
+          throw new Error('Collateral top-up amount must be greater than zero');
+        }
+
+        console.log('Calling adminIncreaseCollateral with:', {
+          orderId,
+          addedWei: addedWei.toString(),
+          newTotal: collateralAmount
+        });
+
+        try {
+          console.log('[Relay][Fund] Invoking adminIncreaseCollateral (Sepolia ➜ Hedera)...');
+          const mirrorTx = await hederaCredit.adminIncreaseCollateral(orderId, addedWei);
+          console.log('[Relay][Fund] Hedera tx submitted:', mirrorTx.hash);
+          const receipt = await mirrorTx.wait();
+          console.log('[Relay][Fund] Hedera tx confirmed at block', receipt.blockNumber);
+
+          return response.status(200).json({
+            success: true,
+            message: 'Collateral increase mirrored successfully',
+            txHash: receipt.transactionHash
+          });
+        } catch (err) {
+          if (isAlreadyMirroredError(err)) {
+            console.warn('Collateral relay skipped: already applied on Hedera');
+            return response.status(200).json({
+              success: true,
+              message: 'Collateral increase already mirrored on Hedera'
+            });
+          }
+          throw err;
+        }
+      } else {
+        console.log('Calling adminMirrorOrder with:', {
           orderId,
           reserveId,
           borrower,
-          borrower,
-          BigInt(collateralAmount)
-        );
-
-        console.log('[Relay][Fund] Hedera tx submitted:', mirrorTx.hash);
-        const receipt = await mirrorTx.wait();
-        console.log('[Relay][Fund] Hedera tx confirmed at block', receipt.blockNumber);
-
-        return response.status(200).json({
-          success: true,
-          message: 'Funding mirrored successfully',
-          txHash: receipt.transactionHash
+          collateralAmount
         });
-      } catch (err) {
-        if (isAlreadyMirroredError(err)) {
-          console.warn('Funding relay skipped: order already mirrored on Hedera');
+        
+        try {
+          console.log('[Relay][Fund] Invoking adminMirrorOrder (Sepolia ➜ Hedera)...');
+          const mirrorTx = await hederaCredit.adminMirrorOrder(
+            orderId,
+            reserveId,
+            borrower,
+            borrower,
+            BigInt(collateralAmount)
+          );
+
+          console.log('[Relay][Fund] Hedera tx submitted:', mirrorTx.hash);
+          const receipt = await mirrorTx.wait();
+          console.log('[Relay][Fund] Hedera tx confirmed at block', receipt.blockNumber);
+
           return response.status(200).json({
             success: true,
-            message: 'Order already mirrored on Hedera'
+            message: 'Funding mirrored successfully',
+            txHash: receipt.transactionHash
           });
+        } catch (err) {
+          if (isAlreadyMirroredError(err)) {
+            console.warn('Funding relay skipped: order already mirrored on Hedera');
+            return response.status(200).json({
+              success: true,
+              message: 'Order already mirrored on Hedera'
+            });
+          }
+          throw err;
         }
-        throw err;
       }
     }
 

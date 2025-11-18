@@ -415,7 +415,8 @@ const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) =
           collateralToUnlock: amountWei.toString(),
           fullyRepaid: false,
           reserveId,
-          borrower: account.address
+          borrower: account.address,
+          actionType: 'addCollateral' as const,
         };
         addLog(`   ↪ Payload: ${JSON.stringify(payload)}`);
         try {

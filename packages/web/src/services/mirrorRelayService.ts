@@ -5,6 +5,8 @@ interface RelayResponse {
   message?: string;
 }
 
+type MirrorActionType = 'fund' | 'repay' | 'addCollateral';
+
 export async function submitToMirrorRelay(params: {
   orderId: string;
   txHash: string;
@@ -12,7 +14,7 @@ export async function submitToMirrorRelay(params: {
   fullyRepaid: boolean;
   reserveId: string;
   borrower: string;
-  actionType?: 'fund' | 'repay';
+  actionType?: MirrorActionType;
 }): Promise<RelayResponse> {
   try {
     const response = await fetch('/api/mirror/relay', {
