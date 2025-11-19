@@ -1,5 +1,5 @@
 ﻿import { getPublicClient, multicall, readContract } from 'wagmi/actions';
-import { decodeAbiParameters, pad, parseAbiItem, type AbiEvent } from 'viem';
+import { decodeAbiParameters, pad, parseAbiItem, type AbiEvent, keccak256, toHex } from 'viem';
 import { config as wagmiConfig } from '../wagmi';
 import { UserOrderSummary, OrderStatus } from '../types';
 
@@ -20,6 +20,9 @@ import {
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
+
+// Topic for CollateralAdded(bytes32 indexed orderId, address indexed user, uint256 amountWei)
+const COLLATERAL_ADDED_TOPIC = keccak256(toHex('CollateralAdded(bytes32,address,uint256)'));
 
 const ORDER_CREATED_EVENT = parseAbiItem('event OrderCreated(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed user)') as AbiEvent;
 const HEDERA_ORDER_OPENED_EVENT = parseAbiItem('event HederaOrderOpened(bytes32 indexed orderId, bytes32 indexed reserveId, address indexed borrower, uint256 collateralWei)') as AbiEvent;
@@ -167,7 +170,6 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
     try {
       const client = getPublicClient(wagmiConfig, { chainId: ETH_CHAIN_ID });
       
-      // FIX: Calculate a safe range to prevent "Range limited to 10,000" error
       const latestBlock = await client.getBlockNumber();
       const safeRange = 9900n;
       const fromBlock = latestBlock > safeRange ? latestBlock - safeRange : 0n;
@@ -176,7 +178,7 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
         address: ETH_COLLATERAL_OAPP_ADDR,
         event: ORDER_CREATED_EVENT,
         args: { user: userAddress },
-        fromBlock: fromBlock, // <--- Key Fix here
+        fromBlock: fromBlock,
         toBlock: 'latest',
       });
 
@@ -577,38 +579,68 @@ export interface FundingEvent {
   timestamp: number;
 }
 
-export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promise<FundingEvent[]> {
-  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
-
-  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
-    module: 'logs',
-    action: 'getLogs',
-    address: ETH_COLLATERAL_OAPP_ADDR,
-    topic0: ORDER_FUNDED_TOPIC,
-    topic3: paddedUserAddress,
-    topic0_3_opr: 'and',
-    fromBlock: '0',
-    toBlock: 'latest',
-  });
-
-  const fundingEvents: FundingEvent[] = logs.map(log => {
-    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
-    return {
-      amountWei: amountWei as bigint,
-      timestamp: parseInt(log.timeStamp, 16),
-    };
-  });
-
-  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
-}
-
 export interface BorrowEvent {
   amountUsd: bigint;
   timestamp: number;
 }
 
-export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promise<BorrowEvent[]> {
-  const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT, { borrower: userAddress });
+export interface RepayEvent {
+  amountUsd: bigint;
+  timestamp: number;
+}
+
+/**
+ * Fetches ALL historical ETH inflows (OrderFunded AND CollateralAdded).
+ * This ensures the TVL chart reflects both initial deposits and top-ups.
+ */
+export async function fetchAllHistoricalFunding(): Promise<FundingEvent[]> {
+  // We run two requests in parallel:
+  // 1. Initial Order Funding
+  // 2. Collateral Additions
+  const [fundedLogs, addedLogs] = await Promise.all([
+    fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: ORDER_FUNDED_TOPIC,
+      fromBlock: '0',
+      toBlock: 'latest',
+    }),
+    fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: COLLATERAL_ADDED_TOPIC,
+      fromBlock: '0',
+      toBlock: 'latest',
+    })
+  ]);
+
+  // Helper to parse logs
+  const parseLogs = (logs: any[]): FundingEvent[] => {
+    return logs.map(log => {
+      try {
+        // Both events have 'amountWei' as the first non-indexed parameter (data)
+        const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+        return {
+          amountWei: amountWei as bigint,
+          timestamp: parseInt(log.timeStamp, 16),
+        };
+      } catch (e) {
+        console.warn('Error parsing log', log, e);
+        return null;
+      }
+    }).filter((e): e is FundingEvent => e !== null);
+  };
+
+  const fundingEvents = [...parseLogs(fundedLogs), ...parseLogs(addedLogs)];
+
+  // Sort by date so the accumulating chart works correctly
+  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export async function fetchAllHistoricalBorrows(): Promise<BorrowEvent[]> {
+  const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT);
 
   const borrowEvents: BorrowEvent[] = logs.map(({ args, timestamp }) => {
     const grossAmount = (args?.grossAmount as bigint | undefined) ?? 0n;
@@ -622,28 +654,70 @@ export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promis
   return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export async function fetchAllHistoricalFunding(): Promise<FundingEvent[]> {
-  const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
-    module: 'logs',
-    action: 'getLogs',
-    address: ETH_COLLATERAL_OAPP_ADDR,
-    topic0: ORDER_FUNDED_TOPIC,
-    fromBlock: '0',
-    toBlock: 'latest',
-  });
-  const fundingEvents: FundingEvent[] = logs.map(log => {
-    const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+export async function fetchAllHistoricalRepayments(): Promise<RepayEvent[]> {
+  const logs = await fetchHederaLogs(HEDERA_REPAY_EVENT);
+
+  const repayEvents: RepayEvent[] = logs.map(({ args, timestamp }) => {
+    const amount = (args?.repayBurnAmount as bigint | undefined) ?? 0n;
     return {
-      amountWei: amountWei as bigint,
-      timestamp: parseInt(log.timeStamp, 16),
+      amountUsd: amount,
+      timestamp,
     };
   });
 
-  return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
+  return repayEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export async function fetchAllHistoricalBorrows(): Promise<BorrowEvent[]> {
-  const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT);
+/**
+ * Fetches user specific funding (Initial + Added)
+ */
+export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promise<FundingEvent[]> {
+  const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
+
+  // Fetch both event types for the specific user
+  const [fundedLogs, addedLogs] = await Promise.all([
+    fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: ORDER_FUNDED_TOPIC,
+      topic3: paddedUserAddress,
+      topic0_3_opr: 'and',
+      fromBlock: '0',
+      toBlock: 'latest',
+    }),
+    fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
+      module: 'logs',
+      action: 'getLogs',
+      address: ETH_COLLATERAL_OAPP_ADDR,
+      topic0: COLLATERAL_ADDED_TOPIC,
+      topic2: paddedUserAddress, // User is the 2nd indexed topic in CollateralAdded
+      topic0_2_opr: 'and',
+      fromBlock: '0',
+      toBlock: 'latest',
+    })
+  ]);
+
+  const parseLogs = (logs: any[]): FundingEvent[] => {
+    return logs.map(log => {
+      try {
+        const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
+        return {
+          amountWei: amountWei as bigint,
+          timestamp: parseInt(log.timeStamp, 16),
+        };
+      } catch (e) {
+        return null;
+      }
+    }).filter((e): e is FundingEvent => e !== null);
+  };
+
+  const events = [...parseLogs(fundedLogs), ...parseLogs(addedLogs)];
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promise<BorrowEvent[]> {
+  const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT, { borrower: userAddress });
 
   const borrowEvents: BorrowEvent[] = logs.map(({ args, timestamp }) => {
     const grossAmount = (args?.grossAmount as bigint | undefined) ?? 0n;
