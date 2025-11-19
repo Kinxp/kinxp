@@ -24,10 +24,10 @@ contract SimpleHtsToken is HederaTokenService, KeyHelper {
         );
 
         IHederaTokenService.HederaToken memory hederaToken = IHederaTokenService.HederaToken(
-            "MyToken",           // name
-            "MTK",               // symbol
+            "Hedera USD Token",           // name
+            "hUSD",               // symbol
             address(this),       // treasury
-            "Simple HTS Token",  // memo
+            "Test Token",  // memo
             true,                // finiteTotalSupplyType
             int64(1000000000000000), // maxSupply (1 billion with 6 decimals)
             false,               // freezeDefaultStatus

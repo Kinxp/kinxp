@@ -1,6 +1,8 @@
 // packages/web/api/mirror/withdraw.ts
 import type { ApiRequest, ApiResponse } from '../types';
 import { ethers } from 'ethers';
+import { createClient } from 'redis';
+
 import fs from 'fs';
 import path from 'path';
 
@@ -70,10 +72,18 @@ export default async function handler(
       error
     });
   }
-
+  const redis = await createClient({ url: process.env.REDIS_URL }).connect();
   try {
     const { orderId, txHash, collateralToWithdraw, reserveId, receiver } = request.body;
-    
+    const txAlreadySent = await redis.get(`withdraw_${txHash}`);
+    if(txAlreadySent == "true"){
+      return response.status(400).json({ 
+        success: false,
+        error: `Transaction already sent` 
+      });
+    }
+    await redis.set(`withdraw_${txHash}`, 'true');
+
     console.log('Parsed request body:', { orderId, txHash, collateralToWithdraw, reserveId, receiver });
     
     if (!orderId || !txHash || collateralToWithdraw === undefined || !reserveId || !receiver) {

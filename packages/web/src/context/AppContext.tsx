@@ -1,6 +1,6 @@
 import React, { createContext, useState, useCallback, useRef, useContext, ReactNode, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { useAccount, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
+import { useAccount, useWriteContract,useSwitchChain, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { readContract, getAccount, getPublicClient } from 'wagmi/actions';
 import { config as wagmiConfig } from '../wagmi';
 import { parseEther, parseUnits, formatUnits, parseAbiItem } from 'viem';
@@ -118,7 +118,6 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   // Wallet connection state
   const { isConnected, address, chainId } = useAccount();
-  const { switchChain } = useSwitchChain();
   
   const connectWallet = useCallback(async () => {
     try {
@@ -146,6 +145,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [treasuryAddress, setTreasuryAddress] = useState<`0x${string}` | null>(null);
   const [ordersRefreshVersion, setOrdersRefreshVersion] = useState(0);
   const envLoggedRef = useRef(false);
+const {  switchChainAsync : switchChain } = useSwitchChain();
 
   const refreshOrders = useCallback(() => {
     setOrdersRefreshVersion((version) => version + 1);
@@ -198,40 +198,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
 const sendTxOnChain = useCallback(async (chainIdToSwitch: number, config: any) => {
-  const send = async () => {
-    const gasLimits: Record<string, bigint> = {
-      'approve': 1_000_000n,
-      'repay': 2_000_000n,
-      'borrow': 1_500_000n,
-      'fundOrderWithNotify': 1_500_000n,
-      'addCollateralWithNotify': 1_500_000n,
-      'withdraw': 1_000_000n,
-      'createOrderId': 1_000_000n
-    };
-    // For token approvals, increase gas limit
-    if (!config.gas) {
-      config.gas = gasLimits[config.functionName] || 2_000_000n;
-    }
-    
-    const writer = writeContractAsync ?? writeContract;
-    if (!writer) throw new Error('Wallet not ready');
-    const result = await writer(config);
-    
-    // Store the transaction hash for funded orders
-    if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
-      const txHashKey = `fundTxHash_${activeOrderId}`;
-      localStorage.setItem(txHashKey, result);
-    }
-    
-    return result;
-  };
+
   
   if (chainId !== chainIdToSwitch) {
     addLog(`Switching network to Chain ID ${chainIdToSwitch}...`);
     await switchChain({ chainId: chainIdToSwitch });
+    
   }
+  const gasLimits: Record<string, bigint> = {
+    'approve': 1_000_000n,
+    'repay': 2_000_000n,
+    'borrow': 1_500_000n,
+    'fundOrderWithNotify': 1_500_000n,
+    'addCollateralWithNotify': 1_500_000n,
+    'withdraw': 1_000_000n,
+    'createOrderId': 1_000_000n
+  };
+  // For token approvals, increase gas limit
+  if (!config.gas) {
+    config.gas = gasLimits[config.functionName] || 2_000_000n;
+  }
+  const result = await writeContractAsync(config);
   
-  return send();
+  // Store the transaction hash for funded orders
+  if (config.functionName === 'fundOrderWithNotify' && activeOrderId) {
+    const txHashKey = `fundTxHash_${activeOrderId}`;
+    localStorage.setItem(txHashKey, result);
+  }
+
+  
+  return result;
+
 }, [chainId, writeContract, addLog, switchChain, activeOrderId]);
 
   const handleCreateOrder = useCallback((amount: string) => {
@@ -662,7 +659,8 @@ const handleRepay = useCallback(async (repayAmount: string) => {
     throw new Error(message);
   }
 }, [activeOrderId, address, sendTxOnChain, setAppState, setError, setLzTxHash, waitForHederaReceipt]);
-  const handleWithdraw = useCallback(() => {
+
+const handleWithdraw = useCallback(() => {
     if (!activeOrderId) return;
     setAppState(AppState.WITHDRAWING_IN_PROGRESS);
     addLog('▶ Withdrawing ETH on Ethereum...');

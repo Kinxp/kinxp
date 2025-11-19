@@ -26,16 +26,16 @@ export const LAYERZERO_DISABLED = (import.meta.env.VITE_LAYERZERO_DISABLED ?? 'f
 export const POLLING_INTERVAL = 5000; // 5 seconds
 // --- CONTRACT ADDRESSES ---
 // Load from environment variables with fallback to hardcoded values for development
-export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0x5a0782b35c59798ad2528b8d479e6ccd88fb1602').toLowerCase() as `0x${string}`;
-export const HEDERA_CREDIT_OAPP_ADDR = (import.meta.env.VITE_HEDERA_CREDIT_OAPP || '0x00000000000000000000000000000000006f26d9').toLowerCase() as `0x${string}`;
-export const RESERVE_REGISTRY_ADDR = '0x00000000000000000000000000000000006f26d7' as `0x${string}`;
+export const ETH_COLLATERAL_OAPP_ADDR = (import.meta.env.VITE_ETH_COLLATERAL_OAPP || '0x47e18d9a124730a69c686a04d869734ffa23f790').toLowerCase() as `0x${string}`;
+export const HEDERA_CREDIT_OAPP_ADDR = (import.meta.env.VITE_HEDERA_CREDIT_OAPP || '0x00000000000000000000000000000000006f348d').toLowerCase() as `0x${string}`;
+export const RESERVE_REGISTRY_ADDR = '0x00000000000000000000000000000000006f348a' as `0x${string}`;
 // HUSD token ID in Hedera format (0.0.0.7253040)
 // Can be set via VITE_HUSD_TOKEN_ID environment variable
-export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7284444';
+export const HUSD_TOKEN_ID = import.meta.env.VITE_HUSD_TOKEN_ID || '0.0.7287954';
 
 // HUSD token address in EVM format (for contract calls)
 // Can be set via VITE_HUSD_TOKEN_ADDR environment variable
-const HUSD_TOKEN_ADDR_RAW = import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006f26dc';
+const HUSD_TOKEN_ADDR_RAW = import.meta.env.VITE_HUSD_TOKEN_ADDR || '0x00000000000000000000000000000000006f3492';
 
 // Ensure the address is properly formatted as an EVM address
 export const HUSD_TOKEN_ADDR = (() => {
@@ -57,7 +57,7 @@ function hederaTokenIdToEvmAddress(tokenId: string): `0x${string}` {
 }
 
 // New contract addresses
-export const USD_CONTROLLER_ADDR = (import.meta.env.VITE_USD_CONTROLLER || '0x00000000000000000000000000000000006f26d5').toLowerCase() as `0x${string}`;
+export const USD_CONTROLLER_ADDR = (import.meta.env.VITE_USD_CONTROLLER || '0x00000000000000000000000000000000006f3487').toLowerCase() as `0x${string}`;
 export const LIQUIDITY_POOL_ADDR = (import.meta.env.VITE_LIQUIDITY_POOL || '0x00000000000000000000000000000000006f26ef').toLowerCase() as `0x${string}`;
 export const CROSS_CHAIN_GATEWAY_ADDR = (import.meta.env.VITE_CROSS_CHAIN_GATEWAY || '0x00000000000000000000000000000000006f26f1').toLowerCase() as `0x${string}`;
 export const UNDERLYING_TOKEN_ADDR = (import.meta.env.VITE_UNDERLYING_TOKEN || hederaTokenIdToEvmAddress('0.0.7284460')).toLowerCase() as `0x${string}`;
