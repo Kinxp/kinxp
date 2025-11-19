@@ -2,11 +2,16 @@
     "rewrites": [
       {
         "source": "/sepolia-blockscout-api/api",
-        "destination": "https://eth-sepolia.blockscout.com/api"
+        "destination": "/api/sepolia-proxy"
       },
       {
         "source": "/blockscout-api/api",
-        "destination": "https://hedera.cloud.blockscout.com/api"
+        "destination": "/api/hedera-proxy"
       }
-    ]
+    ],
+    "functions": {
+      "api/**/*": {
+        "includeFiles": "src/abis/**"
+    }
   }
+}

@@ -1,4 +1,4 @@
-import { getPublicClient, multicall, readContract } from 'wagmi/actions';
+﻿import { getPublicClient, multicall, readContract } from 'wagmi/actions';
 import { decodeAbiParameters, pad, parseAbiItem, type AbiEvent } from 'viem';
 import { config as wagmiConfig } from '../wagmi';
 import { UserOrderSummary, OrderStatus } from '../types';
@@ -28,16 +28,29 @@ const HEDERA_REPAY_EVENT = parseAbiItem('event RepayApplied(bytes32 indexed orde
 
 async function fetchBlockscoutLogs(baseUrl: string, params: Record<string, string>): Promise<any[]> {
   const query = new URLSearchParams(params).toString();
+  // Ensure we are hitting the /api endpoint if using proxy
   const url = `${baseUrl}?${query}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Blockscout request failed (${response.status}): ${response.statusText}`);
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Blockscout request failed (${response.status}): ${response.statusText}`);
+    }
+    // Check content type to ensure we got JSON, not HTML (which happens if proxy path is wrong)
+    const contentType = response.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Blockscout returned HTML/Text instead of JSON. Check your API URL configuration.");
+    }
+
+    const data = await response.json();
+    if (data.message !== 'OK' || !Array.isArray(data.result)) {
+      return [];
+    }
+    return data.result;
+  } catch (err) {
+    console.warn(`Blockscout fetch failed for ${baseUrl}`, err);
+    throw err;
   }
-  const data = await response.json();
-  if (data.message !== 'OK' || !Array.isArray(data.result)) {
-    return [];
-  }
-  return data.result;
 }
 
 async function buildTimestampCache(
@@ -117,6 +130,7 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
   const userTopic = pad(userAddress, { size: 32 }).toLowerCase();
   let logs: any[] = [];
 
+  // 1. Try Blockscout API
   try {
     logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
       module: 'logs',
@@ -129,7 +143,7 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
   } catch (error) {
     console.warn('Blockscout order lookup failed, falling back to on-chain logs', error);
   }
-
+  
   const orderIds: `0x${string}`[] = [];
   const seen = new Set<string>();
 
@@ -148,14 +162,21 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
     orderIds.push(orderTopic as `0x${string}`);
   }
 
+  // 2. Fallback: RPC (Optimized for 10k Limit)
   if (orderIds.length === 0) {
     try {
       const client = getPublicClient(wagmiConfig, { chainId: ETH_CHAIN_ID });
+      
+      // FIX: Calculate a safe range to prevent "Range limited to 10,000" error
+      const latestBlock = await client.getBlockNumber();
+      const safeRange = 9900n;
+      const fromBlock = latestBlock > safeRange ? latestBlock - safeRange : 0n;
+
       const chainLogs = await client.getLogs({
         address: ETH_COLLATERAL_OAPP_ADDR,
         event: ORDER_CREATED_EVENT,
         args: { user: userAddress },
-        fromBlock: 0n,
+        fromBlock: fromBlock, // <--- Key Fix here
         toBlock: 'latest',
       });
 
@@ -179,7 +200,7 @@ async function fetchOrderIdsForUser(userAddress: `0x${string}`): Promise<`0x${st
 async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderSummary[]> {
   if (orderIds.length === 0) return [];
 
-  // Step 1: Fetch all order statuses from Ethereum. This is fast and efficient.
+  // Step 1: Fetch all order statuses from Ethereum.
   const ethContracts = orderIds.map(orderId => ({
     address: ETH_COLLATERAL_OAPP_ADDR,
     abi: ETH_COLLATERAL_ABI,
@@ -193,7 +214,7 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
     allowFailure: true,
   });
 
-  // Step 2: Sequentially process each order to determine its status and fetch Hedera data ONLY WHEN NEEDED.
+  // Step 2: Sequentially process each order.
   const summaries: UserOrderSummary[] = [];
 
   for (let index = 0; index < orderIds.length; index++) {
@@ -233,7 +254,6 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
     let hederaCollateralWei: bigint | undefined;
     let hederaBorrowedUsd: bigint | undefined;
 
-    // --- THIS IS THE CORRECTED LOGIC ---
     if (liquidated) {
       status = 'Liquidated';
     } else if (repaid && !funded) {
@@ -241,7 +261,6 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
     } else if (repaid && funded) {
       status = 'ReadyToWithdraw';
     } else if (funded) {
-      // ONLY if an order is funded do we need to make the expensive call to Hedera.
       try {
         const hederaOrder = await readContract(wagmiConfig, {
           address: HEDERA_CREDIT_OAPP_ADDR,
@@ -263,7 +282,6 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
         hederaCollateralWei = hederaCollateral;
         hederaBorrowedUsd = hederaBorrowed;
 
-        // Now, determine the sub-status for a funded order without calling non-existent functions
         if (borrowedUsd > 0n) {
           status = 'Borrowed';
         } else if (repaid) {
@@ -274,7 +292,6 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
           status = 'Funded';
         }
       } catch (error) {
-        // If the Hedera call fails (e.g., rate limit), we can gracefully fall back.
         console.warn(`Could not fetch Hedera state for order ${orderId.slice(0,10)}. Defaulting to 'Funded'.`, error);
         status = repaid ? 'ReadyToWithdraw' : 'Funded';
       }
@@ -301,8 +318,6 @@ async function loadOrderSummaries(orderIds: `0x${string}`[]): Promise<UserOrderS
 
   return summaries;
 }
-
-
 
 export async function fetchAllUserOrders(userAddress: `0x${string}`): Promise<UserOrderSummary[]> {
   const orderIds = await fetchOrderIdsForUser(userAddress);
@@ -416,7 +431,6 @@ export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<Or
       topic0: MARK_REPAID_TOPIC,
       extraParams: { topic1: orderId, topic0_1_opr: 'and' },
     },
-    // NEW: Withdrawn (closed by withdrawal)
     {
       chainId: ETH_CHAIN_ID,
       label: 'Ethereum (Sepolia) - Withdrawn',
@@ -425,7 +439,6 @@ export async function fetchOrderTransactions(orderId: `0x${string}`): Promise<Or
       topic0: WITHDRAWN_TOPIC,
       extraParams: { topic1: orderId, topic0_1_opr: 'and' },
     },
-    // NEW: Liquidated (closed by liquidation)
     {
       chainId: ETH_CHAIN_ID,
       label: 'Ethereum (Sepolia) - Liquidated',
@@ -561,14 +574,9 @@ export async function pollForSepoliaRepayEvent(orderId: `0x${string}`): Promise<
 
 export interface FundingEvent {
   amountWei: bigint;
-  timestamp: number; // Unix timestamp
+  timestamp: number;
 }
 
-/**
- * Fetches all historical OrderFunded events for a specific user from the Sepolia network.
- * @param userAddress The user's wallet address.
- * @returns A promise that resolves to an array of funding events.
- */
 export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promise<FundingEvent[]> {
   const paddedUserAddress = `0x${userAddress.substring(2).padStart(64, '0')}`;
 
@@ -577,15 +585,13 @@ export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promis
     action: 'getLogs',
     address: ETH_COLLATERAL_OAPP_ADDR,
     topic0: ORDER_FUNDED_TOPIC,
-    topic3: paddedUserAddress, // `user` is the third indexed topic in the OrderFunded event
+    topic3: paddedUserAddress,
     topic0_3_opr: 'and',
     fromBlock: '0',
     toBlock: 'latest',
   });
 
-  // Parse the raw logs into a clean array of events
   const fundingEvents: FundingEvent[] = logs.map(log => {
-    // The `amountWei` is the first non-indexed value in the log's data field
     const [amountWei] = decodeAbiParameters([{ type: 'uint256', name: 'amountWei' }], log.data);
     return {
       amountWei: amountWei as bigint,
@@ -593,20 +599,14 @@ export async function fetchHistoricalFunding(userAddress: `0x${string}`): Promis
     };
   });
 
-  // Sort by date, oldest first, which is important for accumulation
   return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
 
 export interface BorrowEvent {
-  amountUsd: bigint; // This will be a bigint with 6 decimals
-  timestamp: number; // Unix timestamp
+  amountUsd: bigint;
+  timestamp: number;
 }
 
-/**
- * Fetches all historical Borrowed events for a specific user from the Hedera network.
- * @param userAddress The user's wallet address.
- * @returns A promise that resolves to an array of borrow events.
- */
 export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promise<BorrowEvent[]> {
   const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT, { borrower: userAddress });
 
@@ -622,11 +622,6 @@ export async function fetchHistoricalBorrows(userAddress: `0x${string}`): Promis
   return borrowEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-
-/**
- * Fetches ALL historical OrderFunded events across the entire protocol.
- * @returns A promise that resolves to an array of all funding events.
- */
 export async function fetchAllHistoricalFunding(): Promise<FundingEvent[]> {
   const logs = await fetchBlockscoutLogs(SEPOLIA_BLOCKSCOUT_API_URL, {
     module: 'logs',
@@ -647,10 +642,6 @@ export async function fetchAllHistoricalFunding(): Promise<FundingEvent[]> {
   return fundingEvents.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-/**
- * Fetches ALL historical Borrowed events across the entire protocol.
- * @returns A promise that resolves to an array of all borrow events.
- */
 export async function fetchAllHistoricalBorrows(): Promise<BorrowEvent[]> {
   const logs = await fetchHederaLogs(HEDERA_BORROWED_EVENT);
 

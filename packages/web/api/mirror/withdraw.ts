@@ -8,7 +8,7 @@ import path from 'path';
 const ETH_COLLATERAL_OAPP_ADDR = (process.env.VITE_ETH_COLLATERAL_OAPP || '0x...').toLowerCase() as `0x${string}`;
 const HEDERA_CREDIT_OAPP_ADDR = (process.env.VITE_HEDERA_CREDIT_OAPP || '0x...').toLowerCase() as `0x${string}`;
 const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
-const MIRROR_ADMIN_PRIVATE_KEY = process.env.MIRROR_ADMIN_WITHDRAW_PRIVATE_KEY;
+const MIRROR_ADMIN_PRIVATE_KEY = process.env.DEPLOYER_KEY;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 
 // Log environment variables and contract addresses
