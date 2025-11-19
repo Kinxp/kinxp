@@ -1,14 +1,17 @@
 import React from 'react';
+import { formatUnits } from 'viem';
 
 interface WithdrawViewProps {
   orderId: string;
   onWithdraw: () => void;
   availableWei?: bigint;
 }
-
+const formatEth = (value?: bigint) => {
+  const wei = value ?? 0n;
+  return formatUnits(wei, 18);
+};
 const WithdrawView: React.FC<WithdrawViewProps> = ({ orderId, onWithdraw, availableWei }) => {
-  const availableEth = availableWei ? Number(availableWei) / 1e18 : 0;
-  const formattedAvailable = availableWei ? (Number(availableWei) / 1e18).toFixed(6) : '0';
+  const formattedAvailable = availableWei ? formatEth(availableWei) : '0';
   const disabled = !availableWei || availableWei === 0n;
   return (
     <div className="bg-gray-800 rounded-2xl p-6 text-center space-y-4 animate-fade-in">
