@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
-import { depositToLiquidityPool, withdrawFromLiquidityPool, claimRewards, getLiquidityPoolInfo } from '../services/chainService';
 import { formatUnits, parseUnits } from 'ethers';
 import { toast } from 'react-hot-toast';
 
@@ -10,6 +9,14 @@ import LiquidityStats from '../components/liquidity/LiquidityStats';
 import LiquidityActions from '../components/liquidity/LiquidityActions';
 import LiquidityPositions from '../components/liquidity/LiquidityPositions';
 import Loader from '../components/common/Loader';
+
+import { 
+  getLiquidityPoolInfo, 
+  getUserLiquidityPosition, 
+  depositLiquidity, 
+  withdrawLiquidity, 
+  claimLiquidityRewards 
+} from '../services/liquidityService';
 
 const LiquidityPage: React.FC = () => {
   const { isConnected, address, connectWallet } = useAppContext();
@@ -29,9 +36,8 @@ const LiquidityPage: React.FC = () => {
         const info = await getLiquidityPoolInfo();
         setPoolInfo(info);
         
-        // TODO: Fetch user's position data
-        // const position = await getUserLiquidityPosition(address);
-        // setUserPosition(position);
+        const position = await getUserLiquidityPosition(address);
+        setUserPosition(position);
         
       } catch (error) {
         console.error('Error fetching pool data:', error);
@@ -62,7 +68,7 @@ const LiquidityPage: React.FC = () => {
     try {
       setIsProcessing(true);
       const amountInWei = parseUnits(amount, 18); // Adjust decimals based on token
-      const txHash = await depositToLiquidityPool(amountInWei.toString(), address);
+    const txHash = await depositLiquidity(amountInWei, address);
       toast.success(`Deposit successful! Tx: ${txHash.slice(0, 10)}...`);
       setAmount('');
     } catch (error) {
@@ -87,7 +93,7 @@ const LiquidityPage: React.FC = () => {
     try {
       setIsProcessing(true);
       const amountInWei = parseUnits(amount, 18); // Adjust decimals based on LP token
-      const txHash = await withdrawFromLiquidityPool(amountInWei.toString(), address, address);
+      const txHash = await withdrawLiquidity(amountInWei, address);
       toast.success(`Withdrawal successful! Tx: ${txHash.slice(0, 10)}...`);
       setAmount('');
     } catch (error) {
@@ -101,7 +107,7 @@ const LiquidityPage: React.FC = () => {
   const handleClaimRewards = async () => {
     try {
       setIsProcessing(true);
-      const txHash = await claimRewards();
+    const txHash = await claimLiquidityRewards();
       toast.success(`Rewards claimed! Tx: ${txHash.slice(0, 10)}...`);
     } catch (error) {
       console.error('Claim rewards failed:', error);

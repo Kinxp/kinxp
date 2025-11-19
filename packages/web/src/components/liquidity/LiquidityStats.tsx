@@ -3,42 +3,52 @@ import { formatUnits } from 'ethers';
 
 interface LiquidityStatsProps {
   poolInfo: {
-    totalAssets: string;
-    totalSupply: string;
-    rewardRate: string;
+    totalAssets: bigint;
+    totalSupply: bigint;
+    rewardRatePerDay: bigint; // Changed from 'rewardRate' to match service
     assetAddress: string;
     rewardsTokenAddress: string;
   };
 }
 
 const LiquidityStats: React.FC<LiquidityStatsProps> = ({ poolInfo }) => {
-  // Format values with appropriate decimal places
-  const formatValue = (value: string, decimals = 18) => {
-    return parseFloat(formatUnits(value, decimals)).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
+  // Safely format values handling potential nulls/undefined
+  const formatValue = (value: bigint | string | undefined | null, decimals = 18) => {
+    if (value === undefined || value === null) return '0.00';
+    try {
+      const formatted = formatUnits(value, decimals);
+      return parseFloat(formatted).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    } catch (err) {
+      console.error("Error formatting value:", value, err);
+      return "0.00";
+    }
   };
 
   const stats = [
     {
       name: 'Total Value Locked',
-      value: `$${formatValue(poolInfo.totalAssets)}`,
+      // Assuming Underlying is USDC (6 decimals) based on your deposit logic
+      value: `$${formatValue(poolInfo.totalAssets, 6)}`, 
       description: 'Total assets deposited in the pool',
     },
     {
       name: 'Total LP Tokens',
-      value: formatValue(poolInfo.totalSupply),
+      // LP Tokens are usually 18 decimals, or match underlying
+      value: formatValue(poolInfo.totalSupply, 18), 
       description: 'Total LP tokens in circulation',
     },
     {
       name: 'Reward Rate',
-      value: `${formatValue(poolInfo.rewardRate, 18)} / day`,
+      // Using the correct property 'rewardRatePerDay'
+      value: `${formatValue(poolInfo.rewardRatePerDay, 18)} / day`, 
       description: 'Rewards distributed per day',
     },
     {
       name: 'Your Share',
-      value: '0.00%', // Will be updated with user's position data
+      value: '0.00%', // This would require user position calculation
       description: 'Your share of the liquidity pool',
     },
   ];
