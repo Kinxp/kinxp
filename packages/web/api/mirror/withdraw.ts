@@ -2,9 +2,9 @@
 import type { ApiRequest, ApiResponse } from '../types';
 import { ethers } from 'ethers';
 import { createClient } from 'redis';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 
-import fs from 'fs';
-import path from 'path';
 
 // Environment variables
 const ETH_COLLATERAL_OAPP_ADDR = (process.env.VITE_ETH_COLLATERAL_OAPP || '0x...').toLowerCase() as `0x${string}`;
@@ -35,14 +35,9 @@ if (!HEDERA_RPC_URL || !SEPOLIA_RPC_URL || !MIRROR_ADMIN_PRIVATE_KEY) {
 }
 
 // Load ABIs
-const loadABI = (filename: string) => {
-  const abiFilePath = path.join(process.cwd(), 'src', 'abis', `${filename}.json`);
-  const fileContent = fs.readFileSync(abiFilePath, 'utf8');
-  return JSON.parse(fileContent).abi;
-};
+const EthCollateralAbi = require('../../src/abis/EthCollateralOApp.json');
+const HederaCreditAbi = require('../../src/abis/HederaCreditOApp.json'); 
 
-const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
-const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
 
 const RAY = 10n ** 27n;

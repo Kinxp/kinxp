@@ -1,8 +1,9 @@
 // packages/web/api/mirror/relay.ts
 import type { ApiRequest, ApiResponse } from '../types';
 import { ethers } from 'ethers';
-import fs from 'fs';
-import path from 'path';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
 
 // Environment variables
 const ETH_COLLATERAL_OAPP_ADDR = (process.env.VITE_ETH_COLLATERAL_OAPP || '0x...').toLowerCase() as `0x${string}`;
@@ -34,14 +35,12 @@ if (!HEDERA_RPC_URL || !HEDERA_MIRROR_PRIVATE_KEY || !SEPOLIA_RPC_URL) {
 }
 
 // Load ABIs
-const loadABI = (filename: string) => {
-  const abiFilePath = path.join(process.cwd(), 'src', 'abis', `${filename}.json`);
-  const fileContent = fs.readFileSync(abiFilePath, 'utf8');
-  return JSON.parse(fileContent).abi;
-};
+const EthCollateralAbi = require('../../src/abis/EthCollateralOApp.json');
+const HederaCreditAbi = require('../../src/abis/HederaCreditOApp.json'); 
 
-const ETH_COLLATERAL_ABI = loadABI('EthCollateralOApp');
-const HEDERA_CREDIT_ABI = loadABI('HederaCreditOApp');
+
+const ETH_COLLATERAL_ABI = EthCollateralAbi.abi;
+const HEDERA_CREDIT_ABI = HederaCreditAbi.abi;
 
 const RAY = 10n ** 27n;
 const DEBT_TOKEN_DECIMALS = 6;

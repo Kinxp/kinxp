@@ -1,17 +1,17 @@
 {
-    "rewrites": [
-      {
-        "source": "/sepolia-blockscout-api/api",
-        "destination": "/api/sepolia-proxy"
-      },
-      {
-        "source": "/blockscout-api/api",
-        "destination": "/api/hedera-proxy"
-      }
-    ],
-    "functions": {
-      "api/**/*": {
-        "includeFiles": "src/abis/**"
+  "rewrites": [
+    {
+      "source": "/sepolia-blockscout-api/api",
+      "destination": "/api/sepolia-proxy"
+    },
+    {
+      "source": "/blockscout-api/api",
+      "destination": "/api/hedera-proxy"
+    }
+  ],
+  "functions": {
+    "api/**/*": {
+      "includeFiles": "src/abis/*.json"
     }
   }
 }
