@@ -37,6 +37,8 @@ if (!HEDERA_RPC_URL || !SEPOLIA_RPC_URL || !MIRROR_ADMIN_PRIVATE_KEY) {
 // Load ABIs
 const EthCollateralAbi = require('../../src/abis/EthCollateralOApp.json');
 const HederaCreditAbi = require('../../src/abis/HederaCreditOApp.json'); 
+const ETH_COLLATERAL_ABI = EthCollateralAbi.abi;
+const HEDERA_CREDIT_ABI = HederaCreditAbi.abi;
 
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`;
 
@@ -70,6 +72,8 @@ export default async function handler(
   const redis = await createClient({ url: process.env.REDIS_URL }).connect();
   try {
     const { orderId, txHash, collateralToWithdraw, reserveId, receiver } = request.body;
+    // In future this bridge would not be used (was supposed to be layer0 - direct Hedera settlement)
+    // This is a temporary measure while we migrate to direct Hedera settlement
     const txAlreadySent = await redis.get(`withdraw_${txHash}`);
     if(txAlreadySent == "true"){
       return response.status(400).json({ 
@@ -77,7 +81,6 @@ export default async function handler(
         error: `Transaction already sent` 
       });
     }
-    await redis.set(`withdraw_${txHash}`, 'true');
 
     console.log('Parsed request body:', { orderId, txHash, collateralToWithdraw, reserveId, receiver });
     
@@ -127,14 +130,21 @@ export default async function handler(
       });
       
       console.log('Fetching transaction:', txHash);
-      hederaTx = await hederaProvider.getTransaction(txHash);
-      console.log('Transaction details:', {
-        hash: hederaTx?.hash,
-        blockNumber: hederaTx?.blockNumber,
-        from: hederaTx?.from,
-        to: hederaTx?.to,
-        value: hederaTx?.value?.toString()
-      });
+      let attempts = 0;
+      const maxAttempts = 10;
+      
+      while (attempts < maxAttempts) {
+        hederaTx = await hederaProvider.getTransaction(txHash);
+        
+        if (hederaTx) {
+          console.log('Transaction found on Hedera after', attempts + 1, 'attempts');
+          break; // Found it!
+        }
+        
+        console.log(`Transaction not found yet. Attempt ${attempts + 1}/${maxAttempts}. Waiting 2s...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+        attempts++;
+      }
       
       if (!hederaTx) {
         const error = 'Transaction not found on Hedera';
@@ -144,6 +154,7 @@ export default async function handler(
           error
         });
       }
+
     } catch (error) {
       console.error('Error verifying Hedera transaction:', error);
       return response.status(500).json({
@@ -240,6 +251,8 @@ export default async function handler(
           BigInt(collateralToWithdraw)
         );
         const fallbackReceipt = await fallbackTx.wait();
+        await redis.set(`withdraw_${txHash}`, 'true');
+
         return response.status(200).json({
           success: true,
           message: 'Collateral unlock processed successfully (manual amount)',
